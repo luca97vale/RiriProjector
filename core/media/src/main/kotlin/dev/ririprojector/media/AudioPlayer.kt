@@ -25,6 +25,10 @@ class AudioPlayer(
     private var thread: Thread? = null
 
     @Volatile private var running = false
+    private val validator = TimestampValidator()
+
+    /** Diagnostics: `getTimestamp` samples rejected by the [TimestampValidator]. */
+    val rejectedTimestamps: Long get() = validator.rejected
 
     /** Diagnostics: audio queued in the track (written but not yet played), in ms. */
     @Volatile var trackQueuedMs: Int = 0
@@ -95,14 +99,11 @@ class AudioPlayer(
                 val head = t.playbackHeadPosition.toLong() and 0xFFFFFFFFL
                 trackQueuedMs = ((framesWritten - head) * 1000 / rate).toInt()
                 if (pts == JitterBuffer.NO_PTS) continue
-                val playNs =
-                    if (t.getTimestamp(ts)) {
-                        ts.nanoTime + (firstFrame - ts.framePosition) * NANOS_PER_SECOND / rate
-                    } else {
-                        // No timestamp yet (first ~100 ms): assume the queued frames play back-to-back.
-                        val head = t.playbackHeadPosition.toLong() and 0xFFFFFFFFL
-                        System.nanoTime() + (firstFrame - head) * NANOS_PER_SECOND / rate
-                    }
+                // Only validated timestamps feed lip-sync: a guessed play time (no timestamp yet,
+                // frozen or stale position) would steer the video delay with garbage.
+                val got = t.getTimestamp(ts)
+                if (!validator.accept(got, ts.framePosition, ts.nanoTime, System.nanoTime())) continue
+                val playNs = ts.nanoTime + (firstFrame - ts.framePosition) * NANOS_PER_SECOND / rate
                 sync.onAudioPlayed(pts, playNs / 1000)
             }
         } catch (e: Exception) {

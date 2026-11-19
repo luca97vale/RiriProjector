@@ -182,6 +182,10 @@ class AvSync(private val alpha: Double = 0.1) {
     private var audioDelayUs = Double.NaN
     private var videoArrivalUs = Double.NaN
     private var audioArrivalUs = Double.NaN
+    private var videoSamples = 0L
+    private var audioSamples = 0L
+    private var lastVideoAtUs = 0L
+    private var lastAudioAtUs = 0L
 
     /** Diagnostics: a packet with [ptsUs] reached the receiver at [arrivedAtUs] (monotonic µs). */
     @Synchronized
@@ -212,11 +216,15 @@ class AvSync(private val alpha: Double = 0.1) {
     @Synchronized
     fun onVideoShown(ptsUs: Long, shownAtUs: Long) {
         videoDelayUs = smooth(videoDelayUs, (shownAtUs - ptsUs).toDouble())
+        videoSamples++
+        lastVideoAtUs = shownAtUs
     }
 
     @Synchronized
     fun onAudioPlayed(ptsUs: Long, playedAtUs: Long) {
         audioDelayUs = smooth(audioDelayUs, (playedAtUs - ptsUs).toDouble())
+        audioSamples++
+        lastAudioAtUs = playedAtUs
     }
 
     /** Smoothed audio-minus-video offset in µs, or null until both sides reported. */
@@ -224,11 +232,28 @@ class AvSync(private val alpha: Double = 0.1) {
     fun offsetUs(): Long? =
         if (videoDelayUs.isNaN() || audioDelayUs.isNaN()) null else (audioDelayUs - videoDelayUs).toLong()
 
+    /** Offset plus per-side sample counts and the time of each side's latest sample. */
+    @Synchronized
+    fun snapshot(): Snapshot = Snapshot(offsetUs(), videoSamples, audioSamples, lastVideoAtUs, lastAudioAtUs)
+
     @Synchronized
     fun reset() {
         videoDelayUs = Double.NaN
         audioDelayUs = Double.NaN
+        videoSamples = 0
+        audioSamples = 0
+        lastVideoAtUs = 0
+        lastAudioAtUs = 0
     }
+
+    /** Counters only grow until [reset]; timestamps are receiver monotonic µs (0 = never). */
+    data class Snapshot(
+        val offsetUs: Long?,
+        val videoSamples: Long,
+        val audioSamples: Long,
+        val lastVideoAtUs: Long,
+        val lastAudioAtUs: Long,
+    )
 
     private fun smooth(old: Double, sample: Double) = if (old.isNaN()) sample else old + alpha * (sample - old)
 }
