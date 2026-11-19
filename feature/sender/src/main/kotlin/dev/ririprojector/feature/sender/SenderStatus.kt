@@ -17,8 +17,7 @@ data class SenderStats(
     val receiverDecodeP95Ms: Double = 0.0,
     val receiverDropped: Int = 0,
     val encoderName: String = "",
-    /** False when audio is not captured (permission denied or capture failed). */
-    val audio: Boolean = false,
+    val audio: AudioStatus = AudioStatus.OFF,
     val receiverUnderruns: Int = 0,
     /** Audio minus video at the receiver; positive = audio late. */
     val avOffsetMs: Int = 0,
@@ -42,4 +41,16 @@ object SenderStatus {
     internal fun set(value: SenderState) {
         _state.value = value
     }
+}
+
+/** What the sender does with audio in the current session. */
+enum class AudioStatus {
+    /** Captured and streamed. */
+    ON,
+
+    /** Turned off in the settings. */
+    OFF,
+
+    /** Wanted but not possible: permission denied, API < 29, or capture failed. */
+    UNAVAILABLE,
 }

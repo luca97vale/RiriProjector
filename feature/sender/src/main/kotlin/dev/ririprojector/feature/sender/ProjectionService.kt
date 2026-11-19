@@ -88,7 +88,7 @@ class ProjectionService : Service() {
                 projection = mp,
                 source = source,
                 densityDpi = dpi,
-                captureAudio =
+                audioPermitted =
                     Build.VERSION.SDK_INT >= 29 &&
                         checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED,
                 onEnded = { main.post { shutdown() } },
@@ -166,6 +166,7 @@ class ProjectionService : Service() {
             maxHeight = intent.getIntExtra(EXTRA_MAX_HEIGHT, 1080),
             maxFps = intent.getIntExtra(EXTRA_MAX_FPS, 60),
             bitrateBps = bitrate.takeIf { it > 0 },
+            audioEnabled = intent.getBooleanExtra(EXTRA_AUDIO, true),
         )
     }
 
@@ -182,6 +183,7 @@ class ProjectionService : Service() {
         private const val EXTRA_MAX_HEIGHT = "maxHeight"
         private const val EXTRA_MAX_FPS = "maxFps"
         private const val EXTRA_BITRATE = "bitrate"
+        private const val EXTRA_AUDIO = "audio"
 
         fun start(
             context: Context,
@@ -200,6 +202,7 @@ class ProjectionService : Service() {
                     .putExtra(EXTRA_MAX_HEIGHT, prefs.maxHeight ?: 1080)
                     .putExtra(EXTRA_MAX_FPS, prefs.maxFps ?: 60)
                     .putExtra(EXTRA_BITRATE, prefs.bitrateBps ?: 0)
+                    .putExtra(EXTRA_AUDIO, prefs.audioEnabled)
             context.startForegroundService(intent)
         }
 

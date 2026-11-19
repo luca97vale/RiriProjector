@@ -79,6 +79,8 @@ data class StreamPreferences(
     val maxFps: Int? = 60,
     val bitrateBps: Int? = null,
     val preferredAudioCodec: AudioCodec = AudioCodec.PCM_S16LE,
+    /** False: mirror video only (sender-side choice; nothing about audio is sent). */
+    val audioEnabled: Boolean = true,
 )
 
 /** Final parameters announced in START. */

@@ -44,7 +44,7 @@ class SenderSession(
     private val source: DisplayInfo,
     private val densityDpi: Int,
     /** True when RECORD_AUDIO is granted and the platform supports playback capture (API 29+). */
-    private val captureAudio: Boolean,
+    private val audioPermitted: Boolean,
     private val onEnded: (message: String?) -> Unit,
 ) {
     @Volatile private var ended = false
@@ -134,13 +134,13 @@ class SenderSession(
                     null,
                     null,
                 )
-            val audioOn = startAudio(params)
+            val audioStatus = startAudio(params)
             SenderStatus.set(
-                SenderState.Streaming(target, params, SenderStats(encoderName = codec.name, audio = audioOn)),
+                SenderState.Streaming(target, params, SenderStats(encoderName = codec.name, audio = audioStatus)),
             )
             // The receiver sends PONG and STATS every second: silence means it is gone.
             conn.setReadTimeout(RECEIVER_SILENCE_MS)
-            readLoop(conn, params, codec.name, audioOn)
+            readLoop(conn, params, codec.name, audioStatus)
         } catch (e: HandshakeException) {
             failure = e.message
         } catch (e: SocketTimeoutException) {
@@ -167,13 +167,14 @@ class SenderSession(
 
     /**
      * Announces the audio format and starts playback capture (ADR-007). Audio failures never end
-     * the session: mirroring continues video-only and the UI says so. Returns whether audio is on.
+     * the session: mirroring continues video-only and the UI says so.
      */
-    @SuppressLint("MissingPermission") // checked by the caller: captureAudio
-    private fun startAudio(params: StreamParams): Boolean {
-        if (!captureAudio || Build.VERSION.SDK_INT < 29) {
+    @SuppressLint("MissingPermission") // checked by the caller: audioPermitted
+    private fun startAudio(params: StreamParams): AudioStatus {
+        if (!preferences.audioEnabled) return AudioStatus.OFF
+        if (!audioPermitted || Build.VERSION.SDK_INT < 29) {
             Log.w(TAG, "audio capture unavailable (permission or API level): video only")
-            return false
+            return AudioStatus.UNAVAILABLE
         }
         return try {
             val capture =
@@ -188,14 +189,14 @@ class SenderSession(
                 )
             audio = capture.start()
             queue.offerControl(ControlMessage.AudioSetup(params.audio))
-            true
+            AudioStatus.ON
         } catch (e: Exception) {
             Log.w(TAG, "cannot start audio capture: ${e.message}")
-            false
+            AudioStatus.UNAVAILABLE
         }
     }
 
-    private fun readLoop(conn: Connection, params: StreamParams, encoderName: String, audioOn: Boolean) {
+    private fun readLoop(conn: Connection, params: StreamParams, encoderName: String, audioStatus: AudioStatus) {
         var lastFrames = 0L
         var lastBytes = 0L
         var lastAt = SystemClock.elapsedRealtime()
@@ -233,7 +234,7 @@ class SenderSession(
                             receiverDecodeP95Ms = s.decodeLatencyP95Us / 1000.0,
                             receiverDropped = s.droppedFrames,
                             encoderName = encoderName,
-                            audio = audioOn && !audioFailed,
+                            audio = if (audioFailed) AudioStatus.UNAVAILABLE else audioStatus,
                             receiverUnderruns = s.audioUnderruns,
                             avOffsetMs = s.avOffsetUs / 1000,
                         )

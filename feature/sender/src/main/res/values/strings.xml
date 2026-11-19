@@ -23,5 +23,12 @@
     <string name="sender_error_projection">Screen capture was not allowed</string>
     <string name="sender_error_revoked">screen capture was stopped</string>
     <string name="sender_audio_on">Audio: on · underruns %1$d · A/V %2$+d ms (apps that block capture stay silent)</string>
-    <string name="sender_audio_off">Audio: off (allow audio recording to mirror sound)</string>
+    <string name="sender_audio_off">Audio: off</string>
+    <string name="sender_audio_unavailable">Audio: unavailable (allow audio recording to mirror sound)</string>
+    <string name="sender_audio">Audio</string>
+    <string name="sender_on">On</string>
+    <string name="sender_off">Off</string>
+    <string name="sender_share">Share</string>
+    <string name="sender_share_screen">Entire screen</string>
+    <string name="sender_share_app">One app</string>
 </resources>
