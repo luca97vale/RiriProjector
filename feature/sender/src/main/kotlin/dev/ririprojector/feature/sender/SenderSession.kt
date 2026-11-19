@@ -1,0 +1,225 @@
+package dev.ririprojector.feature.sender
+
+import android.hardware.display.DisplayManager
+import android.hardware.display.VirtualDisplay
+import android.media.projection.MediaProjection
+import android.os.Process
+import android.os.SystemClock
+import android.util.Log
+import dev.ririprojector.media.AndroidCodecs
+import dev.ririprojector.media.VideoEncoder
+import dev.ririprojector.net.ClockSync
+import dev.ririprojector.net.Connection
+import dev.ririprojector.net.Handshake
+import dev.ririprojector.net.HandshakeException
+import dev.ririprojector.net.ReceiverEndpoint
+import dev.ririprojector.net.SendQueue
+import dev.ririprojector.net.SenderClient
+import dev.ririprojector.protocol.ByeReason
+import dev.ririprojector.protocol.ControlMessage
+import dev.ririprojector.protocol.MessageType
+import dev.ririprojector.protocol.model.AudioCodec
+import dev.ririprojector.protocol.model.AudioCodecCapability
+import dev.ririprojector.protocol.model.DisplayInfo
+import dev.ririprojector.protocol.model.SenderCapabilities
+import dev.ririprojector.protocol.model.StreamParams
+import dev.ririprojector.protocol.model.StreamPreferences
+import java.io.IOException
+import kotlin.random.Random
+
+/**
+ * One mirroring session (ADR-002, ADR-004): connect → HELLO/START → encoder → VirtualDisplay →
+ * stream until stopped or failed. Threads: session (connect, then socket reader), writer (the only
+ * socket writer: drains the [SendQueue], sends PING every second) and the encoder drain thread.
+ * Everything is released in [run]'s `finally`, in reverse order of creation.
+ */
+class SenderSession(
+    private val target: ReceiverEndpoint,
+    private val preferences: StreamPreferences,
+    private val projection: MediaProjection,
+    private val source: DisplayInfo,
+    private val densityDpi: Int,
+    private val onEnded: (message: String?) -> Unit,
+) {
+    @Volatile private var ended = false
+
+    @Volatile private var connection: Connection? = null
+
+    @Volatile private var encoder: VideoEncoder? = null
+
+    @Volatile private var writerStarted = false
+    private val queue = SendQueue(onKeyframeNeeded = { encoder?.requestKeyframe() })
+    private val clock = ClockSync()
+
+    fun start() {
+        Thread({ run() }, "Riri/SenderSession").apply {
+            priority = Thread.MAX_PRIORITY
+            start()
+        }
+    }
+
+    /** Ends the session from any thread; a BYE is sent first when possible. Never blocks on I/O. */
+    fun stop(reason: ByeReason) {
+        if (ended) return
+        ended = true
+        if (writerStarted && reason != ByeReason.ERROR) {
+            queue.offerControl(ControlMessage.Bye(reason)) // the writer sends it, then closes
+        } else {
+            queue.close()
+            connection?.close()
+        }
+    }
+
+    private fun run() {
+        Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY)
+        var virtualDisplay: VirtualDisplay? = null
+        var writer: Thread? = null
+        var failure: String? = null
+        SenderStatus.set(SenderState.Connecting(target))
+        try {
+            val conn = SenderClient.connect(target)
+            connection = conn
+            if (ended) return
+            val catalog = AndroidCodecs.catalog()
+            val caps =
+                SenderCapabilities(
+                    source = source,
+                    videoEncoders = catalog.capabilities(encoder = true),
+                    audioEncoders = listOf(AudioCodecCapability(AudioCodec.PCM_S16LE, 2, listOf(48_000))),
+                )
+            val (hello, params) = Handshake.asSender(conn, caps, preferences, Random.nextLong() and Long.MAX_VALUE)
+            Log.i(TAG, "streaming to ${hello.deviceName} (${target.host}): ${params.video}")
+            val codec = catalog.best(params.video.codec, encoder = true) ?: throw IOException("no encoder")
+            val enc =
+                VideoEncoder(
+                    codec = codec,
+                    config = params.video,
+                    sink = { data, pts, key, cfg -> queue.offerVideo(pts, key, cfg, data) },
+                    onError = { stop(ByeReason.ERROR) },
+                )
+            encoder = enc
+            enc.start()
+            writer = startWriter(conn)
+            virtualDisplay =
+                projection.createVirtualDisplay(
+                    "RiriProjector",
+                    params.video.width,
+                    params.video.height,
+                    densityDpi,
+                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                    enc.inputSurface,
+                    null,
+                    null,
+                )
+            SenderStatus.set(SenderState.Streaming(target, params, SenderStats(encoderName = codec.name)))
+            readLoop(conn, params, codec.name)
+        } catch (e: HandshakeException) {
+            failure = e.message
+        } catch (e: Exception) {
+            if (!ended) failure = e.message ?: e.javaClass.simpleName
+        } finally {
+            if (failure != null) Log.w(TAG, "session failed: $failure")
+            stop(if (failure == null) ByeReason.NORMAL else ByeReason.ERROR)
+            writer?.join(WRITER_DRAIN_MS)
+            queue.close()
+            writer?.interrupt()
+            runCatching { virtualDisplay?.release() }
+            encoder?.close()
+            encoder = null
+            connection?.close()
+            SenderStatus.set(SenderState.Ended(failure))
+            onEnded(failure)
+        }
+    }
+
+    private fun readLoop(conn: Connection, params: StreamParams, encoderName: String) {
+        var lastFrames = 0L
+        var lastBytes = 0L
+        var lastAt = SystemClock.elapsedRealtime()
+        while (!ended) {
+            val p = conn.reader.read() ?: return
+            when (p.type) {
+                MessageType.REQUEST_KEYFRAME -> encoder?.requestKeyframe()
+
+                MessageType.PONG -> {
+                    val pong = p.decodeControl() as ControlMessage.Pong
+                    clock.addSample(pong.senderTimeUs, pong.receiverTimeUs, nowUs())
+                }
+
+                MessageType.STATS -> {
+                    val s = p.decodeControl() as ControlMessage.Stats
+                    val enc = encoder ?: continue
+                    val now = SystemClock.elapsedRealtime()
+                    val secs = (now - lastAt).coerceAtLeast(1) / 1000.0
+                    val frames = enc.encodedFrames
+                    val bytes = enc.encodedBytes
+                    val stats =
+                        SenderStats(
+                            encodedFps = (frames - lastFrames) / secs,
+                            bitrateBps = ((bytes - lastBytes) * 8 / secs).toLong(),
+                            rttMs = clock.rttUs?.let { it / 1000.0 },
+                            sendDropped = queue.droppedVideoFrames,
+                            receiverFps = s.decodedFpsX100 / 100.0,
+                            receiverDecodeMs = s.decodeLatencyMeanUs / 1000.0,
+                            receiverDecodeP95Ms = s.decodeLatencyP95Us / 1000.0,
+                            receiverDropped = s.droppedFrames,
+                            encoderName = encoderName,
+                        )
+                    lastFrames = frames
+                    lastBytes = bytes
+                    lastAt = now
+                    SenderStatus.set(SenderState.Streaming(target, params, stats))
+                }
+
+                MessageType.BYE -> return
+
+                else -> Unit
+            }
+        }
+    }
+
+    /** The only socket writer: drains the queue by priority and sends a PING every second. */
+    private fun startWriter(conn: Connection): Thread = Thread({
+        Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY)
+        var nextPingAt = 0L
+        try {
+            while (true) {
+                val now = SystemClock.elapsedRealtime()
+                if (now >= nextPingAt && !ended) {
+                    queue.offerControl(ControlMessage.Ping(nowUs()))
+                    nextPingAt = now + PING_INTERVAL_MS
+                }
+                val packet = queue.take(PING_INTERVAL_MS) ?: if (ended) break else continue
+                try {
+                    val control = packet.control
+                    if (control != null) {
+                        conn.writer.writeControl(control)
+                    } else {
+                        conn.writer.writeMedia(packet.type, packet.flags, packet.ptsUs, packet.payload())
+                    }
+                    conn.writer.flush()
+                    if (control is ControlMessage.Bye) break
+                } finally {
+                    queue.recycle(packet)
+                }
+            }
+        } catch (e: IOException) {
+            if (!ended) Log.w(TAG, "write failed: ${e.message}")
+        } finally {
+            ended = true
+            queue.close()
+            conn.close() // unblocks the reader
+        }
+    }, "Riri/SenderWriter").apply {
+        start()
+        writerStarted = true
+    }
+
+    private companion object {
+        const val TAG = "Riri/Sender"
+        const val PING_INTERVAL_MS = 1_000L
+        const val WRITER_DRAIN_MS = 300L
+
+        fun nowUs() = SystemClock.elapsedRealtimeNanos() / 1_000
+    }
+}

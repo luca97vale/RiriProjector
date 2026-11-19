@@ -2,4 +2,23 @@
 <resources>
     <string name="sender_title">Mirror this screen</string>
     <string name="sender_placeholder">Looking for receivers on your network…</string>
+    <string name="sender_receivers">Receivers</string>
+    <string name="sender_manual_hint">IP address (or IP:port)</string>
+    <string name="sender_connect">Connect</string>
+    <string name="sender_settings">Stream settings</string>
+    <string name="sender_codec">Codec</string>
+    <string name="sender_resolution">Max resolution</string>
+    <string name="sender_fps">Frame rate</string>
+    <string name="sender_bitrate">Bitrate</string>
+    <string name="sender_auto">Auto</string>
+    <string name="sender_stop">Stop</string>
+    <string name="sender_status_idle">Not mirroring. Pick a receiver below.</string>
+    <string name="sender_status_connecting">Connecting to %1$s…</string>
+    <string name="sender_status_streaming">Mirroring to %1$s</string>
+    <string name="sender_status_ended">Mirroring stopped.</string>
+    <string name="sender_status_failed">Mirroring stopped: %1$s</string>
+    <string name="sender_stats">%1$s %2$dx%3$d · %4$.0f fps · %5$.1f Mbps · RTT %6$.1f ms\nReceiver: %7$.0f fps · decode %8$.1f ms (p95 %9$.1f) · dropped: %10$d sent / %11$d received</string>
+    <string name="sender_channel">Screen mirroring</string>
+    <string name="sender_notification_title">Mirroring to %1$s</string>
+    <string name="sender_error_projection">Screen capture was not allowed</string>
 </resources>
