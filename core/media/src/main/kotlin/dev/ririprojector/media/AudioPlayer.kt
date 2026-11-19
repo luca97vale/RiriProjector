@@ -53,6 +53,8 @@ class AudioPlayer(
                 .build()
         try {
             check(t.state == AudioTrack.STATE_INITIALIZED) { "AudioTrack not initialized" }
+            // The builder rounds the buffer up (60 ms on a Pixel); queue only what pacing needs.
+            t.setBufferSizeInFrames(packetBytes / (config.channels * 2) * TRACK_PACKETS)
             t.play()
         } catch (e: Exception) {
             t.release()
@@ -65,7 +67,10 @@ class AudioPlayer(
                 priority = Thread.MAX_PRIORITY
                 start()
             }
-        Log.i(TAG, "started: track buffer ${t.bufferSizeInFrames} frames, min $minBuffer B")
+        Log.i(
+            TAG,
+            "started: track buffer ${t.bufferSizeInFrames} of ${t.bufferCapacityInFrames} frames, min $minBuffer B",
+        )
         return this
     }
 
@@ -122,6 +127,7 @@ class AudioPlayer(
 
     private companion object {
         const val TAG = "Riri/AudioPlayer"
+        const val TRACK_PACKETS = 2
         const val NANOS_PER_SECOND = 1_000_000_000L
     }
 }

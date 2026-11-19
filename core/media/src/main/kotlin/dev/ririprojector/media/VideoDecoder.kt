@@ -87,7 +87,9 @@ class VideoDecoder(
                 lock.withLock {
                     if (mc !== codec) return
                     try {
-                        mc.releaseOutputBuffer(index, true)
+                        // Render now. A boolean release would stamp the frame with its pts, which is
+                        // on the sender's clock and meaningless to this display.
+                        mc.releaseOutputBuffer(index, System.nanoTime())
                     } catch (e: IllegalStateException) {
                         return
                     }
@@ -156,11 +158,17 @@ class VideoDecoder(
         replayCsd = csdLength > 0
     }
 
-    /** Reports when frames actually reach the display (systemNano is CLOCK_MONOTONIC). */
+    /**
+     * Reports when frames actually reach the display (`systemNano`, CLOCK_MONOTONIC). Frames are
+     * released with an explicit "now" render time (see onOutputBufferAvailable); a codec that
+     * does not track rendering echoes a timestamp instead, so reports far from now are ignored.
+     */
     private fun setRenderListener(mc: MediaCodec) {
         val listener = onFrameRendered ?: return
         mc.setOnFrameRenderedListener({ _, ptsUs, systemNano ->
-            listener.onRendered(ptsUs, systemNano / 1000)
+            if (kotlin.math.abs(System.nanoTime() - systemNano) < MAX_RENDER_REPORT_AGE_NS) {
+                listener.onRendered(ptsUs, systemNano / 1000)
+            }
         }, handler)
     }
 
@@ -318,6 +326,7 @@ class VideoDecoder(
         const val MAX_INPUTS = 64
         const val PTS_SLOTS = 32
         const val INPUT_WAIT_MS = 50L
+        const val MAX_RENDER_REPORT_AGE_NS = 1_000_000_000L
 
         fun nowUs() = SystemClock.elapsedRealtimeNanos() / 1_000
     }

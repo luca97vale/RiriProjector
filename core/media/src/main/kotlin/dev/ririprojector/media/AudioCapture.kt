@@ -81,7 +81,10 @@ class AudioCapture(
                 priority = Thread.MAX_PRIORITY
                 start()
             }
-        Log.i(TAG, "started ${config.sampleRateHz} Hz x${config.channels}, $packetBytes B packets")
+        Log.i(
+            TAG,
+            "started ${config.sampleRateHz} Hz x${config.channels}, $packetBytes B packets, min buffer $minBuffer B",
+        )
         return this
     }
 
