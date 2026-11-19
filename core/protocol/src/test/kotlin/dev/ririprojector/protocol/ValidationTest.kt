@@ -8,6 +8,32 @@ import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class ValidationTest {
+    private fun startPayload(syncByte: Int?): PayloadWriter = PayloadWriter()
+        .i64(1)
+        .u8(1).u16(1920).u16(1080).u16(60).i32(8_000_000)
+        .u8(1).i32(48_000).u8(2).i32(10_000)
+        .also { w -> syncByte?.let { w.u8(it) } }
+
+    @Test
+    fun `START with an unknown sync mode is rejected as malformed`() {
+        val payload = startPayload(syncByte = 9)
+        val e =
+            assertThrows(ProtocolException::class.java) {
+                ControlCodec.decode(MessageType.START, payload.bytes, 0, payload.size)
+            }
+        assertThat(e.reason).isEqualTo(Reason.MALFORMED_PAYLOAD)
+    }
+
+    @Test
+    fun `v1 START without the sync mode byte is rejected as malformed`() {
+        val payload = startPayload(syncByte = null)
+        val e =
+            assertThrows(ProtocolException::class.java) {
+                ControlCodec.decode(MessageType.START, payload.bytes, 0, payload.size)
+            }
+        assertThat(e.reason).isEqualTo(Reason.MALFORMED_PAYLOAD)
+    }
+
     @Test
     fun `START with zero width is rejected as malformed`() {
         val payload =

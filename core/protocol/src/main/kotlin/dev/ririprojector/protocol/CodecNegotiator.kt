@@ -67,7 +67,7 @@ object CodecNegotiator {
 
         val video = VideoConfig(enc.codec, size.first, size.second, fps, bitrate)
         val audio = negotiateAudio(sender.audioEncoders, receiver.audioDecoders, prefs.preferredAudioCodec)
-        return Negotiation.Success(StreamParams(sessionId, video, audio))
+        return Negotiation.Success(StreamParams(sessionId, video, audio, prefs.syncMode))
     }
 
     fun autoBitrate(codec: VideoCodec, width: Int, height: Int, fps: Int): Int {

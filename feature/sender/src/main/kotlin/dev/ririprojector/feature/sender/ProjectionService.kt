@@ -25,6 +25,7 @@ import dev.ririprojector.net.ReceiverEndpoint
 import dev.ririprojector.protocol.ByeReason
 import dev.ririprojector.protocol.model.DisplayInfo
 import dev.ririprojector.protocol.model.StreamPreferences
+import dev.ririprojector.protocol.model.SyncMode
 import dev.ririprojector.protocol.model.VideoCodec
 
 /**
@@ -91,6 +92,7 @@ class ProjectionService : Service() {
                 audioPermitted =
                     Build.VERSION.SDK_INT >= 29 &&
                         checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED,
+                versionMismatchText = getString(R.string.sender_error_version),
                 onEnded = { main.post { shutdown() } },
             )
         session = s
@@ -167,6 +169,8 @@ class ProjectionService : Service() {
             maxFps = intent.getIntExtra(EXTRA_MAX_FPS, 60),
             bitrateBps = bitrate.takeIf { it > 0 },
             audioEnabled = intent.getBooleanExtra(EXTRA_AUDIO, true),
+            syncMode =
+                SyncMode.entries.firstOrNull { it.name == intent.getStringExtra(EXTRA_SYNC) } ?: SyncMode.LIP_SYNC,
         )
     }
 
@@ -184,6 +188,7 @@ class ProjectionService : Service() {
         private const val EXTRA_MAX_FPS = "maxFps"
         private const val EXTRA_BITRATE = "bitrate"
         private const val EXTRA_AUDIO = "audio"
+        private const val EXTRA_SYNC = "sync"
 
         fun start(
             context: Context,
@@ -203,6 +208,7 @@ class ProjectionService : Service() {
                     .putExtra(EXTRA_MAX_FPS, prefs.maxFps ?: 60)
                     .putExtra(EXTRA_BITRATE, prefs.bitrateBps ?: 0)
                     .putExtra(EXTRA_AUDIO, prefs.audioEnabled)
+                    .putExtra(EXTRA_SYNC, prefs.syncMode.name)
             context.startForegroundService(intent)
         }
 

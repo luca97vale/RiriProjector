@@ -21,6 +21,7 @@ import dev.ririprojector.net.SenderClient
 import dev.ririprojector.protocol.ByeReason
 import dev.ririprojector.protocol.ControlMessage
 import dev.ririprojector.protocol.MessageType
+import dev.ririprojector.protocol.ProtocolException
 import dev.ririprojector.protocol.model.AudioCodec
 import dev.ririprojector.protocol.model.AudioCodecCapability
 import dev.ririprojector.protocol.model.DisplayInfo
@@ -45,6 +46,8 @@ class SenderSession(
     private val densityDpi: Int,
     /** True when RECORD_AUDIO is granted and the platform supports playback capture (API 29+). */
     private val audioPermitted: Boolean,
+    /** Shown when the receiver runs a different protocol version (localized by the caller). */
+    private val versionMismatchText: String,
     private val onEnded: (message: String?) -> Unit,
 ) {
     @Volatile private var ended = false
@@ -142,7 +145,8 @@ class SenderSession(
             conn.setReadTimeout(RECEIVER_SILENCE_MS)
             readLoop(conn, params, codec.name, audioStatus)
         } catch (e: HandshakeException) {
-            failure = e.message
+            failure =
+                if (e.cause is ProtocolException && e.bye == ByeReason.INCOMPATIBLE) versionMismatchText else e.message
         } catch (e: SocketTimeoutException) {
             if (!ended) failure = "receiver not responding"
         } catch (e: Exception) {

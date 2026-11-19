@@ -49,6 +49,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.ririprojector.net.ReceiverEndpoint
 import dev.ririprojector.net.nsd.NsdBrowser
 import dev.ririprojector.protocol.model.StreamPreferences
+import dev.ririprojector.protocol.model.SyncMode
 import dev.ririprojector.protocol.model.VideoCodec
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flowOf
@@ -89,6 +90,7 @@ class SenderActivity : ComponentActivity() {
             outState.putInt(KEY_FPS, p.maxFps ?: 60)
             outState.putInt(KEY_BITRATE, p.bitrateBps ?: 0)
             outState.putBoolean(KEY_AUDIO, p.audioEnabled)
+            outState.putString(KEY_SYNC, p.syncMode.name)
             outState.putBoolean(KEY_SINGLE_APP, singleApp)
         }
     }
@@ -110,6 +112,7 @@ class SenderActivity : ComponentActivity() {
                 maxFps = state.getInt(KEY_FPS, 60),
                 bitrateBps = state.getInt(KEY_BITRATE, 0).takeIf { it > 0 },
                 audioEnabled = state.getBoolean(KEY_AUDIO, true),
+                syncMode = SyncMode.entries.firstOrNull { it.name == state.getString(KEY_SYNC) } ?: SyncMode.LIP_SYNC,
             )
         if (target != null) pending = Pending(target, prefs, state.getBoolean(KEY_SINGLE_APP, false))
     }
@@ -174,6 +177,7 @@ class SenderActivity : ComponentActivity() {
         const val KEY_FPS = "pending.fps"
         const val KEY_BITRATE = "pending.bitrate"
         const val KEY_AUDIO = "pending.audio"
+        const val KEY_SYNC = "pending.sync"
         const val KEY_SINGLE_APP = "pending.singleApp"
     }
 }
@@ -191,15 +195,17 @@ private fun SenderScreen(
     var fps by rememberSaveable { mutableStateOf(60) }
     var bitrateMbps by rememberSaveable { mutableStateOf(0) }
     var audio by rememberSaveable { mutableStateOf(true) }
+    var sync by rememberSaveable { mutableStateOf(SyncMode.LIP_SYNC) }
     var singleApp by rememberSaveable { mutableStateOf(false) }
     val prefs =
-        remember(codec, maxHeight, fps, bitrateMbps, audio) {
+        remember(codec, maxHeight, fps, bitrateMbps, audio, sync) {
             StreamPreferences(
                 preferredVideoCodec = codec?.let { VideoCodec.valueOf(it) },
                 maxHeight = maxHeight,
                 maxFps = fps,
                 bitrateBps = if (bitrateMbps > 0) bitrateMbps * 1_000_000 else null,
                 audioEnabled = audio,
+                syncMode = sync,
             )
         }
     val active = state is SenderState.Connecting || state is SenderState.Streaming
@@ -273,6 +279,14 @@ private fun SenderScreen(
                 listOf(true to stringResource(R.string.sender_on), false to stringResource(R.string.sender_off)),
                 audio,
             ) { audio = it }
+            ChoiceRow(
+                stringResource(R.string.sender_sync),
+                listOf(
+                    SyncMode.LIP_SYNC to stringResource(R.string.sender_sync_lip),
+                    SyncMode.LOW_LATENCY to stringResource(R.string.sender_sync_latency),
+                ),
+                sync,
+            ) { sync = it }
             if (Build.VERSION.SDK_INT >= 34) { // older consent dialogs always share the whole screen
                 ChoiceRow(
                     stringResource(R.string.sender_share),

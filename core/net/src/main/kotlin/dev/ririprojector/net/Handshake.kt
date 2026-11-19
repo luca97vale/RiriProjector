@@ -85,6 +85,10 @@ object Handshake {
                 } catch (e: SocketTimeoutException) {
                     throw HandshakeException("timed out waiting for $expected", cause = e)
                 } catch (e: ProtocolException) {
+                    if (e.reason == ProtocolException.Reason.UNSUPPORTED_VERSION) {
+                        // The two devices run different app builds (no cross-version compatibility).
+                        throw HandshakeException("protocol version mismatch: ${e.message}", ByeReason.INCOMPATIBLE, e)
+                    }
                     throw HandshakeException("protocol error waiting for $expected: ${e.message}", cause = e)
                 } ?: throw HandshakeException("peer closed before $expected")
             val type = packet.type ?: continue // unknown type from a newer peer: skip

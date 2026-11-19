@@ -65,7 +65,8 @@ class MessageReaderTest {
 
     @Test
     fun `unsupported version is rejected`() {
-        for (v in listOf(0, 2, 255)) {
+        val current = ProtocolInfo.PROTOCOL_VERSION
+        for (v in listOf(0, current - 1, current + 1, 255)) { // includes the previous version (v1 peers)
             val r = MessageReader(ByteArrayInputStream(header(MessageType.PING.code, 0, version = v)))
             assertThat(reasonOf { r.read() }).isEqualTo(Reason.UNSUPPORTED_VERSION)
         }
