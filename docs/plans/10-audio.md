@@ -73,3 +73,45 @@ Device: Tab S9 → Pixel 10 with music + a lip-sync clip; overlay offset; 10-min
 - [x] AudioCapture + sender path
 - [x] AudioPlayer + receiver path + overlay
 - [ ] ADR-007 update, review, on-device verification
+
+---
+
+## Addendum (2026-11-19): measured A/V offset, sync mode, audio toggle, single-app audio
+Requested by the user after the first on-device audio run.
+
+### Measurements (Tab S9 → Pixel 10, after the review fixes)
+Relative to the arrival of the video frame with the same pts: video on screen +9 ms; audio
+arrives +71 ms (the tablet's playback-capture pipeline: capture age 75–83 ms at hand-off); audio
+leaves the speaker +191 ms (jitter buffer ~35 ms, `AudioTrack` 20 ms, device output ~65 ms).
+A/V offset ≈ +180 ms. Only ~30 ms of it is ours to trim, so ±40 ms requires delaying video.
+
+### 1. Sync mode (protocol v2)
+`SyncMode { LIP_SYNC, LOW_LATENCY }`, chosen in the sender UI, default **LIP_SYNC** (user
+decision: a projector is mostly for watching). Carried in START (u8 after the audio config) →
+`PROTOCOL_VERSION = 2`, ADR-003/ADR-007 updated.
+- Receiver `VideoDelayLine`: in LIP_SYNC, access units are held (compressed) and submitted to the
+  decoder at arrival + delay by a dedicated urgent-display thread; payloads go into pooled
+  byte arrays (no steady-state allocation). Delay 0 (LOW_LATENCY, no audio, or not yet measured)
+  bypasses the line: submit on the network thread as today.
+- `VideoDelayController` (pure, JVM-tested): once per second, delay += gain × A/V offset, clamped
+  to 0..300 ms; slew-limited so video never jumps more than ~20 ms per step. The offset is the
+  existing `AvSync` measurement (it already includes the delay, so this is a closed loop).
+- Why not delay at the decoder output (`releaseOutputBuffer` with a future timestamp): ~10
+  decoded frames would wait in the BufferQueue and the decoder, with few output buffers, stalls.
+- Overlay and STATS show the applied video delay.
+
+### 2. Audio on/off (sender only, no wire change)
+"Audio" choice in Stream settings, default on. Off: no `RECORD_AUDIO` request, no capture, no
+AUDIO_CONFIG; the status card says audio is off by choice. Receiver: no audio → no delay.
+
+### 3. Share scope and single-app audio (sender only)
+"Share" choice: Entire screen (default, `createConfigForDefaultDisplay`) or One app
+(`createConfigForUserChoice`, API 34+; hidden below). MediaProjection exposes no public API for
+the chosen app, so first verify on device whether playback capture is already limited to the
+shared app; if not, find a reliable way to learn its uid and use `addMatchingUid`. If neither
+works, report back to the user before shipping (no leaking other apps' audio silently).
+
+### Tests
+JVM: `VideoDelayController` (convergence, clamp, slew, reset), delay-line scheduling logic
+(pure part), START v2 round-trip and version mismatch. Device: lip-sync by eye on a speech video;
+overlay offset within ±40 ms; low-latency mode unchanged; single-app audio isolation.
