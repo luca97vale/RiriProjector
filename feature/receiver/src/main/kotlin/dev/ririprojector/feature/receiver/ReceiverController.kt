@@ -241,6 +241,10 @@ class ReceiverController(
                                 Log.w(TAG, "video delay line overflow: dropping to the next keyframe")
                                 requestKeyframe()
                             },
+                            onError = {
+                                Log.w(TAG, "video delay line failed: ${it.message}")
+                                end(ByeReason.ERROR)
+                            },
                         ).start()
                 }
                 Log.i(TAG, "sync mode ${p.syncMode}")

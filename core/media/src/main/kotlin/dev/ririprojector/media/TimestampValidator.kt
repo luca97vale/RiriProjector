@@ -12,8 +12,8 @@ class TimestampValidator(private val maxAgeNs: Long = 200_000_000L) {
     private var lastFramePosition = -1L
     private var lastNanoTime = Long.MIN_VALUE
 
-    /** Rejected samples since the start, for diagnostics. */
-    var rejected = 0L
+    /** Rejected samples since the start, for diagnostics (read from another thread). */
+    @Volatile var rejected = 0L
         private set
 
     fun accept(success: Boolean, framePosition: Long, sampleNanoTime: Long, nowNs: Long): Boolean {

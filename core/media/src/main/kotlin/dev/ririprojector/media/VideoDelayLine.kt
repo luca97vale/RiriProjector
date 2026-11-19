@@ -15,9 +15,15 @@ fun interface DelaySink {
  * decoder sees it. The network thread [offer]s (copy into a [DelayRing], never blocks); the
  * "Riri/VideoDelay" thread waits for the head's due time and submits it to [sink]. The ring region
  * being decoded is released only after [DelaySink.submit] returns, so offers never overwrite it.
- * [onOverflow] runs (network thread) when units start being dropped until the next keyframe.
+ * [onOverflow] runs (network thread) when units start being dropped until the next keyframe;
+ * [onError] runs (delay thread, which then stops) if feeding the decoder throws.
  */
-class VideoDelayLine(capacityBytes: Int, private val sink: DelaySink, private val onOverflow: () -> Unit) : Closeable {
+class VideoDelayLine(
+    capacityBytes: Int,
+    private val sink: DelaySink,
+    private val onOverflow: () -> Unit,
+    private val onError: (Exception) -> Unit,
+) : Closeable {
     private val ring = DelayRing(capacityBytes)
     private val lock = ReentrantLock()
     private val changed = lock.newCondition()
@@ -83,6 +89,9 @@ class VideoDelayLine(capacityBytes: Int, private val sink: DelaySink, private va
             }
         } catch (_: InterruptedException) {
             // closing
+        } catch (e: Exception) {
+            // Never crash the process from this thread: the owner ends the session cleanly.
+            if (!closed) onError(e)
         }
     }
 

@@ -91,6 +91,28 @@ class DelayRingTest {
     }
 
     @Test
+    fun `an empty unit never makes a full wrapped ring look unwrapped`() {
+        val r = DelayRing(1_000)
+        r.add(600, pts = 1)
+        r.add(300, pts = 2) // 600..900
+        r.pop() // head = 2 at 600
+        assertThat(r.add(600, pts = 3)).isEqualTo(Offer.QUEUED) // 0..600, tail end == head offset
+        assertThat(r.add(0, pts = 4)).isEqualTo(Offer.DROPPED)
+        assertThat(r.add(300, pts = 5, key = true)).isEqualTo(Offer.OVERFLOW) // no room: not over 2
+        assertThat(r.pop()).isEqualTo(2) // bytes intact
+        assertThat(r.pop()).isEqualTo(3)
+    }
+
+    @Test
+    fun `reports overflow again when a keyframe cannot fit either`() {
+        val r = DelayRing(1_000)
+        r.add(900, pts = 1, key = true)
+        assertThat(r.add(200, pts = 2)).isEqualTo(Offer.OVERFLOW)
+        assertThat(r.add(200, pts = 3)).isEqualTo(Offer.DROPPED)
+        assertThat(r.add(200, pts = 4, key = true)).isEqualTo(Offer.OVERFLOW) // ask again
+    }
+
+    @Test
     fun `descriptor limit counts as overflow`() {
         val r = DelayRing(1_000, maxEntries = 2)
         r.add(1, pts = 1)

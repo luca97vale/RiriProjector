@@ -8,8 +8,8 @@ package dev.ririprojector.media
  * - It acts only on fresh data: at least [minVideoSamples] video and [minAudioSamples] audio
  *   reports since the previous tick, both sides' latest report younger than [maxSampleAgeMs].
  *   Otherwise it holds (a static screen renders no frames, and that must not move the delay).
- * - The first fresh tick (acquisition) jumps straight to the estimated target, and the tick after
- *   a jump is skipped so the smoothed offset can catch up with it.
+ * - The first fresh tick (acquisition) jumps straight up to the estimated target (never down),
+ *   and the tick after a jump is skipped so the smoothed offset can catch up with it.
  * - After that each step is [gain] × error, at most [maxStepMs], ignoring errors within
  *   ±[deadbandMs] (no hunting), and the delay is clamped to 0..[maxDelayMs].
  * - With no audio progress for [audioLostMs] the delay slews back to 0 and the loop re-acquires.
@@ -62,11 +62,15 @@ class VideoDelayController(
             return delayUs
         }
         val error = offset - trimUs
+        // Acquisition jumps up only: jumping down would release the backlog in one burst (a decoder
+        // backlog drop); a lower target is reached by the normal slew instead.
         if (!acquired) {
             acquired = true
-            skipNext = true
-            delayUs = clamp(delayUs + error)
-            return delayUs
+            if (error > 0) {
+                skipNext = true
+                delayUs = clamp(delayUs + error)
+                return delayUs
+            }
         }
         if (kotlin.math.abs(error) <= deadbandMs * 1000L) return delayUs
         val step = (error * gain).toLong().coerceIn(-maxStepMs * 1000L, maxStepMs * 1000L)

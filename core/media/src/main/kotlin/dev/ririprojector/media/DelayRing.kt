@@ -52,6 +52,9 @@ class DelayRing(capacityBytes: Int, private val maxEntries: Int = 64) {
         arrivalUs: Long,
         delayUs: Long,
     ): Offer {
+        // Empty units carry nothing to decode, and a zero-length slot at the head's offset would
+        // make a wrapped ring look unwrapped (place() would then overwrite the head).
+        if (length <= 0) return Offer.DROPPED
         if (dropping && !isKeyframe && !isConfig) {
             dropped++
             return Offer.DROPPED
@@ -59,9 +62,11 @@ class DelayRing(capacityBytes: Int, private val maxEntries: Int = 64) {
         val at = if (count < maxEntries) place(length) else -1
         if (at < 0) {
             dropped++
-            val first = !dropping
+            // Report again when a keyframe cannot fit either: the previous keyframe request may
+            // have been rate-limited away, and recovery needs a fresh one.
+            val report = !dropping || isKeyframe
             dropping = true
-            return if (first) Offer.OVERFLOW else Offer.DROPPED
+            return if (report) Offer.OVERFLOW else Offer.DROPPED
         }
         if (isKeyframe) dropping = false
         System.arraycopy(src, offset, buffer, at, length)

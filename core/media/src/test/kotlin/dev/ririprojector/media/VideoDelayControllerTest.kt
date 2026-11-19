@@ -117,6 +117,26 @@ class VideoDelayControllerTest {
     }
 
     @Test
+    fun `re-acquisition below the current delay slews down instead of jumping`() {
+        val c = VideoDelayController(maxStepMs = 20, audioLostMs = 10_000)
+        val p = Plant(c, audioLagUs = 250_000)
+        p.run(10)
+        p.audioPerSec = 0
+        p.run(13) // 10 s hold, then 2-3 s of wind-down: still well above the new target
+        val before = c.delayUs
+        assertThat(before).isGreaterThan(150_000)
+        p.audioPerSec = 100
+        p.audioLagUs = 0
+        var last = before
+        repeat(20) {
+            p.step()
+            assertThat(last - c.delayUs).isAtMost(20_000)
+            last = c.delayUs
+        }
+        assertThat(abs(p.residualUs())).isAtMost(15_000)
+    }
+
+    @Test
     fun `waits for enough samples before acting`() {
         val c = VideoDelayController(minVideoSamples = 10, minAudioSamples = 20)
         val p = Plant(c, audioLagUs = 200_000)
