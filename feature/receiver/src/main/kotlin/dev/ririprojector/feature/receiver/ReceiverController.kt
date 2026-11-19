@@ -2,6 +2,8 @@ package dev.ririprojector.feature.receiver
 
 import android.content.Context
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.Process
 import android.os.SystemClock
 import android.util.Log
@@ -26,6 +28,7 @@ import dev.ririprojector.protocol.model.DisplayInfo
 import dev.ririprojector.protocol.model.StreamParams
 import java.io.Closeable
 import java.io.IOException
+import java.net.BindException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -85,13 +88,27 @@ class ReceiverController(
     private val surfaceReady = surfaceLock.newCondition()
     private var surface: Surface? = null
 
+    private val main = Handler(Looper.getMainLooper())
+    private var bindAttempts = 0
+    private val retryStart = Runnable { start() }
+
     fun start() {
         if (server != null) return
         try {
             val s = ReceiverServer(port = ReceiverEndpoint.DEFAULT_PORT) { onConnection(it) }.start()
             server = s
+            bindAttempts = 0
             nsd = NsdPublisher(context).publish(deviceName, s.boundPort)
             showWaiting()
+        } catch (e: BindException) {
+            // Another instance (or a previous session) may still be releasing the port.
+            if (++bindAttempts <= MAX_BIND_ATTEMPTS) {
+                Log.w(TAG, "port busy, retrying (${e.message})")
+                main.postDelayed(retryStart, BIND_RETRY_MS)
+            } else {
+                Log.e(TAG, "cannot bind the server port", e)
+                _state.value = ReceiverState.Failed(e.message ?: "port in use")
+            }
         } catch (e: IOException) {
             Log.e(TAG, "cannot start server", e)
             _state.value = ReceiverState.Failed(e.message ?: "server error")
@@ -99,6 +116,8 @@ class ReceiverController(
     }
 
     fun stop() {
+        main.removeCallbacks(retryStart)
+        bindAttempts = 0
         runCatching { nsd?.close() }
         nsd = null
         session?.endAndAwait(ByeReason.NORMAL)
@@ -335,6 +354,8 @@ class ReceiverController(
         const val OUTBOX_CAPACITY = 32
         const val WRITER_DRAIN_MS = 300L
         const val GRACE_MS = 500L
+        const val MAX_BIND_ATTEMPTS = 10
+        const val BIND_RETRY_MS = 300L
 
         fun nowUs() = SystemClock.elapsedRealtimeNanos() / 1_000
     }

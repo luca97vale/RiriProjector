@@ -40,6 +40,11 @@ Fixed 16-byte header, big-endian:
 | 6 | payloadLen | u32 | configurable maximum (default 8 MiB) → above = protocol error |
 | 10 | ptsUs/seq | u48 | pts in µs for frames, sequence number for control messages |
 
+**Timebase.** Media pts are sender `CLOCK_MONOTONIC` microseconds (`System.nanoTime() / 1000`), the
+clock `VirtualDisplay`/Surface timestamps use for encoder output. Audio pts (M5) must use the same clock.
+PING/PONG timestamps use `SystemClock.elapsedRealtimeNanos()` and only measure RTT and offset; never mix
+the two (they differ by the total deep-sleep time since boot).
+
 Messages:
 
 | type | Name | Direction | Payload |

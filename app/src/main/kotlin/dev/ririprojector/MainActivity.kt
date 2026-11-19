@@ -26,7 +26,8 @@ class MainActivity : Activity() {
                 AppMode.SENDER -> SenderActivity::class.java
                 AppMode.RECEIVER -> ReceiverActivity::class.java
             }
-        startActivity(Intent(this, target))
+        // Reuse an existing instance: two receiver screens would race for the server port.
+        startActivity(Intent(this, target).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP))
         finish()
     }
 }
