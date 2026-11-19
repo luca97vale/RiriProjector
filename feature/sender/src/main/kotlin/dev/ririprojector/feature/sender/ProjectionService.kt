@@ -88,8 +88,8 @@ class ProjectionService : Service() {
         )
 
         val (source, dpi) = displayInfo()
-        val singleApp = intent.getBooleanExtra(EXTRA_SINGLE_APP, false)
         val consentShownAtMs = intent.getLongExtra(EXTRA_CONSENT_SHOWN_AT, System.currentTimeMillis())
+        val consentResultAtMs = intent.getLongExtra(EXTRA_CONSENT_RESULT_AT, System.currentTimeMillis())
         val appContext = applicationContext
         val s =
             SenderSession(
@@ -101,8 +101,7 @@ class ProjectionService : Service() {
                 audioPermitted =
                     Build.VERSION.SDK_INT >= 29 &&
                         checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED,
-                singleApp = singleApp,
-                detectAudioUid = { SharedAppDetector.detectUid(appContext, consentShownAtMs) },
+                detectShare = { SharedAppDetector.detect(appContext, consentShownAtMs, consentResultAtMs) },
                 versionMismatchText = getString(R.string.sender_error_version),
                 onEnded = { main.post { shutdown() } },
             )
@@ -200,7 +199,7 @@ class ProjectionService : Service() {
         private const val EXTRA_BITRATE = "bitrate"
         private const val EXTRA_AUDIO = "audio"
         private const val EXTRA_SYNC = "sync"
-        private const val EXTRA_SINGLE_APP = "singleApp"
+        private const val EXTRA_CONSENT_RESULT_AT = "consentResultAt"
         private const val EXTRA_CONSENT_SHOWN_AT = "consentShownAt"
 
         fun start(
@@ -209,8 +208,8 @@ class ProjectionService : Service() {
             consent: Intent,
             target: ReceiverEndpoint,
             prefs: StreamPreferences,
-            singleApp: Boolean,
             consentShownAtMs: Long,
+            consentResultAtMs: Long,
         ) {
             val intent =
                 Intent(context, ProjectionService::class.java)
@@ -224,7 +223,7 @@ class ProjectionService : Service() {
                     .putExtra(EXTRA_BITRATE, prefs.bitrateBps ?: 0)
                     .putExtra(EXTRA_AUDIO, prefs.audioEnabled)
                     .putExtra(EXTRA_SYNC, prefs.syncMode.name)
-                    .putExtra(EXTRA_SINGLE_APP, singleApp)
+                    .putExtra(EXTRA_CONSENT_RESULT_AT, consentResultAtMs)
                     .putExtra(EXTRA_CONSENT_SHOWN_AT, consentShownAtMs)
             context.startForegroundService(intent)
         }

@@ -8,8 +8,19 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Process
-import android.os.SystemClock
 import android.util.Log
+
+/** What the user chose in the system share dialog (ADR-009). */
+sealed interface ShareScope {
+    /** The whole display: capture every app's sound. */
+    data object EntireScreen : ShareScope
+
+    /** One app: capture only its sound; [uid] null if the app could not be resolved. */
+    data class SingleApp(val uid: Int?) : ShareScope
+
+    /** No Usage access: the choice cannot be seen, so every app's sound is captured. */
+    data object Unknown : ShareScope
+}
 
 /** An app coming to the foreground, from `UsageEvents.ACTIVITY_RESUMED`. Wall-clock ms. */
 data class ResumeEvent(val timeMs: Long, val packageName: String)
@@ -21,8 +32,8 @@ data class ResumeEvent(val timeMs: Long, val packageName: String)
  * is the shared one. Pure logic; [SharedAppDetector] feeds it from `UsageStatsManager`.
  */
 object SharedAppPicker {
-    fun pick(events: List<ResumeEvent>, sinceMs: Long, excluded: Set<String>): String? = events
-        .filter { it.timeMs >= sinceMs && it.packageName !in excluded }
+    fun pick(events: List<ResumeEvent>, sinceMs: Long, untilMs: Long, excluded: Set<String>): String? = events
+        .filter { it.timeMs in sinceMs..untilMs && it.packageName !in excluded }
         .maxByOrNull { it.timeMs }
         ?.packageName
 }
@@ -47,30 +58,37 @@ object SharedAppDetector {
     fun usageAccessSettings(): Intent = Intent(android.provider.Settings.ACTION_USAGE_ACCESS_SETTINGS)
 
     /**
-     * Blocking (polls up to [timeoutMs]): the uid of the app brought to the front since
-     * [consentShownAtMs] (wall clock), or null without Usage access or if none was seen.
+     * Blocking (session thread; may wait until [WINDOW_MS] after the consent result): what the user
+     * chose in the system dialog. An app brought to the front between the dialog being shown
+     * ([consentShownAtMs]) and [WINDOW_MS] after its result ([consentResultAtMs]) means one app
+     * was shared; none means the entire screen. All times are wall clock (UsageEvents).
      */
-    fun detectUid(context: Context, consentShownAtMs: Long, timeoutMs: Long = 3_000): Int? {
+    fun detect(context: Context, consentShownAtMs: Long, consentResultAtMs: Long): ShareScope {
+        if (Build.VERSION.SDK_INT < 34) return ShareScope.EntireScreen // no single-app option
         if (!hasUsageAccess(context)) {
-            Log.w(TAG, "no usage access: cannot tell which app is shared")
-            return null
+            Log.w(TAG, "no usage access: cannot tell what was shared")
+            return ShareScope.Unknown
         }
         val usm = context.getSystemService(UsageStatsManager::class.java)
         val excluded = SYSTEM_UI + context.packageName + homePackages(context)
-        val deadline = SystemClock.elapsedRealtime() + timeoutMs
+        val untilMs = consentResultAtMs + WINDOW_MS
         while (true) {
-            val pkg = SharedAppPicker.pick(resumes(usm, consentShownAtMs - 1_000), consentShownAtMs, excluded)
+            val events = resumes(usm, consentShownAtMs - 1_000)
+            val pkg = SharedAppPicker.pick(events, consentShownAtMs, untilMs, excluded)
             if (pkg != null) {
                 val uid = uidOf(context, pkg)
-                Log.i(TAG, "shared app: $pkg (uid $uid)")
-                return uid
+                Log.i(TAG, "one app shared: $pkg (uid $uid)")
+                return ShareScope.SingleApp(uid)
             }
-            if (SystemClock.elapsedRealtime() >= deadline) break
-            Thread.sleep(200)
+            val left = untilMs - System.currentTimeMillis()
+            if (left <= 0) break
+            Thread.sleep(minOf(left, 200))
         }
-        Log.w(TAG, "no app came to the front after the consent dialog")
-        return null
+        Log.i(TAG, "no app came to the front: entire screen shared")
+        return ShareScope.EntireScreen
     }
+
+    private const val WINDOW_MS = 1_500L
 
     private fun resumes(usm: UsageStatsManager, fromMs: Long): List<ResumeEvent> {
         val out = ArrayList<ResumeEvent>()

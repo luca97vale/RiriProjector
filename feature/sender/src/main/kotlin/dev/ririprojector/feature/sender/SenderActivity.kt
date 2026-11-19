@@ -2,6 +2,7 @@ package dev.ririprojector.feature.sender
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
@@ -60,13 +61,11 @@ class SenderActivity : ComponentActivity() {
     private data class Pending(
         val target: ReceiverEndpoint,
         val prefs: StreamPreferences,
-        val singleApp: Boolean,
-        /** Wall-clock time the consent dialog was shown: the shared app comes to the front after it. */
+        /** Wall-clock time the consent dialog was shown: a shared app comes to the front after it. */
         val consentShownAtMs: Long = 0,
     )
 
     private var pending: Pending? = null
-    private val usageAccess = mutableStateOf(false)
 
     private val consent =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -80,8 +79,8 @@ class SenderActivity : ComponentActivity() {
                     data,
                     p.target,
                     p.prefs,
-                    p.singleApp,
                     p.consentShownAtMs,
+                    System.currentTimeMillis(),
                 )
             }
         }
@@ -96,7 +95,7 @@ class SenderActivity : ComponentActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         // The consent dialog may outlive this instance (rotation): keep what the result is for.
-        pending?.let { (t, p, singleApp, consentShownAtMs) ->
+        pending?.let { (t, p, consentShownAtMs) ->
             outState.putString(KEY_HOST, t.host)
             outState.putInt(KEY_PORT, t.port)
             outState.putString(KEY_NAME, t.name)
@@ -106,7 +105,6 @@ class SenderActivity : ComponentActivity() {
             outState.putInt(KEY_BITRATE, p.bitrateBps ?: 0)
             outState.putBoolean(KEY_AUDIO, p.audioEnabled)
             outState.putString(KEY_SYNC, p.syncMode.name)
-            outState.putBoolean(KEY_SINGLE_APP, singleApp)
             outState.putLong(KEY_CONSENT_SHOWN_AT, consentShownAtMs)
         }
     }
@@ -116,24 +114,17 @@ class SenderActivity : ComponentActivity() {
         val target = runCatching {
             ReceiverEndpoint(state.getString(KEY_NAME) ?: host, host, state.getInt(KEY_PORT))
         }.getOrNull()
+        val codecName = state.getString(KEY_CODEC)
         val prefs =
             StreamPreferences(
-                preferredVideoCodec = state.getString(KEY_CODEC)?.let { c ->
-                    VideoCodec.entries.firstOrNull {
-                        it.name ==
-                            c
-                    }
-                },
+                preferredVideoCodec = VideoCodec.entries.firstOrNull { it.name == codecName },
                 maxHeight = state.getInt(KEY_MAX_HEIGHT, 1080),
                 maxFps = state.getInt(KEY_FPS, 60),
                 bitrateBps = state.getInt(KEY_BITRATE, 0).takeIf { it > 0 },
                 audioEnabled = state.getBoolean(KEY_AUDIO, true),
                 syncMode = SyncMode.entries.firstOrNull { it.name == state.getString(KEY_SYNC) } ?: SyncMode.LIP_SYNC,
             )
-        if (target != null) {
-            pending =
-                Pending(target, prefs, state.getBoolean(KEY_SINGLE_APP, false), state.getLong(KEY_CONSENT_SHOWN_AT))
-        }
+        if (target != null) pending = Pending(target, prefs, state.getLong(KEY_CONSENT_SHOWN_AT))
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -156,41 +147,61 @@ class SenderActivity : ComponentActivity() {
                         state = state,
                         onStart = ::requestProjection,
                         onStop = { ProjectionService.stop(this) },
-                        usageAccess = usageAccess.value,
-                        onAllowUsageAccess = { startActivity(SharedAppDetector.usageAccessSettings()) },
                     )
                 }
             }
         }
     }
 
-    override fun onResume() {
-        super.onResume()
-        usageAccess.value = SharedAppDetector.hasUsageAccess(this) // may change in Settings
-    }
-
     private fun granted(permission: String) = checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
 
-    /** Audio permission first (only when audio is wanted), then the system consent dialog. */
-    private fun requestProjection(target: ReceiverEndpoint, prefs: StreamPreferences, singleApp: Boolean) {
-        pending = Pending(target, prefs, singleApp)
-        if (prefs.audioEnabled && Build.VERSION.SDK_INT >= 29 && !granted(Manifest.permission.RECORD_AUDIO)) {
+    /** Usage access prompt (once), audio permission (when audio is on), then the consent dialog. */
+    private fun requestProjection(target: ReceiverEndpoint, prefs: StreamPreferences) {
+        pending = Pending(target, prefs)
+        if (prefs.audioEnabled && shouldAskUsageAccess()) askUsageAccess() else continueRequest()
+    }
+
+    private fun continueRequest() {
+        val p = pending ?: return
+        if (p.prefs.audioEnabled && Build.VERSION.SDK_INT >= 29 && !granted(Manifest.permission.RECORD_AUDIO)) {
             audioPermission.launch(Manifest.permission.RECORD_AUDIO)
         } else {
             launchConsent()
         }
     }
 
+    /**
+     * Without Usage access a one-app share cannot be told apart from the entire screen, so every
+     * app's sound would be mirrored (ADR-009). Asked once, the first time it matters.
+     */
+    private fun shouldAskUsageAccess(): Boolean = Build.VERSION.SDK_INT >= 34 &&
+        !SharedAppDetector.hasUsageAccess(this) &&
+        !getPreferences(MODE_PRIVATE).getBoolean(KEY_USAGE_ACCESS_ASKED, false)
+
+    private fun askUsageAccess() {
+        getPreferences(MODE_PRIVATE).edit().putBoolean(KEY_USAGE_ACCESS_ASKED, true).apply()
+        AlertDialog.Builder(this)
+            .setTitle(R.string.sender_usage_access_title)
+            .setMessage(R.string.sender_usage_access_hint)
+            .setPositiveButton(R.string.sender_usage_access_allow) { _, _ ->
+                pending = null // the user taps the receiver again after granting it
+                startActivity(SharedAppDetector.usageAccessSettings())
+            }.setNegativeButton(R.string.sender_usage_access_skip) { _, _ -> continueRequest() }
+            .setOnCancelListener { pending = null }
+            .show()
+    }
+
     private fun launchConsent() {
         val p = (pending ?: return).copy(consentShownAtMs = System.currentTimeMillis())
         pending = p
         val mpm = getSystemService(MediaProjectionManager::class.java)
-        // API 34+: the consent dialog offers exactly the scope chosen in the settings.
+        // API 34+: the system dialog offers "entire screen" or "one app"; the session finds out
+        // which one was chosen (ADR-009).
         val intent =
-            when {
-                Build.VERSION.SDK_INT < 34 -> mpm.createScreenCaptureIntent()
-                p.singleApp -> mpm.createScreenCaptureIntent(MediaProjectionConfig.createConfigForUserChoice())
-                else -> mpm.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
+            if (Build.VERSION.SDK_INT >= 34) {
+                mpm.createScreenCaptureIntent(MediaProjectionConfig.createConfigForUserChoice())
+            } else {
+                mpm.createScreenCaptureIntent()
             }
         consent.launch(intent)
     }
@@ -205,8 +216,8 @@ class SenderActivity : ComponentActivity() {
         const val KEY_BITRATE = "pending.bitrate"
         const val KEY_AUDIO = "pending.audio"
         const val KEY_SYNC = "pending.sync"
-        const val KEY_SINGLE_APP = "pending.singleApp"
         const val KEY_CONSENT_SHOWN_AT = "pending.consentShownAt"
+        const val KEY_USAGE_ACCESS_ASKED = "usageAccessAsked"
     }
 }
 
@@ -214,10 +225,8 @@ class SenderActivity : ComponentActivity() {
 private fun SenderScreen(
     receivers: List<ReceiverEndpoint>,
     state: SenderState,
-    onStart: (ReceiverEndpoint, StreamPreferences, singleApp: Boolean) -> Unit,
+    onStart: (ReceiverEndpoint, StreamPreferences) -> Unit,
     onStop: () -> Unit,
-    usageAccess: Boolean,
-    onAllowUsageAccess: () -> Unit,
 ) {
     var manual by rememberSaveable { mutableStateOf("") }
     var codec by rememberSaveable { mutableStateOf<String?>(null) }
@@ -226,7 +235,6 @@ private fun SenderScreen(
     var bitrateMbps by rememberSaveable { mutableStateOf(0) }
     var audio by rememberSaveable { mutableStateOf(true) }
     var sync by rememberSaveable { mutableStateOf(SyncMode.LIP_SYNC) }
-    var singleApp by rememberSaveable { mutableStateOf(false) }
     val prefs =
         remember(codec, maxHeight, fps, bitrateMbps, audio, sync) {
             StreamPreferences(
@@ -259,7 +267,7 @@ private fun SenderScreen(
             receivers.forEach { r ->
                 Card(
                     modifier =
-                        Modifier.fillMaxWidth().clickable(enabled = !active) { onStart(r, prefs, singleApp) },
+                        Modifier.fillMaxWidth().clickable(enabled = !active) { onStart(r, prefs) },
                 ) {
                     Column(Modifier.padding(16.dp)) {
                         Text(r.name, style = MaterialTheme.typography.titleMedium)
@@ -278,7 +286,7 @@ private fun SenderScreen(
                 )
                 val parsed = ReceiverEndpoint.parse(manual)
                 Button(enabled = parsed != null && !active, onClick = {
-                    parsed?.let { onStart(it, prefs, singleApp) }
+                    parsed?.let { onStart(it, prefs) }
                 }) {
                     Text(stringResource(R.string.sender_connect))
                 }
@@ -317,29 +325,6 @@ private fun SenderScreen(
                 ),
                 sync,
             ) { sync = it }
-            if (Build.VERSION.SDK_INT >= 34) { // older consent dialogs always share the whole screen
-                ChoiceRow(
-                    stringResource(R.string.sender_share),
-                    listOf(
-                        false to stringResource(R.string.sender_share_screen),
-                        true to stringResource(R.string.sender_share_app),
-                    ),
-                    singleApp,
-                ) { singleApp = it }
-                if (singleApp && audio && !usageAccess) {
-                    // Android does not say which app was shared; Usage access lets us see which one
-                    // came to the front after the consent dialog (ADR-009).
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(
-                            stringResource(R.string.sender_usage_access_hint),
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                        OutlinedButton(onClick = onAllowUsageAccess) {
-                            Text(stringResource(R.string.sender_usage_access_allow))
-                        }
-                    }
-                }
-            }
         }
     }
 }

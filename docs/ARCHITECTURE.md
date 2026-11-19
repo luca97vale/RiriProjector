@@ -163,24 +163,27 @@ Kotlin 2.4.21 pinned from the root build classpath, `compileSdk 37` (required by
 with `-Xjdk-release=17` / `options.release = 17` so they cannot use APIs missing on Android.
 
 ## ADR-009 — Single-app sharing and its audio
-**Accepted** (M5). On Android 14+ the tablet can share one app (`createConfigForUserChoice`);
-older consent dialogs always share the whole screen, so the setting is hidden there.
+**Accepted** (M5). The choice between the entire screen and one app is made **only in the system
+consent dialog** (Android 14+: `createConfigForUserChoice`); the tablet UI has no share setting.
 - Playback capture is **device-wide** whatever the projection shows, and Android 14–16 have no API
-  that tells which app the user picked in the consent dialog. Capturing everything would leak other
-  apps' sound (notifications, a second player) into a "one app" share.
-- **Requirement: the audio follows the shared app automatically** (no manual choice). The system
-  brings the chosen app to the front right after the consent dialog (verified on a Tab S9, One UI /
-  Android 16). With the user-granted **Usage access** (`PACKAGE_USAGE_STATS` app op), the session
-  reads `UsageEvents.ACTIVITY_RESUMED` since the dialog was shown and takes the latest app other
-  than RiriProjector, System UI and the launcher (`SharedAppPicker`, JVM-tested), polling up to
-  3 s on the session thread. Capture is then restricted to its uid with `addMatchingUid` (ANDed
-  with the usage rules). Detected once per session: switching apps later does not change it.
-- **Shared app unknown → video only** (no Usage access, or nothing came to the front): "Audio: off
-  (could not tell which app is shared: allow Usage access)". Never silently capture the whole
-  device in single-app mode. The settings show an "Allow Usage access" button while it is missing.
-- *Superseded*: a manual "Audio from" picker (first M5 iteration) was rejected by the user.
-- Limitation: if the user picks "Entire screen" in the dialog while "One app" is set, audio still
-  follows the app in front after the dialog.
+  that tells what the user picked in the dialog. For a one-app share, capturing everything would
+  leak other apps' sound into it.
+- **Requirement: the audio follows the choice automatically.** The system brings the chosen app to
+  the front right after the dialog (verified on a Tab S9, One UI / Android 16); for the entire screen
+  nothing else comes to the front. With the user-granted **Usage access** (`PACKAGE_USAGE_STATS`
+  app op) the session reads `UsageEvents.ACTIVITY_RESUMED` between the dialog being shown and
+  1.5 s after its result, ignoring RiriProjector, System UI and the launcher (`SharedAppPicker`,
+  JVM-tested):
+  - an app found → **one app** shared: capture only its uid (`addMatchingUid`, ANDed with the
+    usage rules); if its uid cannot be resolved, video only;
+  - none → **entire screen**: capture every app.
+  Detected once per session: switching apps later does not change it.
+- Usage access is asked **once**, in a dialog, the first time the user starts mirroring with audio
+  on (API 34+). If declined, every app's sound is mirrored whatever is shared.
+- Limitation: sharing the entire screen and opening another app within 1.5 s of the dialog closing
+  is taken for a one-app share of that app.
+- *Superseded*: a manual "Audio from" picker and a "Share" setting (earlier M5 iterations) were
+  rejected by the user: one decision, in the system dialog.
 - When the shared app leaves the screen (`onCapturedContentVisibilityChanged`), the tablet shows a
   warning: the projector shows nothing until the user returns to it.
 - Revisit when `MediaProjectionConfig` can request app-scoped audio (API 37

@@ -46,10 +46,8 @@ class SenderSession(
     private val densityDpi: Int,
     /** True when RECORD_AUDIO is granted and the platform supports playback capture (API 29+). */
     private val audioPermitted: Boolean,
-    /** The consent covered one app (API 34+): audio must come from that app only (ADR-009). */
-    private val singleApp: Boolean,
-    /** Blocking (session thread): uid of the shared app when [singleApp], or null if unknown. */
-    private val detectAudioUid: () -> Int?,
+    /** Blocking (session thread): what the user shared in the system dialog (ADR-009). */
+    private val detectShare: () -> ShareScope,
     /** Shown when the receiver runs a different protocol version (localized by the caller). */
     private val versionMismatchText: String,
     private val onEnded: (message: String?) -> Unit,
@@ -191,11 +189,12 @@ class SenderSession(
             Log.w(TAG, "audio capture unavailable (permission or API level): video only")
             return AudioStatus.UNAVAILABLE
         }
-        // Single-app sharing: only the shared app may be heard; if it cannot be identified,
-        // mirror video only rather than leak every app's sound (ADR-009).
-        val audioUid = if (singleApp) detectAudioUid() else null
-        if (singleApp && audioUid == null) {
-            Log.i(TAG, "shared app unknown: video only")
+        // One app shared: only that app may be heard; if it cannot be resolved, mirror video
+        // only rather than leak every app's sound (ADR-009).
+        val scope = detectShare()
+        val audioUid = (scope as? ShareScope.SingleApp)?.uid
+        if (scope is ShareScope.SingleApp && audioUid == null) {
+            Log.i(TAG, "shared app could not be resolved: video only")
             return AudioStatus.NO_APP
         }
         return try {
