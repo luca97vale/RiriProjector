@@ -10,6 +10,10 @@ package dev.ririprojector.media
  * target + [hysteresisMs] drops the oldest audio back to the target. After [stableMs] of played
  * audio without underruns the target shrinks by [stepDownMs]. Time is counted in played samples,
  * so behavior is deterministic and testable.
+ *
+ * Clock drift between the sender's capture clock and the receiver's output clock is corrected
+ * gently: when the smoothed level leaves target ± [driftBandMs], each pull drops or repeats a
+ * single frame (about 0.2 % speed change for 10 ms pulls, inaudible), instead of jumping.
  */
 class JitterBuffer(
     sampleRateHz: Int,
@@ -22,6 +26,7 @@ class JitterBuffer(
     private val stepUpMs: Int = 10,
     private val stepDownMs: Int = 5,
     private val stableMs: Int = 10_000,
+    private val driftBandMs: Int = 10,
 ) {
     private val frameBytes = channels * 2
     private val bytesPerMs = sampleRateHz * frameBytes / 1000.0
@@ -33,6 +38,8 @@ class JitterBuffer(
     private var priming = true
     private var tailPtsUs = NO_PTS // pts just after the last buffered byte
     private var playedSinceUnderrunMs = 0.0
+    private var levelMs = Double.NaN // smoothed buffer level, sampled mid-pull
+    private var droppedBytes = 0L
 
     var targetMs: Int = initialTargetMs.coerceIn(minTargetMs, maxTargetMs)
         private set
@@ -40,7 +47,11 @@ class JitterBuffer(
     @Volatile var underruns: Int = 0
         private set
 
-    @Volatile var droppedMs: Long = 0
+    /** Audio discarded by build-up drops, overflow and drift correction. */
+    val droppedMs: Long get() = synchronized(lock) { (droppedBytes / bytesPerMs).toLong() }
+
+    /** Frames dropped (positive) or repeated (negative) by drift correction. */
+    @Volatile var driftFrames: Long = 0
         private set
 
     /** Buffered audio in milliseconds. */
@@ -85,6 +96,7 @@ class JitterBuffer(
                     return NO_PTS
                 }
                 priming = false
+                levelMs = Double.NaN
             }
             if (size < length) {
                 underruns++
@@ -94,10 +106,21 @@ class JitterBuffer(
                 dst.fill(0, 0, length)
                 return NO_PTS
             }
-            val excess = size - msToBytes(targetMs + hysteresisMs)
-            if (excess > 0) discardLocked(size - msToBytes(targetMs))
+            // Large build-up (e.g. after a network stall): jump back to target, keeping a full pull.
+            if (size > msToBytes(targetMs + hysteresisMs)) discardLocked(size - maxOf(msToBytes(targetMs), length))
+            val level = bytesToMs(size) - chunkMs / 2
+            levelMs = if (levelMs.isNaN()) level else levelMs + LEVEL_ALPHA * (level - levelMs)
+            var stretch = false
+            if (levelMs > targetMs + driftBandMs && size >= length + frameBytes) {
+                discardLocked(frameBytes)
+                driftFrames++
+            } else if (levelMs < targetMs - driftBandMs && length > frameBytes) {
+                stretch = true
+                driftFrames--
+            }
             val pts = headPtsLocked()
-            var left = length
+            val take = if (stretch) length - frameBytes else length
+            var left = take
             var off = 0
             while (left > 0) {
                 val chunk = minOf(left, ring.size - readPos)
@@ -106,7 +129,8 @@ class JitterBuffer(
                 off += chunk
                 left -= chunk
             }
-            size -= length
+            size -= take
+            if (stretch) System.arraycopy(dst, take - frameBytes, dst, take, frameBytes) // repeat the last frame
             playedSinceUnderrunMs += chunkMs
             if (playedSinceUnderrunMs >= stableMs) {
                 targetMs = (targetMs - stepDownMs).coerceAtLeast(minTargetMs)
@@ -122,6 +146,7 @@ class JitterBuffer(
             size = 0
             priming = true
             tailPtsUs = NO_PTS
+            levelMs = Double.NaN
         }
     }
 
@@ -132,7 +157,7 @@ class JitterBuffer(
         val n = align(bytes).coerceAtMost(size)
         readPos = (readPos + n) % ring.size
         size -= n
-        droppedMs += bytesToMs(n).toLong()
+        droppedBytes += n
     }
 
     private fun align(bytes: Int) = (bytes + frameBytes - 1) / frameBytes * frameBytes
@@ -143,6 +168,7 @@ class JitterBuffer(
 
     companion object {
         const val NO_PTS = Long.MIN_VALUE
+        private const val LEVEL_ALPHA = 0.02
     }
 }
 
@@ -154,6 +180,34 @@ class JitterBuffer(
 class AvSync(private val alpha: Double = 0.1) {
     private var videoDelayUs = Double.NaN
     private var audioDelayUs = Double.NaN
+    private var videoArrivalUs = Double.NaN
+    private var audioArrivalUs = Double.NaN
+
+    /** Diagnostics: a packet with [ptsUs] reached the receiver at [arrivedAtUs] (monotonic µs). */
+    @Synchronized
+    fun onVideoArrived(ptsUs: Long, arrivedAtUs: Long) {
+        videoArrivalUs = smooth(videoArrivalUs, (arrivedAtUs - ptsUs).toDouble())
+    }
+
+    @Synchronized
+    fun onAudioArrived(ptsUs: Long, arrivedAtUs: Long) {
+        audioArrivalUs = smooth(audioArrivalUs, (arrivedAtUs - ptsUs).toDouble())
+    }
+
+    /** Diagnostics, relative to the video arrival delay (the unknown clock offset cancels). */
+    @Synchronized
+    fun describe(): String {
+        fun ms(v: Double) = if (v.isNaN() ||
+            videoArrivalUs.isNaN()
+        ) {
+            "n/a"
+        } else {
+            "%.1f".format((v - videoArrivalUs) / 1000)
+        }
+        return "audio arrives ${ms(
+            audioArrivalUs,
+        )} ms, video shown ${ms(videoDelayUs)} ms, audio played ${ms(audioDelayUs)} ms after video arrival"
+    }
 
     @Synchronized
     fun onVideoShown(ptsUs: Long, shownAtUs: Long) {

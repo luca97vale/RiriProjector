@@ -15,7 +15,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
-/** Told when a frame is released for display; [shownAtUs] is receiver `CLOCK_MONOTONIC` µs. */
+/** Told when a frame reached the display; [shownAtUs] is receiver `CLOCK_MONOTONIC` µs. */
 fun interface FrameRenderListener {
     fun onRendered(ptsUs: Long, shownAtUs: Long)
 }
@@ -97,7 +97,6 @@ class VideoDecoder(
                     val queuedAt = lookupQueuedAt(info.presentationTimeUs)
                     if (queuedAt > 0) latency.add(nowUs - queuedAt)
                 }
-                onFrameRendered?.onRendered(info.presentationTimeUs, System.nanoTime() / 1000)
             }
 
             override fun onError(mc: MediaCodec, e: MediaCodec.CodecException) {
@@ -142,6 +141,7 @@ class VideoDecoder(
         backlog.reset()
         codec = mc
         mc.setCallback(callback, handler)
+        setRenderListener(mc)
         try {
             mc.configure(format(lowLatencyKeys = true), surface, null, 0)
         } catch (e: Exception) {
@@ -149,10 +149,19 @@ class VideoDecoder(
             Log.w(TAG, "configure with low-latency keys failed (${e.message}); retrying plain")
             mc.reset()
             mc.setCallback(callback, handler)
+            setRenderListener(mc)
             mc.configure(format(lowLatencyKeys = false), surface, null, 0)
         }
         mc.start()
         replayCsd = csdLength > 0
+    }
+
+    /** Reports when frames actually reach the display (systemNano is CLOCK_MONOTONIC). */
+    private fun setRenderListener(mc: MediaCodec) {
+        val listener = onFrameRendered ?: return
+        mc.setOnFrameRenderedListener({ _, ptsUs, systemNano ->
+            listener.onRendered(ptsUs, systemNano / 1000)
+        }, handler)
     }
 
     private fun format(lowLatencyKeys: Boolean): MediaFormat =

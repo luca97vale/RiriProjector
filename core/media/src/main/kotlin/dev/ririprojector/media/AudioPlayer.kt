@@ -26,6 +26,10 @@ class AudioPlayer(
 
     @Volatile private var running = false
 
+    /** Diagnostics: audio queued in the track (written but not yet played), in ms. */
+    @Volatile var trackQueuedMs: Int = 0
+        private set
+
     fun start(): AudioPlayer {
         val channelMask = if (config.channels == 1) AudioFormat.CHANNEL_OUT_MONO else AudioFormat.CHANNEL_OUT_STEREO
         val packetBytes = config.pcmBytesPerFrame
@@ -83,6 +87,8 @@ class AudioPlayer(
                     off += n
                 }
                 framesWritten += packetBytes / frameBytes
+                val head = t.playbackHeadPosition.toLong() and 0xFFFFFFFFL
+                trackQueuedMs = ((framesWritten - head) * 1000 / rate).toInt()
                 if (pts == JitterBuffer.NO_PTS) continue
                 val playNs =
                     if (t.getTimestamp(ts)) {

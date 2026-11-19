@@ -55,7 +55,9 @@ class SenderSession(
 
     @Volatile private var writerStarted = false
 
-    @Volatile private var audio: AutoCloseable? = null
+    @Volatile private var audio: AudioCapture? = null
+
+    @Volatile private var audioFailed = false
 
     @Volatile private var endMessage: String? = null
     private val queue = SendQueue(onKeyframeNeeded = { encoder?.requestKeyframe() })
@@ -179,7 +181,10 @@ class SenderSession(
                     projection = projection,
                     config = params.audio,
                     sink = { data, pts -> queue.offerAudio(pts, data) },
-                    onError = { Log.w(TAG, "audio capture stopped: ${it.message}") },
+                    onError = {
+                        Log.w(TAG, "audio capture stopped: ${it.message}")
+                        audioFailed = true // the next STATS update shows audio as off
+                    },
                 )
             audio = capture.start()
             queue.offerControl(ControlMessage.AudioSetup(params.audio))
@@ -194,6 +199,7 @@ class SenderSession(
         var lastFrames = 0L
         var lastBytes = 0L
         var lastAt = SystemClock.elapsedRealtime()
+        var statsCount = 0
         while (!ended) {
             val p = conn.reader.read() ?: return
             when (p.type) {
@@ -227,10 +233,18 @@ class SenderSession(
                             receiverDecodeP95Ms = s.decodeLatencyP95Us / 1000.0,
                             receiverDropped = s.droppedFrames,
                             encoderName = encoderName,
-                            audio = audioOn,
+                            audio = audioOn && !audioFailed,
                             receiverUnderruns = s.audioUnderruns,
                             avOffsetMs = s.avOffsetUs / 1000,
                         )
+                    if (++statsCount % DIAG_EVERY_STATS == 0) {
+                        audio?.let {
+                            Log.d(
+                                TAG,
+                                "audio: capture age ${it.lastAgeUs / 1000} ms, queue drops ${queue.droppedAudioPackets}",
+                            )
+                        }
+                    }
                     lastFrames = frames
                     lastBytes = bytes
                     lastAt = now
@@ -289,6 +303,7 @@ class SenderSession(
         const val RECEIVER_SILENCE_MS = 3 * PING_INTERVAL_MS.toInt()
         const val MIN_BITRATE_BPS = 1_000_000
         const val MAX_BITRATE_BPS = 40_000_000
+        const val DIAG_EVERY_STATS = 5
 
         fun nowUs() = SystemClock.elapsedRealtimeNanos() / 1_000
     }

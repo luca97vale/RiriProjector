@@ -40,6 +40,10 @@ class AudioCapture(
     @Volatile var capturedPackets: Long = 0
         private set
 
+    /** Diagnostics: age of the last packet (now minus its pts) when handed to the sink, in µs. */
+    @Volatile var lastAgeUs: Long = 0
+        private set
+
     /** The caller must hold RECORD_AUDIO. */
     @SuppressLint("MissingPermission")
     fun start(): AudioCapture {
@@ -83,18 +87,17 @@ class AudioCapture(
 
     private fun loop(rec: AudioRecord, packetBytes: Int) {
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
-        val buffer = ByteBuffer.allocateDirect(packetBytes)
+        val bytes = ByteArray(packetBytes)
+        val buffer = ByteBuffer.wrap(bytes)
         val ts = AudioTimestamp()
         val frameBytes = config.channels * 2
         val packetFrames = packetBytes / frameBytes
         var framesRead = 0L
         try {
             while (running) {
-                buffer.clear()
                 var filled = 0
                 while (filled < packetBytes && running) {
-                    buffer.position(filled)
-                    val n = rec.read(buffer, packetBytes - filled, AudioRecord.READ_BLOCKING)
+                    val n = rec.read(bytes, filled, packetBytes - filled, AudioRecord.READ_BLOCKING)
                     if (n < 0) throw IllegalStateException("AudioRecord.read failed: $n")
                     filled += n
                 }
@@ -107,6 +110,7 @@ class AudioCapture(
                     } else {
                         System.nanoTime() / 1000 - config.frameDurationUs
                     }
+                lastAgeUs = System.nanoTime() / 1000 - ptsUs
                 buffer.position(0).limit(packetBytes)
                 sink.onAudio(buffer, ptsUs)
                 capturedPackets++

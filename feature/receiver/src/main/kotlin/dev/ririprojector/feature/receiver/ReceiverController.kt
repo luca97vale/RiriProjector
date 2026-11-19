@@ -175,7 +175,7 @@ class ReceiverController(
 
         @Volatile private var jitter: JitterBuffer? = null
 
-        private var player: AudioPlayer? = null
+        @Volatile private var player: AudioPlayer? = null
 
         @Volatile private var params: StreamParams? = null
 
@@ -252,6 +252,7 @@ class ReceiverController(
                 when (pk.type) {
                     MessageType.CONFIG, MessageType.FRAME -> {
                         val isConfig = pk.type == MessageType.CONFIG || pk.isCodecConfig
+                        if (!isConfig) avSync.onVideoArrived(pk.ptsOrSeq, System.nanoTime() / 1000)
                         decoder?.submit(pk.payload, pk.payloadLength, pk.ptsOrSeq, isConfig, pk.isKeyframe)
                     }
 
@@ -260,7 +261,10 @@ class ReceiverController(
                         startAudio(setup.config)
                     }
 
-                    MessageType.AUDIO_FRAME -> jitter?.push(pk.payload, 0, pk.payloadLength, pk.ptsOrSeq)
+                    MessageType.AUDIO_FRAME -> {
+                        avSync.onAudioArrived(pk.ptsOrSeq, System.nanoTime() / 1000)
+                        jitter?.push(pk.payload, 0, pk.payloadLength, pk.ptsOrSeq)
+                    }
 
                     MessageType.PING -> {
                         val ping = pk.decodeControl() as ControlMessage.Ping
@@ -304,6 +308,7 @@ class ReceiverController(
             var lastFrames = 0L
             var lastBytes = 0L
             var lastAt = SystemClock.elapsedRealtime()
+            var ticks = 0
             try {
                 while (true) {
                     val wait = (nextStatsAt - SystemClock.elapsedRealtime()).coerceAtLeast(0)
@@ -335,6 +340,13 @@ class ReceiverController(
                             audioUnderruns = jb?.underruns ?: 0,
                             avOffsetMs = offsetUs?.let { (it / 1000).toInt() },
                         )
+                    if (++ticks % DIAG_EVERY_TICKS == 0 && jb != null) {
+                        Log.d(
+                            TAG,
+                            "av: ${avSync.describe()}; buffer ${jb.bufferedMs}/${jb.targetMs} ms, " +
+                                "track ${player?.trackQueuedMs} ms, underruns ${jb.underruns}, dropped ${jb.droppedMs} ms",
+                        )
+                    }
                     lastFrames = d.decodedFrames
                     lastBytes = bytes
                     lastAt = now
@@ -404,6 +416,7 @@ class ReceiverController(
         const val GRACE_MS = 500L
         const val MAX_BIND_ATTEMPTS = 10
         const val BIND_RETRY_MS = 300L
+        const val DIAG_EVERY_TICKS = 5
 
         fun nowUs() = SystemClock.elapsedRealtimeNanos() / 1_000
     }
