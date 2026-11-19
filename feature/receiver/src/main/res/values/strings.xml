@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="receiver_waiting">Waiting for a tablet to connect…</string>
+    <string name="receiver_waiting_at">%1$s\nWaiting for a tablet to connect…\n\n%2$s:%3$d</string>
+    <string name="receiver_failed">Receiver error: %1$s</string>
+    <string name="receiver_overlay">%1$s %2$dx%3$d  %4$.1f/%5$d fps  %6$.1f Mbps\ndecode %7$.1f ms (p95 %8$.1f)\ndropped: %9$d  resets: %10$d\n%11$s\n← %12$s</string>
 </resources>
