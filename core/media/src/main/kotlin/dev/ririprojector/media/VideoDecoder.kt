@@ -15,6 +15,11 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
+/** Told when a frame is released for display; [shownAtUs] is receiver `CLOCK_MONOTONIC` µs. */
+fun interface FrameRenderListener {
+    fun onRendered(ptsUs: Long, shownAtUs: Long)
+}
+
 /** Snapshot of decoder counters, read once per second for STATS and the overlay. */
 data class DecoderStats(
     val decodedFrames: Long,
@@ -44,6 +49,7 @@ class VideoDecoder(
     private val lowLatencySupported: Boolean,
     private val onKeyframeNeeded: () -> Unit,
     private val onFatalError: (Throwable) -> Unit = {},
+    private val onFrameRendered: FrameRenderListener? = null,
 ) : Closeable {
     private var thread: HandlerThread? = null
     private var handler: Handler? = null
@@ -91,6 +97,7 @@ class VideoDecoder(
                     val queuedAt = lookupQueuedAt(info.presentationTimeUs)
                     if (queuedAt > 0) latency.add(nowUs - queuedAt)
                 }
+                onFrameRendered?.onRendered(info.presentationTimeUs, System.nanoTime() / 1000)
             }
 
             override fun onError(mc: MediaCodec, e: MediaCodec.CodecException) {

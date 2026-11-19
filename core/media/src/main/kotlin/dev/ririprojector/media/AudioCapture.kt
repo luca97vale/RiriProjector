@@ -1,0 +1,137 @@
+package dev.ririprojector.media
+
+import android.annotation.SuppressLint
+import android.annotation.TargetApi
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioPlaybackCaptureConfiguration
+import android.media.AudioRecord
+import android.media.AudioTimestamp
+import android.media.projection.MediaProjection
+import android.os.Process
+import android.util.Log
+import dev.ririprojector.protocol.model.AudioConfig
+import java.io.Closeable
+import java.nio.ByteBuffer
+
+/** Receives captured PCM. [data] is only valid during the call: copy, do not keep. */
+fun interface AudioSink {
+    fun onAudio(data: ByteBuffer, ptsUs: Long)
+}
+
+/**
+ * Captures what other apps play (ADR-007) from the session's [MediaProjection] as PCM s16 in
+ * packets of [AudioConfig.frameDurationUs]. Pts are `CLOCK_MONOTONIC` µs, the video timebase,
+ * derived from `AudioRecord.getTimestamp` when available. Apps that opt out of playback capture
+ * are simply not heard.
+ */
+@TargetApi(29) // callers check API 29+
+class AudioCapture(
+    private val projection: MediaProjection,
+    private val config: AudioConfig,
+    private val sink: AudioSink,
+    private val onError: (Throwable) -> Unit = {},
+) : Closeable {
+    private var record: AudioRecord? = null
+    private var thread: Thread? = null
+
+    @Volatile private var running = false
+
+    @Volatile var capturedPackets: Long = 0
+        private set
+
+    /** The caller must hold RECORD_AUDIO. */
+    @SuppressLint("MissingPermission")
+    fun start(): AudioCapture {
+        val channelMask = if (config.channels == 1) AudioFormat.CHANNEL_IN_MONO else AudioFormat.CHANNEL_IN_STEREO
+        val packetBytes = config.pcmBytesPerFrame
+        val minBuffer = AudioRecord.getMinBufferSize(config.sampleRateHz, channelMask, AudioFormat.ENCODING_PCM_16BIT)
+        val capture =
+            AudioPlaybackCaptureConfiguration.Builder(projection)
+                .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+                .addMatchingUsage(AudioAttributes.USAGE_GAME)
+                .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
+                .build()
+        val rec =
+            AudioRecord.Builder()
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(config.sampleRateHz)
+                        .setChannelMask(channelMask)
+                        .build(),
+                ).setBufferSizeInBytes(maxOf(minBuffer, packetBytes * BUFFER_PACKETS))
+                .setAudioPlaybackCaptureConfig(capture)
+                .build()
+        try {
+            check(rec.state == AudioRecord.STATE_INITIALIZED) { "AudioRecord not initialized" }
+            rec.startRecording()
+        } catch (e: Exception) {
+            rec.release()
+            throw e
+        }
+        record = rec
+        running = true
+        thread =
+            Thread({ loop(rec, packetBytes) }, "Riri/AudioCapture").apply {
+                priority = Thread.MAX_PRIORITY
+                start()
+            }
+        Log.i(TAG, "started ${config.sampleRateHz} Hz x${config.channels}, $packetBytes B packets")
+        return this
+    }
+
+    private fun loop(rec: AudioRecord, packetBytes: Int) {
+        Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
+        val buffer = ByteBuffer.allocateDirect(packetBytes)
+        val ts = AudioTimestamp()
+        val frameBytes = config.channels * 2
+        val packetFrames = packetBytes / frameBytes
+        var framesRead = 0L
+        try {
+            while (running) {
+                buffer.clear()
+                var filled = 0
+                while (filled < packetBytes && running) {
+                    buffer.position(filled)
+                    val n = rec.read(buffer, packetBytes - filled, AudioRecord.READ_BLOCKING)
+                    if (n < 0) throw IllegalStateException("AudioRecord.read failed: $n")
+                    filled += n
+                }
+                if (!running) break
+                val firstFrame = framesRead
+                framesRead += packetFrames
+                val ptsUs =
+                    if (rec.getTimestamp(ts, AudioTimestamp.TIMEBASE_MONOTONIC) == AudioRecord.SUCCESS) {
+                        (ts.nanoTime + (firstFrame - ts.framePosition) * NANOS_PER_SECOND / config.sampleRateHz) / 1000
+                    } else {
+                        System.nanoTime() / 1000 - config.frameDurationUs
+                    }
+                buffer.position(0).limit(packetBytes)
+                sink.onAudio(buffer, ptsUs)
+                capturedPackets++
+            }
+        } catch (e: Exception) {
+            if (running) {
+                Log.w(TAG, "capture failed: ${e.message}")
+                onError(e)
+            }
+        }
+    }
+
+    override fun close() {
+        if (!running) return
+        running = false
+        val rec = record ?: return
+        runCatching { rec.stop() } // unblocks a pending read
+        thread?.join(500)
+        rec.release()
+        record = null
+    }
+
+    private companion object {
+        const val TAG = "Riri/AudioCapture"
+        const val BUFFER_PACKETS = 4
+        const val NANOS_PER_SECOND = 1_000_000_000L
+    }
+}
