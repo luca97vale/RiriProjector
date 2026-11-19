@@ -1,0 +1,59 @@
+name: Bug
+description: Comportamento errato, crash, artefatti video, disconnessioni
+title: "fix: "
+labels: ["type:bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: Cosa succede
+      description: Descrizione, con screenshot/video se utile (es. artefatti, freeze, scatti).
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Passi per riprodurre
+      value: |
+        1.
+        2.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Comportamento atteso
+    validations:
+      required: true
+  - type: input
+    id: sender
+    attributes:
+      label: Sender (modello tablet / versione Android / One UI)
+    validations:
+      required: true
+  - type: input
+    id: receiver
+    attributes:
+      label: Receiver (modello Fire TV o proiettore / Fire OS)
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Versione app / commit
+  - type: dropdown
+    id: network
+    attributes:
+      label: Rete
+      options: ["Wi-Fi 5 GHz", "Wi-Fi 2.4 GHz", "Ethernet (receiver)", "Hotspot", "Altro"]
+  - type: input
+    id: settings
+    attributes:
+      label: Impostazioni di streaming
+      placeholder: "HEVC 1920x1080@60, 12 Mbps"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log
+      description: "adb logcat -d -s 'Riri/*:*' '*:E' da entrambi i device"
+      render: text

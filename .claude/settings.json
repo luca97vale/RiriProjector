@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(./gradlew:*)",
+      "Bash(gradlew.bat:*)",
+      "Bash(bash scripts/deploy.sh:*)",
+      "Bash(scripts/deploy.sh:*)",
+      "Bash(adb devices:*)",
+      "Bash(adb connect:*)",
+      "Bash(adb disconnect:*)",
+      "Bash(adb -s * install:*)",
+      "Bash(adb -s * logcat:*)",
+      "Bash(adb -s * shell am start:*)",
+      "Bash(adb -s * shell am force-stop:*)",
+      "Bash(adb -s * shell dumpsys:*)",
+      "Bash(adb -s * shell getprop:*)",
+      "Bash(adb -s * shell wm size:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(git switch:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git fetch:*)",
+      "Bash(git stash:*)",
+      "Bash(gh issue view:*)",
+      "Bash(gh issue list:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh pr checks:*)",
+      "Bash(gh pr diff:*)",
+      "Bash(gh run list:*)",
+      "Bash(gh run view:*)",
+      "Bash(gh label list:*)",
+      "WebFetch(domain:developer.android.com)",
+      "WebFetch(domain:developer.amazon.com)",
+      "WebFetch(domain:source.android.com)",
+      "WebFetch(domain:kotlinlang.org)"
+    ],
+    "ask": [
+      "Bash(git push:*)",
+      "Bash(gh pr create:*)",
+      "Bash(gh pr merge:*)",
+      "Bash(gh issue create:*)",
+      "Bash(gh issue close:*)",
+      "Bash(adb -s * uninstall:*)",
+      "Bash(adb uninstall:*)",
+      "Bash(adb -s * shell pm clear:*)",
+      "Bash(adb -s * reboot:*)",
+      "Bash(adb reboot:*)"
+    ],
+    "deny": [
+      "Read(./keystore.properties)",
+      "Read(./**/*.jks)",
+      "Read(./**/*.keystore)",
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/session-context.mjs\"", "timeout": 15 }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-bash.mjs\"", "timeout": 10 }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          { "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/protect-files.mjs\"", "timeout": 10 }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          { "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/format-kotlin.mjs\"", "timeout": 120 }
+        ]
+      }
+    ]
+  }
+}

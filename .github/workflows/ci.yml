@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  repo-hygiene:
+    name: Repo hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell scripts (shellcheck)
+        run: shellcheck -S warning scripts/*.sh
+      - name: Claude hooks (sintassi Node)
+        run: for f in .claude/hooks/*.mjs; do node --check "$f"; done
+      - name: settings.json valido
+        run: jq empty .claude/settings.json
+
+  android:
+    name: Build, lint, unit test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Gradle presente?
+        id: gradle
+        run: |
+          if [ -f gradlew ]; then echo "present=true" >> "$GITHUB_OUTPUT"; else
+          echo "present=false" >> "$GITHUB_OUTPUT"; echo "::notice::Progetto Gradle non ancora creato, job saltato"; fi
+
+      - uses: actions/setup-java@v4
+        if: steps.gradle.outputs.present == 'true'
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - uses: gradle/actions/setup-gradle@v4
+        if: steps.gradle.outputs.present == 'true'
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      - name: Gradle wrapper validation
+        if: steps.gradle.outputs.present == 'true'
+        uses: gradle/actions/wrapper-validation@v4
+
+      - name: Format check
+        if: steps.gradle.outputs.present == 'true'
+        run: ./gradlew spotlessCheck
+
+      - name: Unit test
+        if: steps.gradle.outputs.present == 'true'
+        run: ./gradlew testDebugUnitTest
+
+      - name: Android Lint
+        if: steps.gradle.outputs.present == 'true'
+        run: ./gradlew lintDebug
+
+      - name: Assemble debug APK
+        if: steps.gradle.outputs.present == 'true'
+        run: ./gradlew assembleDebug
+
+      - name: Upload APK
+        if: steps.gradle.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ririprojector-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          retention-days: 14
+
+      - name: Upload report test/lint
+        if: failure() && steps.gradle.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports
+          path: |
+            **/build/reports/
+            **/build/test-results/
+          retention-days: 7

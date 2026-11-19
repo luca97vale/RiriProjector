@@ -1,0 +1,32 @@
+# Gradle / Android
+.gradle/
+build/
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.ap_
+output-metadata.json
+
+# Firma e segreti
+*.jks
+*.keystore
+keystore.properties
+.env
+.env.*
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.kotlin/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code: impostazioni personali
+.claude/settings.local.json
+CLAUDE.local.md
