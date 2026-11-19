@@ -46,7 +46,7 @@ install_and_start() { # serial mode
   local serial="$1" mode="$2"
   echo "==> $mode on $serial"
   "$ADB" -s "$serial" install -r -d "$APK"
-  "$ADB" -s "$serial" shell am start -n "$APP_ID/$ACTIVITY" --es mode "$mode" >/dev/null
+  "$ADB" -s "$serial" shell am start -S -n "$APP_ID/$ACTIVITY" --es mode "$mode" >/dev/null
   if [[ $LOGS -eq 1 ]]; then
     sleep 5
     "$ADB" -s "$serial" logcat -d -t 300 -s 'Riri/Stats:*' 'Riri/Sender:*' 'Riri/Receiver:*' 'Riri/Net:*' '*:E'
