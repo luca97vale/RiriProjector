@@ -23,7 +23,7 @@ sealed interface Negotiation {
 object CodecNegotiator {
     const val MIN_BITRATE_BPS = 2_000_000
     const val MAX_BITRATE_BPS = 40_000_000
-    private const val ALIGNMENT = 16
+    private const val ALIGNMENT = 8
     private const val MIN_DIMENSION = 160
 
     /** Bits per pixel used for automatic bitrate; HEVC needs ~30% less than AVC. */
@@ -41,13 +41,13 @@ object CodecNegotiator {
         if (receiver.protocolVersion != ProtocolInfo.PROTOCOL_VERSION) {
             return Negotiation.Failure("receiver speaks protocol v${receiver.protocolVersion}")
         }
-        val order = listOfNotNull(prefs.preferredVideoCodec) + listOf(VideoCodec.HEVC, VideoCodec.AVC)
+        val order = (listOfNotNull(prefs.preferredVideoCodec) + listOf(VideoCodec.HEVC, VideoCodec.AVC)).distinct()
+        // First pass: hardware decoder on the receiver (low-latency first). Only if no codec has one,
+        // accept a software decoder rather than failing outright.
         val pair =
-            order.distinct().firstNotNullOfOrNull { codec ->
-                val enc = sender.videoEncoders.firstOrNull { it.codec == codec && it.hardwareAccelerated }
-                val dec = receiver.videoDecoders.firstOrNull { it.codec == codec }
-                if (enc != null && dec != null) enc to dec else null
-            } ?: return Negotiation.Failure("no common hardware video codec")
+            pickPair(sender, receiver, order, requireHardwareDecoder = true)
+                ?: pickPair(sender, receiver, order, requireHardwareDecoder = false)
+                ?: return Negotiation.Failure("no common hardware video codec")
         val (enc, dec) = pair
 
         val size = fitResolution(sender, receiver, enc, dec, prefs.maxHeight)
@@ -75,10 +75,32 @@ object CodecNegotiator {
         return bps.toLong().coerceIn(MIN_BITRATE_BPS.toLong(), MAX_BITRATE_BPS.toLong()).toInt()
     }
 
+    private fun pickPair(
+        sender: SenderCapabilities,
+        receiver: ControlMessage.Hello,
+        order: List<VideoCodec>,
+        requireHardwareDecoder: Boolean,
+    ): Pair<VideoCodecCapability, VideoCodecCapability>? = order.firstNotNullOfOrNull { codec ->
+        val enc = sender.videoEncoders.firstOrNull { it.codec == codec && it.hardwareAccelerated }
+        val dec =
+            receiver.videoDecoders
+                .filter { it.codec == codec && (it.hardwareAccelerated || !requireHardwareDecoder) }
+                .sortedWith(
+                    compareByDescending<VideoCodecCapability> {
+                        it.hardwareAccelerated
+                    }.thenByDescending { it.lowLatency },
+                )
+                .firstOrNull()
+        if (enc != null && dec != null) enc to dec else null
+    }
+
     /**
      * Largest size with the source aspect ratio that fits every limit, each side rounded down to a
-     * multiple of 16 (hardware encoders are most efficient and least buggy with aligned sizes).
-     * Limits are applied in landscape terms, so a portrait tablet fits a landscape TV correctly.
+     * multiple of 8 (keeps 1080 lines intact; hardware codecs pad internally).
+     *
+     * The source keeps its real orientation and is fitted inside the receiver display as-is: the TV
+     * does not rotate, so a portrait tablet becomes a pillarboxed portrait stream rather than a
+     * full-height image the TV would have to downscale. Codec limits are checked per axis.
      */
     internal fun fitResolution(
         sender: SenderCapabilities,
@@ -89,25 +111,14 @@ object CodecNegotiator {
     ): Pair<Int, Int>? {
         val srcW = sender.source.width.toDouble()
         val srcH = sender.source.height.toDouble()
-        val portrait = srcH > srcW
-        val longSide = maxOf(srcW, srcH)
-        val shortSide = minOf(srcW, srcH)
+        val maxW = minOf(receiver.display.width, enc.maxWidth, dec.maxWidth)
+        val maxH = listOfNotNull(receiver.display.height, enc.maxHeight, dec.maxHeight, prefMaxHeight).min()
 
-        val maxLong = listOf(receiver.display.width, receiver.display.height).max()
-            .let { minOf(it, maxOf(enc.maxWidth, enc.maxHeight), maxOf(dec.maxWidth, dec.maxHeight)) }
-        val maxShortCandidates = mutableListOf(
-            minOf(receiver.display.width, receiver.display.height),
-            minOf(enc.maxWidth, enc.maxHeight),
-            minOf(dec.maxWidth, dec.maxHeight),
-        )
-        prefMaxHeight?.let { maxShortCandidates += it }
-        val maxShort = maxShortCandidates.min()
-
-        val scale = minOf(1.0, maxLong / longSide, maxShort / shortSide)
-        val outLong = align(longSide * scale)
-        val outShort = align(shortSide * scale)
-        if (outLong < MIN_DIMENSION || outShort < MIN_DIMENSION) return null
-        return if (portrait) outShort to outLong else outLong to outShort
+        val scale = minOf(1.0, maxW / srcW, maxH / srcH)
+        val outW = align(srcW * scale)
+        val outH = align(srcH * scale)
+        if (outW < MIN_DIMENSION || outH < MIN_DIMENSION) return null
+        return outW to outH
     }
 
     private fun align(value: Double): Int = (value.toInt() / ALIGNMENT) * ALIGNMENT

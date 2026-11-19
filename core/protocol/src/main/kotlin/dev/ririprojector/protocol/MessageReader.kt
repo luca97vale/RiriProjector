@@ -33,11 +33,7 @@ class Packet internal constructor() {
 
     fun decodeControl(): ControlMessage {
         val t = type ?: throw ProtocolException(Reason.UNEXPECTED_TYPE, "unknown type 0x${typeCode.toString(16)}")
-        return try {
-            ControlCodec.decode(t, payload, 0, payloadLength)
-        } catch (e: IllegalArgumentException) {
-            throw ProtocolException(Reason.MALFORMED_PAYLOAD, e.message ?: "invalid value")
-        }
+        return ControlCodec.decode(t, payload, 0, payloadLength)
     }
 
     /** Copies the payload out, for callers that must keep it beyond the next read. */
@@ -61,10 +57,16 @@ class MessageReader(
      * between packets); throws [ProtocolException] on malformed input or EOF mid-packet.
      */
     fun read(): Packet? {
-        val first = input.read()
-        if (first < 0) return null
-        header[0] = first.toByte()
-        readFully(header, 1, FrameHeader.SIZE - 1, "header")
+        // Bulk read: InputStream.read() (single byte) allocates and costs a syscall on Android sockets.
+        var got = 0
+        while (got < FrameHeader.SIZE) {
+            val n = input.read(header, got, FrameHeader.SIZE - got)
+            if (n < 0) {
+                if (got == 0) return null
+                throw ProtocolException(Reason.TRUNCATED, "EOF after $got of ${FrameHeader.SIZE} header bytes")
+            }
+            got += n
+        }
 
         val magic = ((header[0].toInt() and 0xFF) shl 8) or (header[1].toInt() and 0xFF)
         if (magic != FrameHeader.MAGIC) throw ProtocolException(Reason.BAD_MAGIC, "0x${magic.toString(16)}")

@@ -7,6 +7,10 @@ import java.nio.ByteBuffer
  * Writes v1 messages to [out]. Not thread-safe: one writer thread per stream.
  * Does not own [out]; the caller closes it.
  *
+ * Header and payload are separate `write` calls, so [out] should be a `BufferedOutputStream`
+ * over the socket, flushed once per packet (or batch) with [flush]; otherwise `TCP_NODELAY`
+ * would send the 16-byte header as its own segment.
+ *
  * Media packets are written straight from the caller's [ByteBuffer] without per-packet allocations
  * (direct buffers are copied through a reusable scratch array that only grows).
  */
@@ -41,22 +45,31 @@ class MessageWriter(
     fun writeMedia(type: MessageType, flags: Int, ptsUs: Long, data: ByteBuffer) {
         require(type.isMedia) { "$type is not a media packet" }
         val length = data.remaining()
+        checkLength(length)
         if (data.hasArray()) {
             writePacket(type.code, flags, ptsUs, data.array(), data.arrayOffset() + data.position(), length)
         } else {
-            if (scratch.size < length) scratch = ByteArray(maxOf(length, scratch.size * 2))
-            data.duplicate().get(scratch, 0, length)
+            if (scratch.size < length) scratch = ByteArray(maxOf(length, minOf(scratch.size * 2, maxPayloadBytes)))
+            // Copy without allocating a duplicate() view, then restore the caller's position.
+            val position = data.position()
+            data.get(scratch, 0, length)
+            data.position(position)
             writePacket(type.code, flags, ptsUs, scratch, 0, length)
         }
     }
 
     fun flush() = out.flush()
 
-    private fun writePacket(typeCode: Int, flags: Int, ptsOrSeq: Long, bytes: ByteArray, offset: Int, length: Int) {
+    private fun checkLength(length: Int) {
         if (length > maxPayloadBytes) {
             throw ProtocolException(ProtocolException.Reason.PAYLOAD_TOO_LARGE, "$length > $maxPayloadBytes")
         }
-        FrameHeader.encode(header, 0, typeCode, flags, length, ptsOrSeq and FrameHeader.MAX_PTS_OR_SEQ)
+    }
+
+    /** [ptsOrSeq] must already be in u48 range: media pts are validated, never silently wrapped. */
+    private fun writePacket(typeCode: Int, flags: Int, ptsOrSeq: Long, bytes: ByteArray, offset: Int, length: Int) {
+        checkLength(length)
+        FrameHeader.encode(header, 0, typeCode, flags, length, ptsOrSeq)
         out.write(header, 0, FrameHeader.SIZE)
         if (length > 0) out.write(bytes, offset, length)
     }

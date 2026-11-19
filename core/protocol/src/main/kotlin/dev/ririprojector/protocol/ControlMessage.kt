@@ -140,7 +140,14 @@ object ControlCodec {
         return out
     }
 
-    fun decode(type: MessageType, bytes: ByteArray, offset: Int, length: Int): ControlMessage {
+    /** Decodes a control payload; any invalid value surfaces as [ProtocolException], never IAE. */
+    fun decode(type: MessageType, bytes: ByteArray, offset: Int, length: Int): ControlMessage = try {
+        decodeUnchecked(type, bytes, offset, length)
+    } catch (e: IllegalArgumentException) {
+        throw ProtocolException(Reason.MALFORMED_PAYLOAD, e.message ?: "invalid value")
+    }
+
+    private fun decodeUnchecked(type: MessageType, bytes: ByteArray, offset: Int, length: Int): ControlMessage {
         val r = PayloadReader(bytes, offset, offset + length)
         val message: ControlMessage =
             when (type) {

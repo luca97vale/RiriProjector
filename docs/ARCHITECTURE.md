@@ -26,7 +26,7 @@ Socket: small `sendBufferSize` (≈ 2–4 frames at the current bitrate) so cong
 the kernel; `trafficClass` with DSCP AF41 / video; `keepAlive`.
 
 ## ADR-003 — Wire format v1
-**Proposed** (to be finalized in milestone M1).
+**Accepted** (implemented in M1, `:core:protocol`). Control payloads: big-endian, strings = u16 length + UTF-8, lists = u8 count; media packets carry raw codec output. Unknown message types are skipped by readers; invalid field values are `MALFORMED_PAYLOAD`.
 
 Fixed 16-byte header, big-endian:
 

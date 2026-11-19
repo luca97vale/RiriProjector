@@ -41,9 +41,21 @@ data class VideoCodecCapability(
 
 data class AudioCodecCapability(val codec: AudioCodec, val maxChannels: Int, val sampleRates: List<Int>)
 
-data class VideoConfig(val codec: VideoCodec, val width: Int, val height: Int, val fps: Int, val bitrateBps: Int)
+data class VideoConfig(val codec: VideoCodec, val width: Int, val height: Int, val fps: Int, val bitrateBps: Int) {
+    init {
+        require(width in 16..8192 && height in 16..8192) { "invalid video size ${width}x$height" }
+        require(fps in 1..240) { "invalid fps $fps" }
+        require(bitrateBps > 0) { "invalid bitrate $bitrateBps" }
+    }
+}
 
 data class AudioConfig(val codec: AudioCodec, val sampleRateHz: Int, val channels: Int, val frameDurationUs: Int) {
+    init {
+        require(sampleRateHz in 8_000..192_000) { "invalid sample rate $sampleRateHz" }
+        require(channels in 1..8) { "invalid channel count $channels" }
+        require(frameDurationUs in 2_500..120_000) { "invalid frame duration $frameDurationUs" }
+    }
+
     /** Bytes in one PCM s16 packet; meaningless for compressed codecs. */
     val pcmBytesPerFrame: Int get() = (sampleRateHz.toLong() * frameDurationUs / 1_000_000L).toInt() * channels * 2
 

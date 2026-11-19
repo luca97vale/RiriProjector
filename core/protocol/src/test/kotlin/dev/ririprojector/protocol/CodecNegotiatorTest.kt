@@ -116,16 +116,14 @@ class CodecNegotiatorTest {
     }
 
     @Test
-    fun `portrait tablet on a landscape TV keeps aspect, alignment and orientation`() {
+    fun `portrait tablet on a landscape TV is fitted as-is inside the TV display`() {
         val s = sender(source = DisplayInfo(1600, 2560, 60))
 
         val v = ok(CodecNegotiator.negotiate(s, hello())).video
 
-        assertThat(v.height).isGreaterThan(v.width)
-        assertThat(v.width % 16).isEqualTo(0)
-        assertThat(v.height % 16).isEqualTo(0)
-        assertThat(v.width).isAtMost(1080)
-        assertThat(v.height).isAtMost(1920)
+        // The TV does not rotate: full TV height (1080), pillarboxed width 675 aligned down to 672.
+        assertThat(v.width).isEqualTo(672)
+        assertThat(v.height).isEqualTo(1080)
         assertThat(v.width.toDouble() / v.height).isWithin(0.01).of(1600.0 / 2560.0)
     }
 
@@ -133,12 +131,61 @@ class CodecNegotiatorTest {
     fun `landscape 2560x1600 fits 1080 height`() {
         val v = ok(CodecNegotiator.negotiate(sender(), hello())).video
 
-        // 1080 is not a multiple of 16, so the height is aligned down to 1072
-        assertThat(v.height).isIn(1072..1080)
-        assertThat(v.height % 16).isEqualTo(0)
-        assertThat(v.width).isIn(1700..1728)
-        assertThat(v.width % 16).isEqualTo(0)
-        assertThat(v.width.toDouble() / v.height).isWithin(0.02).of(2560.0 / 1600.0)
+        // Aligned to 8 so 1080 lines stay intact.
+        assertThat(v.height).isEqualTo(1080)
+        assertThat(v.width).isEqualTo(1728)
+        assertThat(v.width % 8).isEqualTo(0)
+    }
+
+    @Test
+    fun `software HEVC decoder loses to hardware AVC decoder`() {
+        val rx =
+            hello().copy(
+                videoDecoders =
+                    listOf(
+                        VideoCodecCapability(
+                            VideoCodec.HEVC,
+                            1920,
+                            1080,
+                            60,
+                            hardwareAccelerated = false,
+                            lowLatency = false,
+                        ),
+                        VideoCodecCapability(
+                            VideoCodec.AVC,
+                            1920,
+                            1080,
+                            60,
+                            hardwareAccelerated = true,
+                            lowLatency = true,
+                        ),
+                    ),
+            )
+
+        val v = ok(CodecNegotiator.negotiate(sender(), rx)).video
+
+        assertThat(v.codec).isEqualTo(VideoCodec.AVC)
+    }
+
+    @Test
+    fun `software decoder is accepted when it is the only option`() {
+        val rx =
+            hello().copy(
+                videoDecoders = listOf(
+                    VideoCodecCapability(
+                        VideoCodec.AVC,
+                        1920,
+                        1080,
+                        60,
+                        hardwareAccelerated = false,
+                        lowLatency = false,
+                    ),
+                ),
+            )
+
+        val v = ok(CodecNegotiator.negotiate(sender(), rx)).video
+
+        assertThat(v.codec).isEqualTo(VideoCodec.AVC)
     }
 
     @Test
