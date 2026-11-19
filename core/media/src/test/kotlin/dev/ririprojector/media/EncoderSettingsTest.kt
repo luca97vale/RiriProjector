@@ -33,6 +33,7 @@ class EncoderSettingsTest {
         assertThat(keys[MediaFormat.KEY_BITRATE_MODE]).isEqualTo(EncoderCapabilities.BITRATE_MODE_CBR)
         assertThat(keys[MediaFormat.KEY_FRAME_RATE]).isEqualTo(60)
         assertThat(keys[MediaFormat.KEY_MAX_B_FRAMES]).isEqualTo(0)
+        assertThat(keys[MediaFormat.KEY_MAX_FPS_TO_ENCODER]).isEqualTo(60f)
         assertThat(keys[MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER]).isEqualTo(100_000L)
         assertThat(keys[MediaFormat.KEY_PRIORITY]).isEqualTo(0)
         assertThat(keys[MediaFormat.KEY_LOW_LATENCY]).isEqualTo(1)
@@ -45,6 +46,7 @@ class EncoderSettingsTest {
         assertThat(keys[MediaFormat.KEY_BITRATE_MODE]).isEqualTo(EncoderCapabilities.BITRATE_MODE_VBR)
         assertThat(keys).doesNotContainKey(MediaFormat.KEY_LOW_LATENCY)
         assertThat(keys).doesNotContainKey(MediaFormat.KEY_MAX_B_FRAMES)
+        assertThat(keys).doesNotContainKey(MediaFormat.KEY_MAX_FPS_TO_ENCODER)
         assertThat(keys).doesNotContainKey(EncoderSettings.QTI_LOW_LATENCY)
     }
 

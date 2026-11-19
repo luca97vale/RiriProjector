@@ -32,7 +32,11 @@ object EncoderSettings {
         keys[MediaFormat.KEY_I_FRAME_INTERVAL] = I_FRAME_INTERVAL_S
         // A static screen produces no new frames; repeat the last one so the receiver keeps flowing.
         keys[MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER] = REPEAT_FRAME_AFTER_US
-        if (sdkInt >= 29) keys[MediaFormat.KEY_MAX_B_FRAMES] = 0
+        if (sdkInt >= 29) {
+            keys[MediaFormat.KEY_MAX_B_FRAMES] = 0
+            // A 120 Hz panel drives the VirtualDisplay at up to 120 fps; KEY_FRAME_RATE is not a cap.
+            keys[MediaFormat.KEY_MAX_FPS_TO_ENCODER] = config.fps.toFloat()
+        }
         if (!lowLatencyKeys) return keys
         keys[MediaFormat.KEY_PRIORITY] = 0 // realtime
         keys[MediaFormat.KEY_OPERATING_RATE] = config.fps

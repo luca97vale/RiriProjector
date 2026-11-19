@@ -3,6 +3,7 @@ package dev.ririprojector.feature.sender
 import android.Manifest
 import android.app.Activity
 import android.content.pm.PackageManager
+import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
@@ -92,7 +93,15 @@ class SenderActivity : ComponentActivity() {
 
     private fun requestProjection(target: ReceiverEndpoint, prefs: StreamPreferences) {
         pending = target to prefs
-        consent.launch(getSystemService(MediaProjectionManager::class.java).createScreenCaptureIntent())
+        val mpm = getSystemService(MediaProjectionManager::class.java)
+        // API 34+: ask for the whole display directly; mirroring a single app makes no sense here.
+        val intent =
+            if (Build.VERSION.SDK_INT >= 34) {
+                mpm.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
+            } else {
+                mpm.createScreenCaptureIntent()
+            }
+        consent.launch(intent)
     }
 }
 
