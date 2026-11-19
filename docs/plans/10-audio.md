@@ -115,3 +115,27 @@ works, report back to the user before shipping (no leaking other apps' audio sil
 JVM: `VideoDelayController` (convergence, clamp, slew, reset), delay-line scheduling logic
 (pure part), START v2 round-trip and version mismatch. Device: lip-sync by eye on a speech video;
 overlay offset within ±40 ms; low-latency mode unchanged; single-app audio isolation.
+
+### Architect review of the addendum (APPROVED WITH CHANGES), incorporated
+- **Delay line**: exists for the whole session iff START.syncMode == LIP_SYNC; every CONFIG/FRAME
+  passes through it in FIFO order (no bypass switching); `due = max(arrival + D, lastDue)`. One byte
+  ring sized at session start from the bitrate (≥ 2 MiB) + 64 primitive descriptors; units stored
+  contiguously. `VideoDecoder.submit` gains an `offset`. Ring/descriptors full → drop until the next
+  keyframe + rate-limited REQUEST_KEYFRAME; never block the network thread. Closed before the
+  decoder in `Session.finally`, within the 500 ms grace.
+- **Controller**: error = offset − setpoint (`LIP_SYNC_TRIM_US`, measured, default 0); acts only
+  on fresh samples (≥ 10 video and ≥ 20 audio since the last tick, both < 500 ms old), otherwise
+  holds; first gated tick after (re)start jumps straight to the target, then gain 0.5, slew
+  20 ms/tick, deadband 15 ms, clamp 0..maxDelay (default 300 ms). No audio samples for > 10 s →
+  slew to 0. Re-acquire on AUDIO_CONFIG. `AvSync` exposes sample counts and ages.
+- **AudioPlayer**: only validated `getTimestamp` samples (success, frame position advanced, < 200 ms
+  old) feed `AvSync` (Fire TV timestamp warm-up can last seconds; the fallback omits HDMI latency).
+- **Protocol v2**: START + `u8 syncMode`; STATS + `i32 videoDelayUs`. No v1 compatibility
+  (unreleased; both sides ship in one APK). Version mismatch → BYE INCOMPATIBLE with a readable
+  "update RiriProjector on both devices" message.
+- **Single-app audio**: Android 14–16 neither scope playback capture to the shared app nor expose
+  which app was picked. Approach: when Share = One app, an in-app "Audio from" picker
+  (launcher apps) before the consent dialog → `addMatchingUid(uid)`; no app picked → video only.
+  Android 17 (`MediaProjectionConfig.Builder.setAudioRequested`) can replace the picker later.
+  Leaving the shared app (`onCapturedContentVisibilityChanged(false)`) → status message.
+- Accepted cost: keyframe recovery after a decoder reset is slower by D.
