@@ -57,5 +57,8 @@ class EncoderSettingsTest {
         assertThat(keys).doesNotContainKey(MediaFormat.KEY_LOW_LATENCY)
         assertThat(keys).doesNotContainKey(MediaFormat.KEY_OPERATING_RATE)
         assertThat(keys).containsKey(MediaFormat.KEY_BIT_RATE)
+        // The fps cap and no-B-frames must survive the fallback.
+        assertThat(keys[MediaFormat.KEY_MAX_FPS_TO_ENCODER]).isEqualTo(60f)
+        assertThat(keys[MediaFormat.KEY_MAX_B_FRAMES]).isEqualTo(0)
     }
 }

@@ -34,7 +34,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -45,11 +44,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.ririprojector.net.ReceiverEndpoint
 import dev.ririprojector.net.nsd.NsdBrowser
 import dev.ririprojector.protocol.model.StreamPreferences
 import dev.ririprojector.protocol.model.VideoCodec
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.flowOf
 
 /** Tablet entry point: pick a receiver, tune the stream, start/stop mirroring. */
 class SenderActivity : ComponentActivity() {
@@ -67,8 +68,43 @@ class SenderActivity : ComponentActivity() {
 
     private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        // The consent dialog may outlive this instance (rotation): keep what the result is for.
+        pending?.let { (t, p) ->
+            outState.putString(KEY_HOST, t.host)
+            outState.putInt(KEY_PORT, t.port)
+            outState.putString(KEY_NAME, t.name)
+            outState.putString(KEY_CODEC, p.preferredVideoCodec?.name)
+            outState.putInt(KEY_MAX_HEIGHT, p.maxHeight ?: 1080)
+            outState.putInt(KEY_FPS, p.maxFps ?: 60)
+            outState.putInt(KEY_BITRATE, p.bitrateBps ?: 0)
+        }
+    }
+
+    private fun restorePending(state: Bundle?) {
+        val host = state?.getString(KEY_HOST) ?: return
+        val target = runCatching {
+            ReceiverEndpoint(state.getString(KEY_NAME) ?: host, host, state.getInt(KEY_PORT))
+        }.getOrNull()
+        val prefs =
+            StreamPreferences(
+                preferredVideoCodec = state.getString(KEY_CODEC)?.let { c ->
+                    VideoCodec.entries.firstOrNull {
+                        it.name ==
+                            c
+                    }
+                },
+                maxHeight = state.getInt(KEY_MAX_HEIGHT, 1080),
+                maxFps = state.getInt(KEY_FPS, 60),
+                bitrateBps = state.getInt(KEY_BITRATE, 0).takeIf { it > 0 },
+            )
+        if (target != null) pending = target to prefs
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        restorePending(savedInstanceState)
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
@@ -78,8 +114,11 @@ class SenderActivity : ComponentActivity() {
         setContent {
             MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    val found by receivers.collectAsState(initial = emptyList())
-                    val state by SenderStatus.state.collectAsState()
+                    val state by SenderStatus.state.collectAsStateWithLifecycle()
+                    val active = state is SenderState.Connecting || state is SenderState.Streaming
+                    // No mDNS browsing while mirroring (airtime) or while in the background.
+                    val found by remember(active) { if (active) flowOf(emptyList()) else receivers }
+                        .collectAsStateWithLifecycle(initialValue = emptyList())
                     SenderScreen(
                         receivers = found,
                         state = state,
@@ -102,6 +141,16 @@ class SenderActivity : ComponentActivity() {
                 mpm.createScreenCaptureIntent()
             }
         consent.launch(intent)
+    }
+
+    private companion object {
+        const val KEY_HOST = "pending.host"
+        const val KEY_PORT = "pending.port"
+        const val KEY_NAME = "pending.name"
+        const val KEY_CODEC = "pending.codec"
+        const val KEY_MAX_HEIGHT = "pending.maxHeight"
+        const val KEY_FPS = "pending.fps"
+        const val KEY_BITRATE = "pending.bitrate"
     }
 }
 

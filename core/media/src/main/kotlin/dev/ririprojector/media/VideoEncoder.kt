@@ -55,6 +55,7 @@ class VideoEncoder(
             inputSurface = mc.createInputSurface()
             mc.start()
         } catch (e: Exception) {
+            if (::inputSurface.isInitialized) inputSurface.release()
             mc.release()
             throw e
         }

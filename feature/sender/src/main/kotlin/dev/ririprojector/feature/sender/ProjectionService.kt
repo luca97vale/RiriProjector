@@ -72,7 +72,7 @@ class ProjectionService : Service() {
             object : MediaProjection.Callback() {
                 override fun onStop() {
                     Log.i(TAG, "projection stopped by the system or the user")
-                    stopSession(ByeReason.PROJECTION_REVOKED)
+                    stopSession(ByeReason.PROJECTION_REVOKED, getString(R.string.sender_error_revoked))
                 }
             },
             main,
@@ -93,9 +93,9 @@ class ProjectionService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun stopSession(reason: ByeReason) {
+    private fun stopSession(reason: ByeReason, message: String? = null) {
         val s = session
-        if (s == null) shutdown() else s.stop(reason)
+        if (s == null) shutdown() else s.stop(reason, message)
     }
 
     private fun shutdown() {

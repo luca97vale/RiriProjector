@@ -25,6 +25,7 @@ import dev.ririprojector.protocol.model.SenderCapabilities
 import dev.ririprojector.protocol.model.StreamParams
 import dev.ririprojector.protocol.model.StreamPreferences
 import java.io.IOException
+import java.net.SocketTimeoutException
 import kotlin.random.Random
 
 /**
@@ -48,6 +49,8 @@ class SenderSession(
     @Volatile private var encoder: VideoEncoder? = null
 
     @Volatile private var writerStarted = false
+
+    @Volatile private var endMessage: String? = null
     private val queue = SendQueue(onKeyframeNeeded = { encoder?.requestKeyframe() })
     private val clock = ClockSync()
 
@@ -58,15 +61,26 @@ class SenderSession(
         }
     }
 
-    /** Ends the session from any thread; a BYE is sent first when possible. Never blocks on I/O. */
-    fun stop(reason: ByeReason) {
+    /**
+     * Ends the session from any thread. Never blocks on I/O: a BYE is queued (best effort) and the
+     * socket is force-closed after [BYE_GRACE_MS] even if the writer is stuck on a dead peer.
+     * [message] is shown to the user (null for a normal stop).
+     */
+    fun stop(reason: ByeReason, message: String? = null) {
         if (ended) return
+        endMessage = message
         ended = true
-        if (writerStarted && reason != ByeReason.ERROR) {
-            queue.offerControl(ControlMessage.Bye(reason)) // the writer sends it, then closes
-        } else {
+        if (writerStarted) queue.offerControl(ControlMessage.Bye(reason)) // the writer sends it, then closes
+        Thread({
+            try {
+                if (writerStarted) Thread.sleep(BYE_GRACE_MS)
+            } catch (_: InterruptedException) {
+            }
             queue.close()
-            connection?.close()
+            connection?.close() // unblocks the reader and a writer stuck in write()
+        }, "Riri/SenderStop").apply {
+            isDaemon = true
+            start()
         }
     }
 
@@ -95,7 +109,7 @@ class SenderSession(
                     codec = codec,
                     config = params.video,
                     sink = { data, pts, key, cfg -> queue.offerVideo(pts, key, cfg, data) },
-                    onError = { stop(ByeReason.ERROR) },
+                    onError = { stop(ByeReason.ERROR, "encoder error: ${it.message}") },
                 )
             encoder = enc
             enc.start()
@@ -112,14 +126,19 @@ class SenderSession(
                     null,
                 )
             SenderStatus.set(SenderState.Streaming(target, params, SenderStats(encoderName = codec.name)))
+            // The receiver sends PONG and STATS every second: silence means it is gone.
+            conn.setReadTimeout(RECEIVER_SILENCE_MS)
             readLoop(conn, params, codec.name)
         } catch (e: HandshakeException) {
             failure = e.message
+        } catch (e: SocketTimeoutException) {
+            if (!ended) failure = "receiver not responding"
         } catch (e: Exception) {
             if (!ended) failure = e.message ?: e.javaClass.simpleName
         } finally {
-            if (failure != null) Log.w(TAG, "session failed: $failure")
-            stop(if (failure == null) ByeReason.NORMAL else ByeReason.ERROR)
+            failure = failure ?: endMessage
+            if (failure != null) Log.w(TAG, "session ended: $failure")
+            stop(if (failure == null) ByeReason.NORMAL else ByeReason.ERROR, failure)
             writer?.join(WRITER_DRAIN_MS)
             queue.close()
             writer?.interrupt()
@@ -140,6 +159,11 @@ class SenderSession(
             val p = conn.reader.read() ?: return
             when (p.type) {
                 MessageType.REQUEST_KEYFRAME -> encoder?.requestKeyframe()
+
+                MessageType.BITRATE_HINT -> {
+                    val hint = p.decodeControl() as ControlMessage.BitrateHint
+                    encoder?.setBitrate(hint.bitrateBps.coerceIn(MIN_BITRATE_BPS, MAX_BITRATE_BPS))
+                }
 
                 MessageType.PONG -> {
                     val pong = p.decodeControl() as ControlMessage.Pong
@@ -219,6 +243,10 @@ class SenderSession(
         const val TAG = "Riri/Sender"
         const val PING_INTERVAL_MS = 1_000L
         const val WRITER_DRAIN_MS = 300L
+        const val BYE_GRACE_MS = 300L
+        const val RECEIVER_SILENCE_MS = 3 * PING_INTERVAL_MS.toInt()
+        const val MIN_BITRATE_BPS = 1_000_000
+        const val MAX_BITRATE_BPS = 40_000_000
 
         fun nowUs() = SystemClock.elapsedRealtimeNanos() / 1_000
     }
