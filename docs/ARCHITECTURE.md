@@ -168,11 +168,19 @@ older consent dialogs always share the whole screen, so the setting is hidden th
 - Playback capture is **device-wide** whatever the projection shows, and Android 14–16 have no API
   that tells which app the user picked in the consent dialog. Capturing everything would leak other
   apps' sound (notifications, a second player) into a "one app" share.
-- So the user names the audio source in an **"Audio from"** picker (launchable apps, visible via a
-  LAUNCHER `<queries>` entry) and capture is restricted with `addMatchingUid` (ANDed with the usage
-  rules). The hint asks to pick the same app in the consent dialog; the two cannot be cross-checked.
-- **No app chosen → video only** ("Audio: off (no app chosen for sound)"): never silently capture
-  the whole device in single-app mode.
+- **Requirement: the audio follows the shared app automatically** (no manual choice). The system
+  brings the chosen app to the front right after the consent dialog (verified on a Tab S9, One UI /
+  Android 16). With the user-granted **Usage access** (`PACKAGE_USAGE_STATS` app op), the session
+  reads `UsageEvents.ACTIVITY_RESUMED` since the dialog was shown and takes the latest app other
+  than RiriProjector, System UI and the launcher (`SharedAppPicker`, JVM-tested), polling up to
+  3 s on the session thread. Capture is then restricted to its uid with `addMatchingUid` (ANDed
+  with the usage rules). Detected once per session: switching apps later does not change it.
+- **Shared app unknown → video only** (no Usage access, or nothing came to the front): "Audio: off
+  (could not tell which app is shared: allow Usage access)". Never silently capture the whole
+  device in single-app mode. The settings show an "Allow Usage access" button while it is missing.
+- *Superseded*: a manual "Audio from" picker (first M5 iteration) was rejected by the user.
+- Limitation: if the user picks "Entire screen" in the dialog while "One app" is set, audio still
+  follows the app in front after the dialog.
 - When the shared app leaves the screen (`onCapturedContentVisibilityChanged`), the tablet shows a
   warning: the projector shows nothing until the user returns to it.
 - Revisit when `MediaProjectionConfig` can request app-scoped audio (API 37

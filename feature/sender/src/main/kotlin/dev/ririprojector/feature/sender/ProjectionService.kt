@@ -89,7 +89,8 @@ class ProjectionService : Service() {
 
         val (source, dpi) = displayInfo()
         val singleApp = intent.getBooleanExtra(EXTRA_SINGLE_APP, false)
-        val audioUid = intent.getStringExtra(EXTRA_AUDIO_PACKAGE)?.let { AudioApps.uidOf(this, it) }
+        val consentShownAtMs = intent.getLongExtra(EXTRA_CONSENT_SHOWN_AT, System.currentTimeMillis())
+        val appContext = applicationContext
         val s =
             SenderSession(
                 target = target,
@@ -101,7 +102,7 @@ class ProjectionService : Service() {
                     Build.VERSION.SDK_INT >= 29 &&
                         checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED,
                 singleApp = singleApp,
-                audioUid = audioUid,
+                detectAudioUid = { SharedAppDetector.detectUid(appContext, consentShownAtMs) },
                 versionMismatchText = getString(R.string.sender_error_version),
                 onEnded = { main.post { shutdown() } },
             )
@@ -200,7 +201,7 @@ class ProjectionService : Service() {
         private const val EXTRA_AUDIO = "audio"
         private const val EXTRA_SYNC = "sync"
         private const val EXTRA_SINGLE_APP = "singleApp"
-        private const val EXTRA_AUDIO_PACKAGE = "audioPackage"
+        private const val EXTRA_CONSENT_SHOWN_AT = "consentShownAt"
 
         fun start(
             context: Context,
@@ -209,7 +210,7 @@ class ProjectionService : Service() {
             target: ReceiverEndpoint,
             prefs: StreamPreferences,
             singleApp: Boolean,
-            audioPackage: String?,
+            consentShownAtMs: Long,
         ) {
             val intent =
                 Intent(context, ProjectionService::class.java)
@@ -224,7 +225,7 @@ class ProjectionService : Service() {
                     .putExtra(EXTRA_AUDIO, prefs.audioEnabled)
                     .putExtra(EXTRA_SYNC, prefs.syncMode.name)
                     .putExtra(EXTRA_SINGLE_APP, singleApp)
-                    .putExtra(EXTRA_AUDIO_PACKAGE, audioPackage)
+                    .putExtra(EXTRA_CONSENT_SHOWN_AT, consentShownAtMs)
             context.startForegroundService(intent)
         }
 
