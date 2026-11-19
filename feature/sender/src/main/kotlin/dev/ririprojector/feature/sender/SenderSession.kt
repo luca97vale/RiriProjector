@@ -1,12 +1,15 @@
 package dev.ririprojector.feature.sender
 
+import android.annotation.SuppressLint
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.projection.MediaProjection
+import android.os.Build
 import android.os.Process
 import android.os.SystemClock
 import android.util.Log
 import dev.ririprojector.media.AndroidCodecs
+import dev.ririprojector.media.AudioCapture
 import dev.ririprojector.media.VideoEncoder
 import dev.ririprojector.net.ClockSync
 import dev.ririprojector.net.Connection
@@ -40,6 +43,8 @@ class SenderSession(
     private val projection: MediaProjection,
     private val source: DisplayInfo,
     private val densityDpi: Int,
+    /** True when RECORD_AUDIO is granted and the platform supports playback capture (API 29+). */
+    private val captureAudio: Boolean,
     private val onEnded: (message: String?) -> Unit,
 ) {
     @Volatile private var ended = false
@@ -49,6 +54,8 @@ class SenderSession(
     @Volatile private var encoder: VideoEncoder? = null
 
     @Volatile private var writerStarted = false
+
+    @Volatile private var audio: AutoCloseable? = null
 
     @Volatile private var endMessage: String? = null
     private val queue = SendQueue(onKeyframeNeeded = { encoder?.requestKeyframe() })
@@ -125,10 +132,13 @@ class SenderSession(
                     null,
                     null,
                 )
-            SenderStatus.set(SenderState.Streaming(target, params, SenderStats(encoderName = codec.name)))
+            val audioOn = startAudio(params)
+            SenderStatus.set(
+                SenderState.Streaming(target, params, SenderStats(encoderName = codec.name, audio = audioOn)),
+            )
             // The receiver sends PONG and STATS every second: silence means it is gone.
             conn.setReadTimeout(RECEIVER_SILENCE_MS)
-            readLoop(conn, params, codec.name)
+            readLoop(conn, params, codec.name, audioOn)
         } catch (e: HandshakeException) {
             failure = e.message
         } catch (e: SocketTimeoutException) {
@@ -142,6 +152,8 @@ class SenderSession(
             writer?.join(WRITER_DRAIN_MS)
             queue.close()
             writer?.interrupt()
+            runCatching { audio?.close() }
+            audio = null
             runCatching { virtualDisplay?.release() }
             encoder?.close()
             encoder = null
@@ -151,7 +163,34 @@ class SenderSession(
         }
     }
 
-    private fun readLoop(conn: Connection, params: StreamParams, encoderName: String) {
+    /**
+     * Announces the audio format and starts playback capture (ADR-007). Audio failures never end
+     * the session: mirroring continues video-only and the UI says so. Returns whether audio is on.
+     */
+    @SuppressLint("MissingPermission") // checked by the caller: captureAudio
+    private fun startAudio(params: StreamParams): Boolean {
+        if (!captureAudio || Build.VERSION.SDK_INT < 29) {
+            Log.w(TAG, "audio capture unavailable (permission or API level): video only")
+            return false
+        }
+        return try {
+            val capture =
+                AudioCapture(
+                    projection = projection,
+                    config = params.audio,
+                    sink = { data, pts -> queue.offerAudio(pts, data) },
+                    onError = { Log.w(TAG, "audio capture stopped: ${it.message}") },
+                )
+            audio = capture.start()
+            queue.offerControl(ControlMessage.AudioSetup(params.audio))
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "cannot start audio capture: ${e.message}")
+            false
+        }
+    }
+
+    private fun readLoop(conn: Connection, params: StreamParams, encoderName: String, audioOn: Boolean) {
         var lastFrames = 0L
         var lastBytes = 0L
         var lastAt = SystemClock.elapsedRealtime()
@@ -188,6 +227,9 @@ class SenderSession(
                             receiverDecodeP95Ms = s.decodeLatencyP95Us / 1000.0,
                             receiverDropped = s.droppedFrames,
                             encoderName = encoderName,
+                            audio = audioOn,
+                            receiverUnderruns = s.audioUnderruns,
+                            avOffsetMs = s.avOffsetUs / 1000,
                         )
                     lastFrames = frames
                     lastBytes = bytes

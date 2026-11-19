@@ -17,6 +17,11 @@ data class SenderStats(
     val receiverDecodeP95Ms: Double = 0.0,
     val receiverDropped: Int = 0,
     val encoderName: String = "",
+    /** False when audio is not captured (permission denied or capture failed). */
+    val audio: Boolean = false,
+    val receiverUnderruns: Int = 0,
+    /** Audio minus video at the receiver; positive = audio late. */
+    val avOffsetMs: Int = 0,
 )
 
 sealed interface SenderState {

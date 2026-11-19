@@ -67,7 +67,7 @@ class SenderActivity : ComponentActivity() {
             }
         }
 
-    private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
@@ -106,11 +106,13 @@ class SenderActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         restorePending(savedInstanceState)
-        if (Build.VERSION.SDK_INT >= 33 &&
-            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) {
-            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-        }
+        // Audio capture needs RECORD_AUDIO; without it mirroring continues video-only.
+        val wanted =
+            buildList {
+                add(Manifest.permission.RECORD_AUDIO)
+                if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
+            }.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        if (wanted.isNotEmpty()) permissions.launch(wanted.toTypedArray())
         val receivers = NsdBrowser(this).receivers().catch { emit(emptyList()) }
         setContent {
             MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
@@ -278,6 +280,14 @@ private fun StatusCard(state: SenderState, onStop: () -> Unit) {
                             s.sendDropped,
                             s.receiverDropped,
                         ),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Text(
+                        if (s.audio) {
+                            stringResource(R.string.sender_audio_on, s.receiverUnderruns, s.avOffsetMs)
+                        } else {
+                            stringResource(R.string.sender_audio_off)
+                        },
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Button(onClick = onStop) { Text(stringResource(R.string.sender_stop)) }

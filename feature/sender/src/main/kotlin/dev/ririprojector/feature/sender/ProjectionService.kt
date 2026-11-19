@@ -1,5 +1,6 @@
 package dev.ririprojector.feature.sender
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -7,6 +8,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.hardware.display.DisplayManager
 import android.media.projection.MediaProjection
@@ -86,6 +88,9 @@ class ProjectionService : Service() {
                 projection = mp,
                 source = source,
                 densityDpi = dpi,
+                captureAudio =
+                    Build.VERSION.SDK_INT >= 29 &&
+                        checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED,
                 onEnded = { main.post { shutdown() } },
             )
         session = s

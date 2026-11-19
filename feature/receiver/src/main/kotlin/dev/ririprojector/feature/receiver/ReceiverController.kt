@@ -9,7 +9,10 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
 import dev.ririprojector.media.AndroidCodecs
+import dev.ririprojector.media.AudioPlayer
+import dev.ririprojector.media.AvSync
 import dev.ririprojector.media.CodecCatalog
+import dev.ririprojector.media.JitterBuffer
 import dev.ririprojector.media.KeyframeRequestLimiter
 import dev.ririprojector.media.VideoDecoder
 import dev.ririprojector.net.Connection
@@ -24,6 +27,7 @@ import dev.ririprojector.protocol.MessageType
 import dev.ririprojector.protocol.ProtocolInfo
 import dev.ririprojector.protocol.model.AudioCodec
 import dev.ririprojector.protocol.model.AudioCodecCapability
+import dev.ririprojector.protocol.model.AudioConfig
 import dev.ririprojector.protocol.model.DisplayInfo
 import dev.ririprojector.protocol.model.StreamParams
 import java.io.Closeable
@@ -56,6 +60,10 @@ data class ReceiverStats(
     val decodeP95Us: Long = 0,
     val resets: Int = 0,
     val decoderName: String = "",
+    val audioBufferedMs: Int = 0,
+    val audioUnderruns: Int = 0,
+    /** Audio minus video, positive = audio late; null until both play. */
+    val avOffsetMs: Int? = null,
 )
 
 /**
@@ -163,6 +171,12 @@ class ReceiverController(
 
         @Volatile private var decoder: VideoDecoder? = null
 
+        private val avSync = AvSync()
+
+        @Volatile private var jitter: JitterBuffer? = null
+
+        private var player: AudioPlayer? = null
+
         @Volatile private var params: StreamParams? = null
 
         @Volatile private var decoderName = ""
@@ -199,6 +213,7 @@ class ReceiverController(
                         lowLatencySupported = best.lowLatency,
                         onKeyframeNeeded = ::requestKeyframe,
                         onFatalError = { end(ByeReason.ERROR) },
+                        onFrameRendered = avSync::onVideoShown,
                     ).start()
                 _state.value =
                     ReceiverState.Streaming(p, connection.remoteAddress, ReceiverStats(decoderName = best.name))
@@ -219,6 +234,9 @@ class ReceiverController(
                 connection.close()
                 decoder?.close()
                 decoder = null
+                player?.close()
+                player = null
+                jitter = null
                 server?.sessionEnded(connection)
                 if (session === this) session = null
                 showWaiting()
@@ -237,9 +255,12 @@ class ReceiverController(
                         decoder?.submit(pk.payload, pk.payloadLength, pk.ptsOrSeq, isConfig, pk.isKeyframe)
                     }
 
-                    MessageType.AUDIO_FRAME -> Unit
+                    MessageType.AUDIO_CONFIG -> {
+                        val setup = pk.decodeControl() as ControlMessage.AudioSetup
+                        startAudio(setup.config)
+                    }
 
-                    // M5
+                    MessageType.AUDIO_FRAME -> jitter?.push(pk.payload, 0, pk.payloadLength, pk.ptsOrSeq)
 
                     MessageType.PING -> {
                         val ping = pk.decodeControl() as ControlMessage.Ping
@@ -248,8 +269,27 @@ class ReceiverController(
 
                     MessageType.BYE -> return
 
-                    else -> Unit // AUDIO_SETUP, BITRATE_HINT, unknown types: ignore for now
+                    else -> Unit // unknown types are skipped
                 }
+            }
+        }
+
+        /** Session thread only. Audio failures leave video running (logged, shown as no audio). */
+        private fun startAudio(config: AudioConfig) {
+            player?.close()
+            player = null
+            jitter = null
+            if (config.codec != AudioCodec.PCM_S16LE) {
+                Log.w(TAG, "unsupported audio codec ${config.codec}")
+                return
+            }
+            val buffer = JitterBuffer(config.sampleRateHz, config.channels)
+            avSync.reset()
+            try {
+                player = AudioPlayer(config, buffer, avSync) { Log.w(TAG, "audio stopped: ${it.message}") }.start()
+                jitter = buffer
+            } catch (e: Exception) {
+                Log.w(TAG, "cannot start audio: ${e.message}")
             }
         }
 
@@ -280,6 +320,8 @@ class ReceiverController(
                     val d = decoder?.stats() ?: continue
                     val secs = (now - lastAt).coerceAtLeast(1) / 1000.0
                     val bytes = bytesReceived
+                    val jb = jitter
+                    val offsetUs = avSync.offsetUs()
                     val stats =
                         ReceiverStats(
                             fps = (d.decodedFrames - lastFrames) / secs,
@@ -289,6 +331,9 @@ class ReceiverController(
                             decodeP95Us = d.latencyP95Us,
                             resets = d.resets,
                             decoderName = decoderName,
+                            audioBufferedMs = jb?.bufferedMs ?: 0,
+                            audioUnderruns = jb?.underruns ?: 0,
+                            avOffsetMs = offsetUs?.let { (it / 1000).toInt() },
                         )
                     lastFrames = d.decodedFrames
                     lastBytes = bytes
@@ -300,8 +345,11 @@ class ReceiverController(
                             droppedFrames = d.droppedFrames.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
                             decodeLatencyMeanUs = d.latencyMeanUs.toInt(),
                             decodeLatencyP95Us = d.latencyP95Us.toInt(),
-                            audioUnderruns = 0,
-                            avOffsetUs = 0,
+                            audioUnderruns = stats.audioUnderruns,
+                            avOffsetUs = (offsetUs ?: 0).coerceIn(
+                                Int.MIN_VALUE.toLong(),
+                                Int.MAX_VALUE.toLong(),
+                            ).toInt(),
                         ),
                     )
                     connection.writer.flush()
@@ -343,7 +391,7 @@ class ReceiverController(
         deviceName = deviceName,
         display = display,
         videoDecoders = catalog.capabilities(encoder = false),
-        // PCM is always playable via AudioTrack; playback lands in M5.
+        // PCM is always playable via AudioTrack.
         audioDecoders = listOf(AudioCodecCapability(AudioCodec.PCM_S16LE, 2, listOf(48_000))),
     )
 

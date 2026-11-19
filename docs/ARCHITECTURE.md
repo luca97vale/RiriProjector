@@ -109,15 +109,23 @@ The sender uses `NsdManager.discoverServices`; fallback to manual IP:port entry
 - **Format**: default **PCM s16le 48 kHz stereo** in 10 ms packets (~1.5 Mbps, no codec latency,
   negligible next to video on a LAN). **Opus** (MediaCodec encoder API 29+, decoder available on
   Fire OS 7) as an option for weak networks, selected during negotiation.
-- **Transport**: **Proposed, to be validated in the audio plan** — a dedicated TCP connection for audio,
-  bound to the video session via an id in HELLO/START, so audio packets do not wait behind a video
-  keyframe of hundreds of KB. Alternative: same socket with a priority scheduler (audio first) and
-  fragmented video frames.
+- **Transport** *(decided in M5)*: the **same TCP connection** as video. The sender `SendQueue`
+  writes by priority (control > audio > video), so an audio packet waits behind at most the one
+  video packet already being written (a 200 KB keyframe is ~16 ms at 100 Mbps effective Wi-Fi),
+  which the receiver jitter buffer absorbs. A second connection would duplicate connect, handshake
+  binding and teardown for a gain the measurements do not need. Revisit (fragmented video or a
+  second socket) only if on-device underruns correlate with keyframes. On AUDIO_CONFIG the
+  receiver creates a `JitterBuffer` + `AudioPlayer` for that format; audio failures never end the session
+  (mirroring continues video-only and the sender UI says so).
+- **Opus** is deferred to the bandwidth policy work (M6): PCM adds no codec latency.
 - **Playback (receiver)**: `AudioTrack` with `PERFORMANCE_MODE_LOW_LATENCY`, minimal buffer,
   adaptive 20–60 ms jitter buffer; on underrun insert silence, on build-up drop samples to return
   to target.
 - **A/V sync**: video stays "render immediately" (ADR-005); audio aligns to video using the shared pts
-  and `AudioTrack.getTimestamp` to estimate HDMI output latency. Target: A/V offset within ±40 ms
+  and `AudioTrack.getTimestamp` to estimate HDMI output latency. `AvSync` measures it: for each side,
+  (receiver monotonic time the sample is shown/played) − (sender pts), smoothed; the difference is the
+  A/V offset (positive = audio late), shown in the overlay and sent in STATS. The unknown clock offset
+  between the devices cancels out. Target: A/V offset within ±40 ms
   (lip-sync perception threshold). If the TV audio output is slower than video, apply a
   configurable video delay (default 0).
 - **To verify on device**: whether audio keeps playing from the tablet speakers during capture and
