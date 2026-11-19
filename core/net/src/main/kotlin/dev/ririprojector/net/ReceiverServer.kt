@@ -1,12 +1,13 @@
 package dev.ririprojector.net
 
+import android.util.Log
 import dev.ririprojector.protocol.ByeReason
 import dev.ririprojector.protocol.ControlMessage
 import java.io.Closeable
+import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
-import java.net.SocketException
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -29,8 +30,13 @@ class ReceiverServer(
     val boundPort: Int get() = serverSocket.localPort
 
     fun start(): ReceiverServer {
-        serverSocket.reuseAddress = true
-        serverSocket.bind(InetSocketAddress(port))
+        try {
+            serverSocket.reuseAddress = true
+            serverSocket.bind(InetSocketAddress(port))
+        } catch (e: IOException) {
+            runCatching { serverSocket.close() }
+            throw e
+        }
         thread =
             Thread({ acceptLoop() }, "Riri/Net-accept").apply {
                 isDaemon = true
@@ -50,19 +56,26 @@ class ReceiverServer(
             val socket: Socket =
                 try {
                     serverSocket.accept()
-                } catch (_: SocketException) {
-                    return // closed
+                } catch (e: IOException) {
+                    if (serverSocket.isClosed) return
+                    // Transient (e.g. EMFILE): keep the server alive.
+                    Log.w(TAG, "accept failed: ${e.message}")
+                    runCatching { Thread.sleep(ACCEPT_RETRY_MS) }
+                    continue
                 }
+            var connection: Connection? = null
             try {
                 SocketTuning.apply(socket, sendBufferBytes)
-                val connection = Connection(socket)
+                connection = Connection(socket)
                 if (active.compareAndSet(null, connection)) {
                     onConnection(connection)
                 } else {
                     rejectBusy(connection)
                 }
             } catch (e: Exception) {
+                Log.w(TAG, "connection setup failed: ${e.message}")
                 runCatching { socket.close() }
+                if (connection != null) active.compareAndSet(connection, null)
             }
         }
     }
@@ -73,6 +86,11 @@ class ReceiverServer(
             connection.writer.flush()
         }
         connection.close()
+    }
+
+    private companion object {
+        const val TAG = "Riri/Server"
+        const val ACCEPT_RETRY_MS = 100L
     }
 
     override fun close() {

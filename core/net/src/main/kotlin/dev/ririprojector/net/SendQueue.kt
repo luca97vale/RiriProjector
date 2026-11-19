@@ -35,7 +35,7 @@ class OutboundPacket internal constructor() {
         return view
     }
 
-    private companion object {
+    internal companion object {
         val EMPTY = ByteArray(0)
     }
 }
@@ -46,10 +46,11 @@ class OutboundPacket internal constructor() {
  *
  * Video is bounded by packet count and bytes. On overflow it drops queued non-key frames and,
  * because later P-frames reference the dropped ones, every further non-key frame until a keyframe
- * arrives; [onKeyframeNeeded] fires once per such episode so the encoder can produce one.
- * Audio is bounded by packet count and drops the oldest packet on overflow.
+ * arrives; [onKeyframeNeeded] fires once per such episode (outside the queue lock) so the encoder
+ * can produce one. Audio is bounded by packet count and drops the oldest packet on overflow.
  *
- * Payloads are copied into pooled arrays so codec buffers can be released immediately.
+ * Payloads are copied into pooled arrays (separate pools for audio and video, so small audio
+ * packets never pin keyframe-sized buffers) and codec buffers can be released immediately.
  */
 class SendQueue(
     private val maxVideoPackets: Int = 8,
@@ -63,13 +64,18 @@ class SendQueue(
     private val audio = ArrayDeque<OutboundPacket>()
     private val video = ArrayDeque<OutboundPacket>()
     private val freePackets = ArrayDeque<OutboundPacket>()
-    private val freeBuffers = ArrayDeque<ByteArray>()
+    private val freeVideoBuffers = ArrayDeque<ByteArray>()
+    private val freeAudioBuffers = ArrayDeque<ByteArray>()
     private var videoBytes = 0
     private var waitingForKeyframe = false
+    private var keyframeRequestPending = false
     private var closed = false
 
+    @Volatile
     var droppedVideoFrames: Long = 0
         private set
+
+    @Volatile
     var droppedAudioPackets: Long = 0
         private set
 
@@ -80,8 +86,11 @@ class SendQueue(
         control.addLast(
             obtain().also {
                 it.type = message.type
-                it.control = message
+                it.flags = 0
+                it.ptsUs = 0
+                it.data = OutboundPacket.EMPTY
                 it.length = 0
+                it.control = message
             },
         )
         notEmpty.signal()
@@ -101,7 +110,13 @@ class SendQueue(
      * @param codecConfig true for CSD (always kept: the decoder cannot start without it)
      * @return false if the frame was dropped
      */
-    fun offerVideo(ptsUs: Long, keyframe: Boolean, codecConfig: Boolean, src: ByteBuffer): Boolean = lock.withLock {
+    fun offerVideo(ptsUs: Long, keyframe: Boolean, codecConfig: Boolean, src: ByteBuffer): Boolean {
+        val accepted = lock.withLock { offerVideoLocked(ptsUs, keyframe, codecConfig, src) }
+        notifyKeyframeIfNeeded()
+        return accepted
+    }
+
+    private fun offerVideoLocked(ptsUs: Long, keyframe: Boolean, codecConfig: Boolean, src: ByteBuffer): Boolean {
         if (closed) return false
         val size = src.remaining()
         if (codecConfig) {
@@ -127,7 +142,7 @@ class SendQueue(
         video.addLast(copy(MessageType.FRAME, if (keyframe) HeaderFlags.KEYFRAME else 0, ptsUs, src))
         videoBytes += size
         notEmpty.signal()
-        true
+        return true
     }
 
     /** Blocks up to [timeoutMs] for the next packet by priority; null on timeout or close. */
@@ -146,9 +161,12 @@ class SendQueue(
     fun recycle(packet: OutboundPacket) = lock.withLock { recycleLocked(packet) }
 
     /** Drops pending video (e.g. after a reconnection) and waits for the next keyframe. */
-    fun resetVideo() = lock.withLock {
-        dropQueuedVideo(keepConfig = false)
-        enterWaitForKeyframe()
+    fun resetVideo() {
+        lock.withLock {
+            dropQueuedVideo(keepConfig = false)
+            enterWaitForKeyframe()
+        }
+        notifyKeyframeIfNeeded()
     }
 
     fun close() = lock.withLock {
@@ -159,8 +177,14 @@ class SendQueue(
     private fun enterWaitForKeyframe() {
         if (!waitingForKeyframe) {
             waitingForKeyframe = true
-            onKeyframeNeeded()
+            keyframeRequestPending = true
         }
+    }
+
+    /** Runs [onKeyframeNeeded] outside the lock: it may block (e.g. `MediaCodec.setParameters`). */
+    private fun notifyKeyframeIfNeeded() {
+        val notify = lock.withLock { keyframeRequestPending.also { keyframeRequestPending = false } }
+        if (notify) onKeyframeNeeded()
     }
 
     private fun dropQueuedVideo(keepConfig: Boolean) {
@@ -182,7 +206,7 @@ class SendQueue(
         p.flags = flags
         p.ptsUs = ptsUs
         p.control = null
-        p.data = buffer(length)
+        p.data = buffer(if (type == MessageType.AUDIO_FRAME) freeAudioBuffers else freeVideoBuffers, length)
         val position = src.position()
         src.get(p.data, 0, length)
         src.position(position)
@@ -192,8 +216,8 @@ class SendQueue(
 
     private fun obtain(): OutboundPacket = freePackets.pollFirst() ?: OutboundPacket()
 
-    private fun buffer(minSize: Int): ByteArray {
-        val it = freeBuffers.iterator()
+    private fun buffer(pool: ArrayDeque<ByteArray>, minSize: Int): ByteArray {
+        val it = pool.iterator()
         while (it.hasNext()) {
             val b = it.next()
             if (b.size >= minSize) {
@@ -206,12 +230,24 @@ class SendQueue(
     }
 
     private fun recycleLocked(p: OutboundPacket) {
+        val data = p.data
+        if (data.isNotEmpty()) {
+            if (p.type == MessageType.AUDIO_FRAME) {
+                if (freeAudioBuffers.size < maxAudioPackets + POOL_SLACK) freeAudioBuffers.addLast(data)
+            } else if (freeVideoBuffers.size < maxVideoPackets + POOL_SLACK) {
+                freeVideoBuffers.addLast(data)
+            }
+        }
+        // Detach so a later reuse (e.g. as a control packet) can never return this buffer twice.
+        p.data = OutboundPacket.EMPTY
+        p.length = 0
+        p.flags = 0
         p.control = null
-        if (p.data.isNotEmpty() && freeBuffers.size < MAX_POOLED_BUFFERS) freeBuffers.addLast(p.data)
-        if (freePackets.size < MAX_POOLED_BUFFERS * 2) freePackets.addLast(p)
+        if (freePackets.size < MAX_POOLED_PACKETS) freePackets.addLast(p)
     }
 
     private companion object {
-        const val MAX_POOLED_BUFFERS = 32
+        const val POOL_SLACK = 4
+        const val MAX_POOLED_PACKETS = 96
     }
 }

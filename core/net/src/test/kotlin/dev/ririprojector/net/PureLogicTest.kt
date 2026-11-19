@@ -135,6 +135,49 @@ class SendQueueTest {
     }
 
     @Test
+    fun `a recycled packet reused for control never returns its old buffer twice`() {
+        val q = SendQueue()
+        q.offerVideo(1, keyframe = true, codecConfig = false, src = ByteBuffer.wrap(ByteArray(100) { 1 }))
+        q.recycle(q.take(0)!!) // packet A + buffer X back in the pools
+        q.offerControl(ControlMessage.RequestKeyframe) // reuses packet A
+        q.offerVideo(2, keyframe = true, codecConfig = false, src = ByteBuffer.wrap(ByteArray(100) { 2 })) // takes X
+        val control = q.take(0)!!
+        assertThat(control.length).isEqualTo(0)
+        q.recycle(control) // must not put X back
+        q.offerVideo(3, keyframe = true, codecConfig = false, src = ByteBuffer.wrap(ByteArray(100) { 3 }))
+        val b = q.take(0)!!
+        assertThat(b.ptsUs).isEqualTo(2)
+        assertThat(b.data.copyOf(b.length).all { it == 2.toByte() }).isTrue()
+        val c = q.take(0)!!
+        assertThat(c.data).isNotSameInstanceAs(b.data)
+    }
+
+    @Test
+    fun `audio packets do not take video buffers`() {
+        val q = SendQueue()
+        q.offerVideo(1, keyframe = true, codecConfig = false, src = buf(100_000))
+        val v = q.take(0)!!
+        val big = v.data
+        q.recycle(v)
+        q.offerAudio(2, buf(100))
+        assertThat(q.take(0)!!.data).isNotSameInstanceAs(big)
+    }
+
+    @Test
+    fun `keyframe callback runs outside the lock`() {
+        lateinit var q: SendQueue
+        var queuedFromCallback = -1
+        q = SendQueue(maxVideoPackets = 1, onKeyframeNeeded = {
+            // Another thread must be able to use the queue while the callback runs.
+            val t = Thread { queuedFromCallback = q.queuedVideoPackets }.apply { start() }
+            t.join(1_000)
+        })
+        q.offerVideo(1, keyframe = true, codecConfig = false, src = buf(4))
+        q.offerVideo(2, keyframe = false, codecConfig = false, src = buf(4))
+        assertThat(queuedFromCallback).isEqualTo(0)
+    }
+
+    @Test
     fun `close wakes a blocked taker`() {
         val q = SendQueue()
         val t = Thread { q.take(5_000) }.apply { start() }

@@ -73,8 +73,12 @@ object Handshake {
     }
 
     private fun readControl(connection: Connection, timeoutMs: Int, expected: String): ControlMessage {
-        connection.setReadTimeout(timeoutMs)
+        // One deadline for the whole exchange, so a peer spamming PINGs cannot hold it open.
+        val deadline = System.nanoTime() + timeoutMs * 1_000_000L
         while (true) {
+            val remainingMs = (deadline - System.nanoTime()) / 1_000_000L
+            if (remainingMs <= 0) throw HandshakeException("timed out waiting for $expected")
+            connection.setReadTimeout(remainingMs.toInt())
             val packet =
                 try {
                     connection.reader.read()

@@ -17,6 +17,9 @@ import kotlinx.coroutines.flow.conflate
 
 private const val TAG = "Riri/Nsd"
 
+/** Discovery could not start; [errorCode] is an `NsdManager.FAILURE_*` value. */
+class NsdDiscoveryException(val errorCode: Int) : java.io.IOException("NSD discovery failed: $errorCode")
+
 /** NSD wants the type without the trailing dot. */
 private val SERVICE_TYPE = ProtocolInfo.SERVICE_TYPE
 
@@ -72,7 +75,7 @@ class NsdBrowser(context: Context) {
                 }
 
         fun publishList() {
-            trySend(found.values.toList())
+            trySend(synchronized(found) { found.values.toList() })
         }
 
         lateinit var resolveNext: () -> Unit
@@ -104,8 +107,14 @@ class NsdBrowser(context: Context) {
                     if (resolving || pending.isEmpty()) null else pending.removeFirst().also { resolving = true }
                 }
             if (next != null) {
-                @Suppress("DEPRECATION")
-                nsd.resolveService(next, resolveListener)
+                try {
+                    @Suppress("DEPRECATION")
+                    nsd.resolveService(next, resolveListener)
+                } catch (e: RuntimeException) {
+                    Log.w(TAG, "resolve rejected for ${next.serviceName}: ${e.message}")
+                    synchronized(pending) { resolving = false }
+                    resolveNext()
+                }
             }
         }
 
@@ -117,6 +126,7 @@ class NsdBrowser(context: Context) {
 
                 override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
                     Log.w(TAG, "discovery failed: $errorCode")
+                    close(NsdDiscoveryException(errorCode))
                 }
 
                 override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) = Unit
@@ -127,6 +137,7 @@ class NsdBrowser(context: Context) {
                 }
 
                 override fun onServiceLost(info: NsdServiceInfo) {
+                    synchronized(pending) { pending.removeAll { it.serviceName == info.serviceName } }
                     synchronized(found) { found.remove(info.serviceName) }
                     publishList()
                 }

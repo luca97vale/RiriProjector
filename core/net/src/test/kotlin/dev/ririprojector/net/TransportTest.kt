@@ -157,6 +157,54 @@ class TransportTest {
     }
 
     @Test
+    fun `a throwing onConnection frees the slot`() {
+        var first = true
+        val flaky =
+            ReceiverServer(port = 0) {
+                if (first) {
+                    first = false
+                    throw IllegalStateException("boom")
+                }
+                accepted.put(it)
+            }.start()
+        try {
+            val ep = ReceiverEndpoint("tv", "127.0.0.1", flaky.boundPort)
+            SenderClient.connect(ep).use { c ->
+                c.setReadTimeout(2_000)
+                assertThat(c.reader.read()).isNull() // closed, not BYE(BUSY)
+            }
+            SenderClient.connect(ep).use {
+                assertThat(accepted.poll(5, TimeUnit.SECONDS)).isNotNull()
+            }
+        } finally {
+            flaky.close()
+        }
+    }
+
+    @Test
+    fun `handshake times out even if the peer keeps sending PING`() {
+        val spammer = CompletableFuture.runAsync {
+            val conn = accepted.poll(5, TimeUnit.SECONDS)!!
+            runCatching {
+                repeat(100) {
+                    conn.writer.writeControl(ControlMessage.Ping(it.toLong()))
+                    conn.writer.flush()
+                    Thread.sleep(20)
+                }
+            }
+        }
+        SenderClient.connect(endpoint).use { conn ->
+            val start = System.nanoTime()
+            val e = assertThrows(HandshakeException::class.java) {
+                Handshake.asSender(conn, senderCaps, StreamPreferences(), 1, timeoutMs = 300)
+            }
+            assertThat(e.message).contains("timed out")
+            assertThat((System.nanoTime() - start) / 1_000_000).isLessThan(1_500)
+        }
+        spammer.get(5, TimeUnit.SECONDS)
+    }
+
+    @Test
     fun `endpoint parsing accepts host and host-port`() {
         assertThat(
             ReceiverEndpoint.parse("192.168.1.50"),
