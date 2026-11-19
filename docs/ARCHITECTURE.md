@@ -25,15 +25,17 @@ if measurements show head-of-line blocking spikes on Wi-Fi.
 Socket: small `sendBufferSize` (≈ 2–4 frames at the current bitrate) so congestion is not hidden in
 the kernel; `trafficClass` with DSCP AF41 / video; `keepAlive`.
 
-## ADR-003 — Wire format v1
-**Accepted** (implemented in M1, `:core:protocol`). Control payloads: big-endian, strings = u16 length + UTF-8, lists = u8 count; media packets carry raw codec output. Unknown message types are skipped by readers; invalid field values are `MALFORMED_PAYLOAD`.
+## ADR-003 — Wire format (v2)
+**Accepted** (v1 in M1, v2 in M5; `:core:protocol`). v2 appends the sync mode to START and the
+video delay to STATS; versions are not interoperable, and a mismatch ends the handshake with
+`INCOMPATIBLE` and an "update both devices" message on the tablet. Control payloads: big-endian, strings = u16 length + UTF-8, lists = u8 count; media packets carry raw codec output. Unknown message types are skipped by readers; invalid field values are `MALFORMED_PAYLOAD`.
 
 Fixed 16-byte header, big-endian:
 
 | Offset | Field | Type | Notes |
 |---|---|---|---|
 | 0 | magic | u16 | `0x5252` ("RR") |
-| 2 | version | u8 | `PROTOCOL_VERSION` = 1 |
+| 2 | version | u8 | `PROTOCOL_VERSION` = 2 |
 | 3 | type | u8 | see message table |
 | 4 | flags | u8 | bit0 = keyframe, bit1 = codec config |
 | 5 | reserved | u8 | 0 |
@@ -50,14 +52,14 @@ Messages:
 | type | Name | Direction | Payload |
 |---|---|---|---|
 | 0x01 | HELLO | R→S | version, device name, display resolution, refresh rate, decodable codecs with profiles/levels and low-latency flag, audio capabilities |
-| 0x02 | START | S→R | chosen codec, width, height, fps, initial bitrate, audio format |
+| 0x02 | START | S→R | chosen codec, width, height, fps, initial bitrate, audio format, sync mode (v2: `u8`, 0 = lip-sync, 1 = low latency) |
 | 0x03 | CONFIG | S→R | CSD (VPS/SPS/PPS) as emitted with `BUFFER_FLAG_CODEC_CONFIG` |
 | 0x04 | FRAME | S→R | Annex-B access unit |
 | 0x05 | AUDIO_CONFIG | S→R | audio codec (PCM s16le / Opus), sample rate, channels, packet duration; Opus CSD if any |
 | 0x06 | AUDIO_FRAME | S→R | audio packet (PCM or Opus) with pts in µs on the same timebase as video |
 | 0x10 | REQUEST_KEYFRAME | R→S | — |
 | 0x11 | PING / 0x12 PONG | ↔ | sender monotonic timestamp (RTT and clock offset estimate) |
-| 0x13 | STATS | R→S | decoded fps, dropped frames, mean/p95 decode latency, audio underruns, A/V offset |
+| 0x13 | STATS | R→S | decoded fps, dropped frames, mean/p95 decode latency, audio underruns, A/V offset, video delay (v2: `i32` µs) |
 | 0x14 | BITRATE_HINT | R→S | suggested bitrate (adaptation) |
 | 0x7F | BYE | ↔ | reason code |
 
@@ -123,13 +125,29 @@ The sender uses `NsdManager.discoverServices`; fallback to manual IP:port entry
   adaptive 20–60 ms jitter buffer; on underrun insert silence, on build-up drop samples to return
   to target. Clock drift between the devices is absorbed by dropping or repeating single frames
   when the smoothed level leaves target ± 10 ms (no audible jumps).
-- **A/V sync**: video stays "render immediately" (ADR-005); audio aligns to video using the shared pts
-  and `AudioTrack.getTimestamp` to estimate HDMI output latency. `AvSync` measures it: for each side,
-  (receiver monotonic time the sample is shown/played) − (sender pts), smoothed; the difference is the
-  A/V offset (positive = audio late), shown in the overlay and sent in STATS. The unknown clock offset
-  between the devices cancels out. Target: A/V offset within ±40 ms
-  (lip-sync perception threshold). If the TV audio output is slower than video, apply a
-  configurable video delay (default 0).
+- **A/V measurement**: `AvSync`, for each side, (receiver monotonic time the sample is shown/played)
+  − (sender pts), smoothed; the difference is the A/V offset (positive = audio late), shown in the
+  overlay and sent in STATS. The unknown clock offset between the devices cancels out. Video "shown"
+  comes from `OnFrameRenderedListener` (frames are released with an explicit `System.nanoTime()`
+  render time: with `releaseOutputBuffer(i, true)` some decoders echo the pts instead). Audio
+  "played" comes only from `AudioTrack.getTimestamp` samples that pass `TimestampValidator`
+  (call succeeded, position advanced or the same sample repeated, younger than 200 ms).
+- **Sync mode** *(decided in M5, user choice in the tablet settings, sent in START)*. Measured on a
+  Tab S9 → Pixel: video is on screen ~10 ms after arrival, audio plays ~190 ms after (capture
+  ~75 ms, jitter buffer, track and device output), so audio is late by ~180 ms.
+  - **Lip-sync (default)**: the receiver delays video to meet audio. Every video unit goes through a
+    `VideoDelayLine` (one byte ring sized for 300 ms + margin at twice the bitrate, ≥ 2 MiB, 64
+    descriptors; `due = max(arrival + D, previous due)`; a dedicated urgent-display thread feeds the
+    decoder; on overflow it drops to the next keyframe and requests one; never blocks the network
+    thread). `VideoDelayController` sets D once per second: it acts only on fresh samples (≥ 10
+    video and ≥ 20 audio reports since the last tick, both < 500 ms old), so a static screen holds
+    D; the first fresh tick jumps to the estimate, then gain 0.5, ≤ 20 ms per second, 15 ms
+    deadband, D in 0..300 ms; after 10 s without audio D slews back to 0. Target: A/V within ±40 ms.
+  - **Low latency**: no delay line; video renders immediately and audio is late by the measured
+    offset. For interactive use (games, UI).
+  - With audio off the delay never leaves 0 (no audio samples), so lip-sync costs nothing.
+- **Audio off** *(M5)*: a sender setting (default on). Off means no RECORD_AUDIO request, no capture,
+  no AUDIO_CONFIG.
 - **To verify on device**: whether audio keeps playing from the tablet speakers during capture and
   how to mute it without affecting the captured stream.
 
@@ -143,3 +161,19 @@ AndroidX Test for instrumented tests.
 Kotlin 2.4.21 pinned from the root build classpath, `compileSdk 37` (required by current AndroidX),
 `targetSdk 36` until the app is validated on Android 17 behavior changes. Pure JVM modules compile
 with `-Xjdk-release=17` / `options.release = 17` so they cannot use APIs missing on Android.
+
+## ADR-009 — Single-app sharing and its audio
+**Accepted** (M5). On Android 14+ the tablet can share one app (`createConfigForUserChoice`);
+older consent dialogs always share the whole screen, so the setting is hidden there.
+- Playback capture is **device-wide** whatever the projection shows, and Android 14–16 have no API
+  that tells which app the user picked in the consent dialog. Capturing everything would leak other
+  apps' sound (notifications, a second player) into a "one app" share.
+- So the user names the audio source in an **"Audio from"** picker (launchable apps, visible via a
+  LAUNCHER `<queries>` entry) and capture is restricted with `addMatchingUid` (ANDed with the usage
+  rules). The hint asks to pick the same app in the consent dialog; the two cannot be cross-checked.
+- **No app chosen → video only** ("Audio: off (no app chosen for sound)"): never silently capture
+  the whole device in single-app mode.
+- When the shared app leaves the screen (`onCapturedContentVisibilityChanged`), the tablet shows a
+  warning: the projector shows nothing until the user returns to it.
+- Revisit when `MediaProjectionConfig` can request app-scoped audio (API 37
+  `setAudioRequested`) on the target tablets.
