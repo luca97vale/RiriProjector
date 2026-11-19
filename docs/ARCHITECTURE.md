@@ -9,7 +9,12 @@ with a progressive number; accepted ones are not rewritten, they are superseded.
 **Accepted.** One APK. On launch: if the device has `FEATURE_LEANBACK` (Fire TV/projector) the
 receiver starts directly; otherwise the user chooses (default sender).
 The manifest declares both `LAUNCHER` and `LEANBACK_LAUNCHER`, `touchscreen required=false`,
+`microphone required=false` (implied by `RECORD_AUDIO`, would otherwise hide the app on Fire TV)
 and a TV banner.
+*Revision (M0)*: "TV" = `amazon.hardware.fire_tv` OR `FEATURE_LEANBACK` OR
+`UI_MODE_TYPE_TELEVISION` (some Fire TV/projector builds do not report leanback reliably).
+`MainActivity` is a UI-less trampoline (`noHistory`, `excludeFromRecents`); an explicit `mode`
+launch extra overrides detection.
 
 ## ADR-002 — Transport: TCP with custom framing, no RTP/WebRTC
 **Accepted.** On a home LAN, TCP with `TCP_NODELAY` gives sufficient latency and free reliability;
@@ -110,3 +115,8 @@ The sender uses `NsdManager.discoverServices`; fallback to manual IP:port entry
 Gradle running on JDK 25 LTS with Java 17 bytecode, Compose for the tablet UI, minimal Views for the
 receiver, Spotless (ktlint) + Android Lint, JUnit4 + Truth + kotlinx-coroutines-test for JVM tests,
 AndroidX Test for instrumented tests.
+*Revision (M0)*: Gradle 9.9.1, AGP 9.5.1 with built-in Kotlin and the new DSL (no
+`kotlin-android` plugin; convention plugins configure `ApplicationExtension`/`LibraryExtension`),
+Kotlin 2.4.21 pinned from the root build classpath, `compileSdk 37` (required by current AndroidX),
+`targetSdk 36` until the app is validated on Android 17 behavior changes. Pure JVM modules compile
+with `-Xjdk-release=17` / `options.release = 17` so they cannot use APIs missing on Android.

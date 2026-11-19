@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 320x180dp leanback banner (Fire TV / Android TV launcher row) -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    tools:ignore="VectorRaster"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+    <path
+        android:fillColor="@color/brand_background"
+        android:pathData="M0,0h320v180h-320z" />
+    <path
+        android:fillColor="@color/brand_accent"
+        android:pathData="M60,70h50v40h-50z" />
+    <path
+        android:fillColor="@color/brand_accent"
+        android:fillAlpha="0.6"
+        android:pathData="M110,78L260,40L260,140L110,102z" />
+</vector>
