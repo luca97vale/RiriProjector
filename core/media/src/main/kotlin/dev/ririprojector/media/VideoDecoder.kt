@@ -188,16 +188,17 @@ class VideoDecoder(
         }
 
     /**
-     * Feeds one access unit from [src]`[0 until length]`. Called from the network thread only.
+     * Feeds one access unit from [src]`[offset, offset + length)`. Called from one feeding thread only
+     * (the network thread, or the lip-sync delay thread).
      * Waits briefly for a free input buffer; returns false if the unit was dropped.
      */
-    fun submit(src: ByteArray, length: Int, ptsUs: Long, isConfig: Boolean, isKeyframe: Boolean): Boolean {
+    fun submit(src: ByteArray, offset: Int, length: Int, ptsUs: Long, isConfig: Boolean, isKeyframe: Boolean): Boolean {
         val receivedAtUs = nowUs()
         var requestKeyframe = false
         val queued =
             lock.withLock {
                 if (closed || codec == null) return false
-                if (isConfig) cacheCsd(src, length)
+                if (isConfig) cacheCsd(src, offset, length)
                 if (replayCsd && !isConfig && !replayCsdLocked()) {
                     requestKeyframe = true
                     return@withLock false
@@ -213,7 +214,7 @@ class VideoDecoder(
                     }
                 }
                 val flags = if (isConfig) MediaCodec.BUFFER_FLAG_CODEC_CONFIG else 0
-                if (queueLocked(src, length, ptsUs, flags)) {
+                if (queueLocked(src, offset, length, ptsUs, flags)) {
                     if (!isConfig) rememberQueued(ptsUs, receivedAtUs)
                     true
                 } else {
@@ -227,7 +228,7 @@ class VideoDecoder(
     }
 
     /** Dequeues an input buffer, copies and queues. Returns false on stall or codec failure. */
-    private fun queueLocked(src: ByteArray, length: Int, ptsUs: Long, flags: Int): Boolean {
+    private fun queueLocked(src: ByteArray, offset: Int, length: Int, ptsUs: Long, flags: Int): Boolean {
         val mc = codec ?: return false
         var nanos = TimeUnit.MILLISECONDS.toNanos(INPUT_WAIT_MS)
         while (freeCount == 0 && nanos > 0 && !closed && codec === mc) nanos = inputAvailable.awaitNanos(nanos)
@@ -246,7 +247,7 @@ class VideoDecoder(
                 return false
             }
             buffer.clear()
-            buffer.put(src, 0, length)
+            buffer.put(src, offset, length)
             mc.queueInputBuffer(index, 0, length, ptsUs, flags)
             true
         } catch (e: IllegalStateException) {
@@ -255,15 +256,15 @@ class VideoDecoder(
         }
     }
 
-    private fun cacheCsd(src: ByteArray, length: Int) {
+    private fun cacheCsd(src: ByteArray, offset: Int, length: Int) {
         if (csd.size < length) csd = ByteArray(length) // rare: once per session/resolution
-        System.arraycopy(src, 0, csd, 0, length)
+        System.arraycopy(src, offset, csd, 0, length)
         csdLength = length
         replayCsd = false // the codec gets this one directly
     }
 
     private fun replayCsdLocked(): Boolean {
-        if (!queueLocked(csd, csdLength, 0, MediaCodec.BUFFER_FLAG_CODEC_CONFIG)) return false
+        if (!queueLocked(csd, 0, csdLength, 0, MediaCodec.BUFFER_FLAG_CODEC_CONFIG)) return false
         replayCsd = false
         backlog.onAccessUnit(isConfig = true, isKeyframe = false, nowUs = nowUs())
         return true

@@ -15,6 +15,8 @@ import dev.ririprojector.media.CodecCatalog
 import dev.ririprojector.media.JitterBuffer
 import dev.ririprojector.media.KeyframeRequestLimiter
 import dev.ririprojector.media.VideoDecoder
+import dev.ririprojector.media.VideoDelayController
+import dev.ririprojector.media.VideoDelayLine
 import dev.ririprojector.net.Connection
 import dev.ririprojector.net.Handshake
 import dev.ririprojector.net.HandshakeException
@@ -30,6 +32,7 @@ import dev.ririprojector.protocol.model.AudioCodecCapability
 import dev.ririprojector.protocol.model.AudioConfig
 import dev.ririprojector.protocol.model.DisplayInfo
 import dev.ririprojector.protocol.model.StreamParams
+import dev.ririprojector.protocol.model.SyncMode
 import java.io.Closeable
 import java.io.IOException
 import java.net.BindException
@@ -64,6 +67,8 @@ data class ReceiverStats(
     val audioUnderruns: Int = 0,
     /** Audio minus video, positive = audio late; null until both play. */
     val avOffsetMs: Int? = null,
+    /** Lip-sync video delay currently applied (0 in low-latency mode). */
+    val videoDelayMs: Int = 0,
 )
 
 /**
@@ -173,6 +178,17 @@ class ReceiverController(
 
         private val avSync = AvSync()
 
+        /** Lip-sync only (ADR-007): video waits here for its audio. Null in low-latency mode. */
+        @Volatile private var delayLine: VideoDelayLine? = null
+
+        /** Ticked by the control thread only. */
+        private val delayController = VideoDelayController(maxDelayMs = MAX_VIDEO_DELAY_MS)
+
+        @Volatile private var videoDelayUs = 0L
+
+        /** Set on a new audio stream; the control thread resets the controller on its next tick. */
+        @Volatile private var delayResetPending = false
+
         @Volatile private var jitter: JitterBuffer? = null
 
         @Volatile private var player: AudioPlayer? = null
@@ -205,7 +221,7 @@ class ReceiverController(
                         target.setFrameRate(p.video.fps.toFloat(), Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE)
                     }
                 }
-                decoder =
+                val dec =
                     VideoDecoder(
                         codecName = best.name,
                         config = p.video,
@@ -215,6 +231,19 @@ class ReceiverController(
                         onFatalError = { end(ByeReason.ERROR) },
                         onFrameRendered = avSync::onVideoShown,
                     ).start()
+                decoder = dec
+                if (p.syncMode == SyncMode.LIP_SYNC) {
+                    delayLine =
+                        VideoDelayLine(
+                            capacityBytes = VideoDelayLine.capacityFor(p.video.bitrateBps, MAX_VIDEO_DELAY_MS),
+                            sink = { src, off, len, pts, cfg, key -> dec.submit(src, off, len, pts, cfg, key) },
+                            onOverflow = {
+                                Log.w(TAG, "video delay line overflow: dropping to the next keyframe")
+                                requestKeyframe()
+                            },
+                        ).start()
+                }
+                Log.i(TAG, "sync mode ${p.syncMode}")
                 _state.value =
                     ReceiverState.Streaming(p, connection.remoteAddress, ReceiverStats(decoderName = best.name))
                 readLoop()
@@ -232,6 +261,8 @@ class ReceiverController(
                     writer.interrupt()
                 }
                 connection.close()
+                delayLine?.close() // before the decoder: it is the decoder's feeding thread
+                delayLine = null
                 decoder?.close()
                 decoder = null
                 player?.close()
@@ -253,7 +284,12 @@ class ReceiverController(
                     MessageType.CONFIG, MessageType.FRAME -> {
                         val isConfig = pk.type == MessageType.CONFIG || pk.isCodecConfig
                         if (!isConfig) avSync.onVideoArrived(pk.ptsOrSeq, System.nanoTime() / 1000)
-                        decoder?.submit(pk.payload, pk.payloadLength, pk.ptsOrSeq, isConfig, pk.isKeyframe)
+                        val line = delayLine
+                        if (line != null) {
+                            line.offer(pk.payload, pk.payloadLength, pk.ptsOrSeq, isConfig, pk.isKeyframe, videoDelayUs)
+                        } else {
+                            decoder?.submit(pk.payload, 0, pk.payloadLength, pk.ptsOrSeq, isConfig, pk.isKeyframe)
+                        }
                     }
 
                     MessageType.AUDIO_CONFIG -> {
@@ -289,6 +325,7 @@ class ReceiverController(
             }
             val buffer = JitterBuffer(config.sampleRateHz, config.channels)
             avSync.reset()
+            delayResetPending = true
             try {
                 player = AudioPlayer(config, buffer, avSync) { Log.w(TAG, "audio stopped: ${it.message}") }.start()
                 jitter = buffer
@@ -326,7 +363,15 @@ class ReceiverController(
                     val secs = (now - lastAt).coerceAtLeast(1) / 1000.0
                     val bytes = bytesReceived
                     val jb = jitter
-                    val offsetUs = avSync.offsetUs()
+                    val sync = avSync.snapshot()
+                    val offsetUs = sync.offsetUs
+                    if (delayLine != null) {
+                        if (delayResetPending) {
+                            delayResetPending = false
+                            delayController.reset()
+                        }
+                        videoDelayUs = delayController.update(sync, System.nanoTime() / 1000)
+                    }
                     val stats =
                         ReceiverStats(
                             fps = (d.decodedFrames - lastFrames) / secs,
@@ -339,12 +384,16 @@ class ReceiverController(
                             audioBufferedMs = jb?.bufferedMs ?: 0,
                             audioUnderruns = jb?.underruns ?: 0,
                             avOffsetMs = offsetUs?.let { (it / 1000).toInt() },
+                            videoDelayMs = (videoDelayUs / 1000).toInt(),
                         )
                     if (++ticks % DIAG_EVERY_TICKS == 0 && jb != null) {
                         Log.d(
                             TAG,
                             "av: ${avSync.describe()}; buffer ${jb.bufferedMs}/${jb.targetMs} ms, " +
-                                "track ${player?.trackQueuedMs} ms, underruns ${jb.underruns}, dropped ${jb.droppedMs} ms",
+                                "track ${player?.trackQueuedMs} ms, underruns ${jb.underruns}, " +
+                                "dropped ${jb.droppedMs} ms; " +
+                                "video delay ${videoDelayUs / 1000} ms (line drops ${delayLine?.dropped}), " +
+                                "ts rejected ${player?.rejectedTimestamps}",
                         )
                     }
                     lastFrames = d.decodedFrames
@@ -362,6 +411,7 @@ class ReceiverController(
                                 Int.MIN_VALUE.toLong(),
                                 Int.MAX_VALUE.toLong(),
                             ).toInt(),
+                            videoDelayUs = videoDelayUs.toInt(),
                         ),
                     )
                     connection.writer.flush()
@@ -417,6 +467,7 @@ class ReceiverController(
         const val MAX_BIND_ATTEMPTS = 10
         const val BIND_RETRY_MS = 300L
         const val DIAG_EVERY_TICKS = 5
+        const val MAX_VIDEO_DELAY_MS = 300
 
         fun nowUs() = SystemClock.elapsedRealtimeNanos() / 1_000
     }

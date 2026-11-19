@@ -143,6 +143,7 @@ class ReceiverActivity : Activity() {
                             ?: getString(R.string.receiver_av_unknown),
                         s.decoderName,
                         state.peer,
+                        s.videoDelayMs,
                     )
             }
 
