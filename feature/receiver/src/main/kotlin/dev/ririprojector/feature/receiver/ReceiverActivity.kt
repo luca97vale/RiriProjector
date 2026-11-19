@@ -42,6 +42,8 @@ class ReceiverActivity : Activity() {
         status =
             TextView(this).apply {
                 setTextColor(Color.WHITE)
+                // Opaque: a SurfaceView keeps showing its last frame after the session ends.
+                setBackgroundColor(Color.BLACK)
                 textSize = 26f
                 gravity = Gravity.CENTER
             }
