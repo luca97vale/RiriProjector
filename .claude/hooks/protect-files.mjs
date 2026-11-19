@@ -1,4 +1,4 @@
-// PreToolUse(Edit|Write|MultiEdit): impedisce modifiche a segreti e file generati/binari.
+// PreToolUse(Edit|Write|MultiEdit): prevents edits to secrets and generated/binary files.
 import { readFileSync } from "node:fs";
 
 let input = {};
@@ -8,16 +8,16 @@ if (!file) process.exit(0);
 
 const protectedPatterns = [
   [/\.(jks|keystore|p12)$/i, "keystore"],
-  [/(^|\/)keystore\.properties$/, "credenziali di firma"],
-  [/(^|\/)local\.properties$/, "file locale della macchina (sdk.dir)"],
-  [/(^|\/)\.env(\..*)?$/, "variabili d'ambiente/segreti"],
-  [/(^|\/)gradle\/wrapper\/gradle-wrapper\.jar$/, "wrapper binario: aggiornalo con ./gradlew wrapper"],
-  [/(^|\/)(build|\.gradle)\//, "output generato"],
+  [/(^|\/)keystore\.properties$/, "signing credentials"],
+  [/(^|\/)local\.properties$/, "machine-local file (sdk.dir)"],
+  [/(^|\/)\.env(\..*)?$/, "environment variables/secrets"],
+  [/(^|\/)gradle\/wrapper\/gradle-wrapper\.jar$/, "binary wrapper: update it with ./gradlew wrapper"],
+  [/(^|\/)(build|\.gradle)\//, "generated output"],
 ];
 
 for (const [re, why] of protectedPatterns) {
   if (re.test(file)) {
-    process.stderr.write(`Bloccato da protect-files: ${file} è protetto (${why}). Chiedi all'utente se serve davvero.\n`);
+    process.stderr.write(`Blocked by protect-files: ${file} is protected (${why}). Ask the user if it is really needed.\n`);
     process.exit(2);
   }
 }

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Build + install di RiriProjector su Fire TV (receiver) e/o Galaxy Tab (sender).
-# Uso: scripts/deploy.sh [firetv|tablet|both] [--release] [--no-build] [--logs]
-# Env: FIRETV_HOST (obbligatorio per firetv), FIRETV_PORT (default 5555),
-#      TABLET_SERIAL (opzionale), APP_ID (default dev.ririprojector)
+# Build + install RiriProjector on the Fire TV (receiver) and/or Galaxy Tab (sender).
+# Usage: scripts/deploy.sh [firetv|tablet|both] [--release] [--no-build] [--logs]
+# Env: FIRETV_HOST (required for firetv), FIRETV_PORT (default 5555),
+#      TABLET_SERIAL (optional), APP_ID (default dev.ririprojector)
 set -euo pipefail
 
 TARGET="both"; VARIANT="debug"; BUILD=1; LOGS=0
@@ -12,7 +12,7 @@ for arg in "$@"; do
     --release) VARIANT="release" ;;
     --no-build) BUILD=0 ;;
     --logs) LOGS=1 ;;
-    *) echo "Argomento sconosciuto: $arg" >&2; exit 64 ;;
+    *) echo "Unknown argument: $arg" >&2; exit 64 ;;
   esac
 done
 
@@ -31,7 +31,7 @@ if [[ -z "$ADB" ]]; then
     done
   done
 fi
-[[ -z "$ADB" ]] && { echo "adb non trovato: installa platform-tools o imposta ANDROID_HOME" >&2; exit 1; }
+[[ -z "$ADB" ]] && { echo "adb not found: install platform-tools or set ANDROID_HOME" >&2; exit 1; }
 
 # --- build -------------------------------------------------------------------
 cap="$(tr '[:lower:]' '[:upper:]' <<< "${VARIANT:0:1}")${VARIANT:1}"
@@ -39,12 +39,12 @@ if [[ $BUILD -eq 1 ]]; then
   (cd "$ROOT" && ./gradlew ":app:assemble${cap}")
 fi
 APK="$(ls -t "$ROOT"/app/build/outputs/apk/"$VARIANT"/*.apk 2>/dev/null | head -n1 || true)"
-[[ -z "$APK" ]] && { echo "APK non trovato in app/build/outputs/apk/$VARIANT" >&2; exit 1; }
+[[ -z "$APK" ]] && { echo "APK not found in app/build/outputs/apk/$VARIANT" >&2; exit 1; }
 echo "APK: $APK"
 
 install_and_start() { # serial mode
   local serial="$1" mode="$2"
-  echo "==> $mode su $serial"
+  echo "==> $mode on $serial"
   "$ADB" -s "$serial" install -r -d "$APK"
   "$ADB" -s "$serial" shell am start -n "$APP_ID/$ACTIVITY" --es mode "$mode" >/dev/null
   if [[ $LOGS -eq 1 ]]; then
@@ -54,10 +54,10 @@ install_and_start() { # serial mode
 }
 
 if [[ "$TARGET" == "firetv" || "$TARGET" == "both" ]]; then
-  [[ -z "${FIRETV_HOST:-}" ]] && { echo "Imposta FIRETV_HOST con l'IP della Fire TV" >&2; exit 1; }
+  [[ -z "${FIRETV_HOST:-}" ]] && { echo "Set FIRETV_HOST to the Fire TV IP address" >&2; exit 1; }
   FIRETV_SERIAL="$FIRETV_HOST:$FIRETV_PORT"
   "$ADB" connect "$FIRETV_SERIAL" | grep -Eq 'connected' || {
-    echo "Connessione a $FIRETV_SERIAL fallita: controlla Debug ADB e accetta il popup sulla TV" >&2; exit 1; }
+    echo "Connection to $FIRETV_SERIAL failed: check ADB debugging and accept the popup on the TV" >&2; exit 1; }
   install_and_start "$FIRETV_SERIAL" receiver
 fi
 
@@ -65,7 +65,7 @@ if [[ "$TARGET" == "tablet" || "$TARGET" == "both" ]]; then
   SERIAL="${TABLET_SERIAL:-}"
   if [[ -z "$SERIAL" ]]; then
     mapfile -t devs < <("$ADB" devices | awk 'NR>1 && $2=="device" {print $1}' | grep -v "${FIRETV_HOST:-^$}" || true)
-    [[ ${#devs[@]} -ne 1 ]] && { echo "Trovati ${#devs[@]} device non-TV: imposta TABLET_SERIAL (${devs[*]:-nessuno})" >&2; exit 1; }
+    [[ ${#devs[@]} -ne 1 ]] && { echo "Found ${#devs[@]} non-TV devices: set TABLET_SERIAL (${devs[*]:-none})" >&2; exit 1; }
     SERIAL="${devs[0]}"
   fi
   install_and_start "$SERIAL" sender

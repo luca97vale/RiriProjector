@@ -1,20 +1,19 @@
 ---
 name: sdlc-test
-description: Fase 4 SDLC di RiriProjector. Delega all'agente test-writer la scrittura dei test per il diff corrente, esegue la suite e riporta copertura e bug trovati.
-argument-hint: "[modulo o area da privilegiare]"
+description: SDLC phase 4 for RiriProjector. Delegates writing tests for the current diff to the test-writer agent, runs the suite and reports coverage and bugs found.
+argument-hint: "[module or area to focus on]"
 ---
 
-# Test
+# Tests
 
-Focus opzionale: $ARGUMENTS
+Optional focus: $ARGUMENTS
 
-1. Identifica issue e piano dal nome del branch (`feat/<n>-...` → `docs/plans/<n>-*.md`).
-2. Invoca l'agente **test-writer** con: numero issue, percorso del piano, elenco moduli toccati
-   (`git diff --stat origin/main...HEAD`), eventuale focus "$ARGUMENTS".
-3. Al termine verifica tu stesso: `./gradlew testDebugUnitTest spotlessCheck`.
-   Se c'è un device collegato e il diff tocca `core:media`/`core:net`, proponi
+1. Identify issue and plan from the branch name (`feat/<n>-...` → `docs/plans/<n>-*.md`).
+2. Invoke the **test-writer** agent with: issue number, plan path, list of touched modules
+   (`git diff --stat origin/main...HEAD`), optional focus "$ARGUMENTS".
+3. When it finishes, verify yourself: `./gradlew testDebugUnitTest spotlessCheck`.
+   If a device is attached and the diff touches `core:media`/`core:net`, propose
    `./gradlew connectedDebugAndroidTest`.
-4. Se l'agente ha segnalato bug nel codice di produzione, correggili (commit `fix: ...`)
-   e rilancia i test.
-5. Commit dei test: `test(<area>): ...` con `Refs #<n>`.
-6. Riporta: test aggiunti, esito, bug corretti, copertura mancante. Suggerisci `/sdlc-review`.
+4. If the agent reported production bugs, fix them (commit `fix: ...`) and rerun the tests.
+5. Commit the tests: `test(<area>): ...` with `Refs #<n>`.
+6. Report: tests added, outcome, bugs fixed, missing coverage. Suggest `/sdlc-review`.

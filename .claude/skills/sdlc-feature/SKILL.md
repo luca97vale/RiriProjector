@@ -1,27 +1,27 @@
 ---
 name: sdlc-feature
-description: Ciclo SDLC completo per RiriProjector, dall'idea alla PR (requisito → piano → implementazione → test → review → PR), con pause per l'approvazione dell'utente ai cancelli. Da invocare esplicitamente.
-argument-hint: <descrizione della funzionalità> | #<numero issue esistente>
+description: Full SDLC cycle for RiriProjector, from idea to PR (requirement → plan → implementation → tests → review → PR), pausing for user approval at the gates. Invoke explicitly.
+argument-hint: <feature description> | #<existing issue number>
 disable-model-invocation: true
 ---
 
-# Feature end-to-end
+# End-to-end feature
 
 Input: $ARGUMENTS
 
-Esegui le fasi in ordine seguendo le skill corrispondenti (leggi il loro `SKILL.md` in
-`.claude/skills/`). Tieni aggiornata la task list con una voce per fase.
+Run the phases in order following the corresponding skills (read their `SKILL.md` in
+`.claude/skills/`). Keep the task list updated with one item per phase.
 
-1. **Requisito** — se l'input è `#<n>` usa l'issue esistente, altrimenti segui `sdlc-req`.
-   ⏸ Cancello: conferma dell'utente per creare l'issue.
-2. **Piano** — segui `sdlc-plan` (con revisione di `android-architect`).
-   ⏸ Cancello: approvazione esplicita del piano. Non scrivere codice prima.
-3. **Implementazione** — segui `sdlc-impl`.
-4. **Test** — segui `sdlc-test` (agente `test-writer`).
-5. **Review** — segui `sdlc-review` (agente `media-net-reviewer`).
-6. **Device** — se la feature è osservabile su device, proponi `/firetv-deploy both` e chiedi
-   all'utente di riportare cosa vede (o le metriche dell'overlay).
-7. **PR** — segui `sdlc-pr`. ⏸ Cancello: conferma per push e creazione PR.
+1. **Requirement** — if the input is `#<n>` use the existing issue, otherwise follow `sdlc-req`.
+   ⏸ Gate: user confirmation to create the issue.
+2. **Plan** — follow `sdlc-plan` (reviewed by `android-architect`).
+   ⏸ Gate: explicit plan approval. Do not write code before.
+3. **Implementation** — follow `sdlc-impl`.
+4. **Tests** — follow `sdlc-test` (`test-writer` agent).
+5. **Review** — follow `sdlc-review` (`media-net-reviewer` agent).
+6. **Device** — if the feature is observable on a device, propose `/firetv-deploy both` and ask the
+   user to report what they see (or the overlay metrics).
+7. **PR** — follow `sdlc-pr`. ⏸ Gate: confirmation to push and create the PR.
 
-Se una fase fallisce in modo non banale, fermati, spiega e proponi come procedere invece di
-aggirare il problema.
+If a phase fails in a non-trivial way, stop, explain and propose how to proceed instead of
+working around the problem.

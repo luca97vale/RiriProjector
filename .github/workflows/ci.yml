@@ -22,9 +22,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Shell scripts (shellcheck)
         run: shellcheck -S warning scripts/*.sh
-      - name: Claude hooks (sintassi Node)
+      - name: Claude hooks (Node syntax)
         run: for f in .claude/hooks/*.mjs; do node --check "$f"; done
-      - name: settings.json valido
+      - name: settings.json is valid
         run: jq empty .claude/settings.json
 
   android:
@@ -34,11 +34,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Gradle presente?
+      - name: Gradle project present?
         id: gradle
         run: |
           if [ -f gradlew ]; then echo "present=true" >> "$GITHUB_OUTPUT"; else
-          echo "present=false" >> "$GITHUB_OUTPUT"; echo "::notice::Progetto Gradle non ancora creato, job saltato"; fi
+          echo "present=false" >> "$GITHUB_OUTPUT"; echo "::notice::Gradle project not created yet, skipping"; fi
 
       - uses: actions/setup-java@v4
         if: steps.gradle.outputs.present == 'true'
@@ -79,7 +79,7 @@ jobs:
           path: app/build/outputs/apk/debug/*.apk
           retention-days: 14
 
-      - name: Upload report test/lint
+      - name: Upload test/lint reports
         if: failure() && steps.gradle.outputs.present == 'true'
         uses: actions/upload-artifact@v4
         with:

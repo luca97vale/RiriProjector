@@ -1,6 +1,6 @@
-// PostToolUse(Edit|Write|MultiEdit): formatta con Spotless (ktlint) il solo file Kotlin modificato.
-// Silenzioso se Gradle/Spotless non sono ancora configurati. Non blocca mai (exit 0),
-// ma se ktlint segnala errori non correggibili li restituisce a Claude come feedback.
+// PostToolUse(Edit|Write|MultiEdit): formats only the edited Kotlin file with Spotless (ktlint).
+// Silent while Gradle/Spotless are not configured. Never blocks (exit 0), but returns
+// non-auto-fixable ktlint errors to Claude as feedback.
 import { readFileSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join, resolve } from "node:path";
@@ -26,7 +26,7 @@ if (res.status !== 0) {
   console.log(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: "PostToolUse",
-      additionalContext: `spotless/ktlint su ${file} ha segnalato problemi:\n${out}`,
+      additionalContext: `spotless/ktlint reported problems in ${file}:\n${out}`,
     },
   }));
 }

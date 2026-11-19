@@ -1,28 +1,28 @@
 ---
 name: firetv-deploy
-description: Compila l'APK di RiriProjector e lo installa via adb sulla Fire TV (receiver), sul Galaxy Tab (sender) o su entrambi, avvia l'app nella modalità giusta e mostra il logcat filtrato con le metriche. Usare quando bisogna provare una modifica su dispositivi reali.
+description: Builds the RiriProjector APK and installs it via adb on the Fire TV (receiver), the Galaxy Tab (sender) or both, launches the app in the right mode and shows the filtered logcat with metrics. Use when a change must be tried on real devices.
 argument-hint: "[firetv|tablet|both] [--release] [--no-build] [--logs]"
 allowed-tools: Bash(scripts/deploy.sh:*), Bash(bash scripts/deploy.sh:*), Bash(adb devices:*), Bash(adb connect:*), Bash(adb -s * logcat:*), Bash(./gradlew assembleDebug:*)
 ---
 
-# Build + install su device
+# Build + install on devices
 
-Argomenti: $ARGUMENTS (default `both`)
+Arguments: $ARGUMENTS (default `both`)
 
-1. Prerequisiti, da verificare prima e spiegare all'utente se mancano:
-   - `adb` nel PATH o `ANDROID_HOME`/`ANDROID_SDK_ROOT` impostato;
-   - Fire TV: *Impostazioni → La mia Fire TV → Opzioni sviluppatore → Debug ADB* attivo
-     (su Fire OS 8 le opzioni sviluppatore si sbloccano premendo 7 volte su *Informazioni → Nome*);
-     variabile `FIRETV_HOST` con l'IP (es. `export FIRETV_HOST=192.168.1.50`);
-   - tablet: debug USB o debug wireless attivo; `TABLET_SERIAL` se più device sono collegati.
-   La prima `adb connect` alla Fire TV mostra un popup di autorizzazione sulla TV: avvisa l'utente.
-2. Esegui `bash scripts/deploy.sh $ARGUMENTS`. Lo script:
-   build (`assembleDebug` o `assembleRelease`) → `adb connect $FIRETV_HOST:5555` →
-   `adb install -r -d` sul/i target → avvio dell'activity (receiver su TV, sender su tablet).
-3. Se l'installazione fallisce, interpreta l'errore (`INSTALL_FAILED_UPDATE_INCOMPATIBLE` = firma
-   diversa → chiedi all'utente prima di disinstallare; `device unauthorized` → accettare il popup;
-   `failed to connect` → IP/rete/debug ADB).
-4. Con `--logs` (o se l'utente vuole verificare le prestazioni) leggi qualche secondo di log con
+1. Prerequisites to check first, explaining to the user what is missing:
+   - `adb` on PATH or `ANDROID_HOME`/`ANDROID_SDK_ROOT` set (locally `D:\Android\Sdk`);
+   - Fire TV: *Settings → My Fire TV → Developer options → ADB debugging* enabled
+     (on Fire OS 8 developer options are unlocked by pressing *About → Name* 7 times);
+     `FIRETV_HOST` set to its IP (e.g. `export FIRETV_HOST=192.168.1.50`);
+   - tablet: USB or wireless debugging enabled; `TABLET_SERIAL` if several devices are attached.
+   The first `adb connect` to the Fire TV shows an authorization popup on the TV: warn the user.
+2. Run `bash scripts/deploy.sh $ARGUMENTS`. The script does:
+   build (`assembleDebug` or `assembleRelease`) → `adb connect $FIRETV_HOST:5555` →
+   `adb install -r -d` on the target(s) → launches the activity (receiver on TV, sender on tablet).
+3. If installation fails, interpret the error (`INSTALL_FAILED_UPDATE_INCOMPATIBLE` = different
+   signature → ask the user before uninstalling; `device unauthorized` → accept the popup;
+   `failed to connect` → IP/network/ADB debugging).
+4. With `--logs` (or when the user wants to check performance) read a few seconds of logs with
    `adb -s <device> logcat -d -s 'Riri/Stats:*' 'Riri/Sender:*' 'Riri/Receiver:*' '*:E'`
-   e riassumi fps, bitrate, RTT, frame scartati, errori.
-5. Non disinstallare app, non cancellare dati e non riavviare device senza conferma esplicita.
+   and summarize fps, bitrate, RTT, dropped frames, A/V offset, errors.
+5. Never uninstall apps, clear data or reboot devices without explicit confirmation.

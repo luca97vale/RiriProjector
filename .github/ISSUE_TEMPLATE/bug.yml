@@ -1,19 +1,19 @@
 name: Bug
-description: Comportamento errato, crash, artefatti video, disconnessioni
+description: Wrong behavior, crash, video artifacts, audio problems, disconnections
 title: "fix: "
 labels: ["type:bug"]
 body:
   - type: textarea
     id: what
     attributes:
-      label: Cosa succede
-      description: Descrizione, con screenshot/video se utile (es. artefatti, freeze, scatti).
+      label: What happens
+      description: Description, with screenshots/video if useful (e.g. artifacts, freezes, stutter, audio gaps).
     validations:
       required: true
   - type: textarea
     id: steps
     attributes:
-      label: Passi per riprodurre
+      label: Steps to reproduce
       value: |
         1.
         2.
@@ -22,38 +22,38 @@ body:
   - type: textarea
     id: expected
     attributes:
-      label: Comportamento atteso
+      label: Expected behavior
     validations:
       required: true
   - type: input
     id: sender
     attributes:
-      label: Sender (modello tablet / versione Android / One UI)
+      label: Sender (tablet model / Android version / One UI)
     validations:
       required: true
   - type: input
     id: receiver
     attributes:
-      label: Receiver (modello Fire TV o proiettore / Fire OS)
+      label: Receiver (Fire TV or projector model / Fire OS)
     validations:
       required: true
   - type: input
     id: version
     attributes:
-      label: Versione app / commit
+      label: App version / commit
   - type: dropdown
     id: network
     attributes:
-      label: Rete
-      options: ["Wi-Fi 5 GHz", "Wi-Fi 2.4 GHz", "Ethernet (receiver)", "Hotspot", "Altro"]
+      label: Network
+      options: ["Wi-Fi 5 GHz", "Wi-Fi 2.4 GHz", "Ethernet (receiver)", "Hotspot", "Other"]
   - type: input
     id: settings
     attributes:
-      label: Impostazioni di streaming
-      placeholder: "HEVC 1920x1080@60, 12 Mbps"
+      label: Streaming settings
+      placeholder: "HEVC 1920x1080@60, 12 Mbps, PCM audio"
   - type: textarea
     id: logs
     attributes:
-      label: Log
-      description: "adb logcat -d -s 'Riri/*:*' '*:E' da entrambi i device"
+      label: Logs
+      description: "adb logcat -d -s 'Riri/*:*' '*:E' from both devices"
       render: text
