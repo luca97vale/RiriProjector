@@ -78,8 +78,16 @@ Messages:
   high `KEY_OPERATING_RATE`.
 - Asynchronous mode (`setCallback`) on a dedicated thread; outputs released immediately
   (`releaseOutputBuffer(index, true)`), no jitter buffer beyond 1 frame.
-- If more than N access units pile up on input → drop until the next keyframe and send
-  REQUEST_KEYFRAME.
+- Backlog policy (`DecoderBacklog`): when the oldest access unit inside the decoder has waited
+  more than 60 ms, or more than 8 are in flight, drop non-key frames until the next keyframe and
+  send REQUEST_KEYFRAME (once per episode, and at most one every 300 ms). Short network bursts
+  that the decoder absorbs are not dropped. The in-flight window resyncs on the keyframe that ends
+  an episode, so units consumed without output cannot cause permanent dropping.
+- CONFIG is sent once per encoder configuration (encoders emit CSD only at start). The receiver
+  caches the last CONFIG and replays it after an in-place codec reset (recoverable `CodecException`);
+  transient errors are ignored. A REQUEST_KEYFRAME therefore never requires a new CONFIG.
+- All control writes on the receiver go through one control thread (PONG, STATS, REQUEST_KEYFRAME,
+  BYE); the UI thread and the codec thread never block on the socket.
 - Display: `Surface.setFrameRate` / display mode preference aligned with source fps to avoid judder.
 
 ## ADR-006 — Discovery: NSD (mDNS)
