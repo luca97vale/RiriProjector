@@ -242,7 +242,8 @@ class SenderSession(
                         audio?.let {
                             Log.d(
                                 TAG,
-                                "audio: capture age ${it.lastAgeUs / 1000} ms, queue drops ${queue.droppedAudioPackets}",
+                                "audio: capture age ${it.lastAgeUs / 1000} ms, peak ${it.takePeak()}, " +
+                                    "queue drops ${queue.droppedAudioPackets}",
                             )
                         }
                     }

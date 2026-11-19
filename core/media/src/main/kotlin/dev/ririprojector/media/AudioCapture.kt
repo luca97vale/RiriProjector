@@ -40,6 +40,11 @@ class AudioCapture(
     @Volatile var capturedPackets: Long = 0
         private set
 
+    @Volatile private var peak = 0
+
+    /** Diagnostics: highest absolute s16 sample since the last call (0 = silence), then resets. */
+    fun takePeak(): Int = peak.also { peak = 0 }
+
     /** Diagnostics: age of the last packet (now minus its pts) when handed to the sink, in µs. */
     @Volatile var lastAgeUs: Long = 0
         private set
@@ -114,6 +119,7 @@ class AudioCapture(
                         System.nanoTime() / 1000 - config.frameDurationUs
                     }
                 lastAgeUs = System.nanoTime() / 1000 - ptsUs
+                peak = maxOf(peak, peakOf(bytes, packetBytes))
                 buffer.position(0).limit(packetBytes)
                 sink.onAudio(buffer, ptsUs)
                 capturedPackets++
@@ -124,6 +130,18 @@ class AudioCapture(
                 onError(e)
             }
         }
+    }
+
+    private fun peakOf(pcm: ByteArray, length: Int): Int {
+        var max = 0
+        var i = 0
+        while (i + 1 < length) {
+            val s = (pcm[i].toInt() and 0xFF) or (pcm[i + 1].toInt() shl 8) // little-endian s16
+            val a = if (s < 0) -s else s
+            if (a > max) max = a
+            i += 2
+        }
+        return max
     }
 
     override fun close() {
