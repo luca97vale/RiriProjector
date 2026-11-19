@@ -1,26 +1,26 @@
-name: Funzionalità / miglioramento
-description: Nuova funzionalità o miglioramento (anche di prestazioni)
+name: Feature / improvement
+description: New feature or improvement (including performance)
 title: "feat: "
 labels: ["type:feature"]
 body:
   - type: textarea
     id: context
     attributes:
-      label: Contesto / problema
-      description: Perché serve? Quale limite attuale risolve?
+      label: Context / problem
+      description: Why is it needed? Which current limitation does it address?
     validations:
       required: true
   - type: textarea
     id: expected
     attributes:
-      label: Comportamento atteso
+      label: Expected behavior
     validations:
       required: true
   - type: textarea
     id: acceptance
     attributes:
-      label: Criteri di accettazione
-      description: Verificabili; per le prestazioni indica numeri (latenza, fps, bitrate, durata del test).
+      label: Acceptance criteria
+      description: Verifiable; for performance give numbers (latency, fps, bitrate, A/V offset, test duration).
       value: |
         - [ ]
     validations:
@@ -28,7 +28,7 @@ body:
   - type: textarea
     id: out-of-scope
     attributes:
-      label: Fuori scope
+      label: Out of scope
   - type: dropdown
     id: area
     attributes:
@@ -40,5 +40,5 @@ body:
   - type: input
     id: devices
     attributes:
-      label: Dispositivi coinvolti
+      label: Devices involved
       placeholder: "Galaxy Tab S9 (One UI 6.1) → Fire TV Stick 4K Max (Fire OS 8)"

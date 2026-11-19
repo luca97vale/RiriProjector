@@ -1,17 +1,17 @@
 ---
 name: sdlc-review
-description: Fase 5 SDLC di RiriProjector. Esegue la review del branch con l'agente media-net-reviewer (e android-architect se cambia l'architettura), applica le correzioni e ripete finché non restano blocker.
+description: SDLC phase 5 for RiriProjector. Reviews the branch with the media-net-reviewer agent (and android-architect if the architecture changes), applies fixes and repeats until no blockers remain.
 ---
 
 # Review
 
-1. Verifica che build e test siano verdi: `./gradlew assembleDebug testDebugUnitTest spotlessCheck lint`.
-2. Invoca l'agente **media-net-reviewer** sul diff `origin/main...HEAD`.
-   Se il diff cambia moduli, API pubbliche o protocollo, invoca in parallelo anche
-   **android-architect** chiedendogli di confrontare l'implementazione con il piano.
-3. Per ogni finding:
-   - `blocker`/`major` → correggi, con commit `fix(<area>): address review — <sintesi>`;
-   - `minor` → correggi se costa poco, altrimenti annota nella PR come follow-up;
-   - se ritieni un finding errato, spiega perché all'utente invece di ignorarlo.
-4. Dopo le correzioni rilancia il reviewer **una volta** solo sui commit nuovi.
-5. Mostra all'utente una tabella finale: finding, decisione, commit. Suggerisci `/sdlc-pr`.
+1. Make sure build and tests are green: `./gradlew assembleDebug testDebugUnitTest spotlessCheck lintDebug`.
+2. Invoke the **media-net-reviewer** agent on the `origin/main...HEAD` diff.
+   If the diff changes modules, public APIs or the protocol, also invoke **android-architect** in
+   parallel, asking it to compare the implementation with the plan.
+3. For each finding:
+   - `blocker`/`major` → fix, commit `fix(<area>): address review — <summary>`;
+   - `minor` → fix if cheap, otherwise note it in the PR as a follow-up;
+   - if you believe a finding is wrong, explain why to the user instead of ignoring it.
+4. After the fixes rerun the reviewer **once**, on the new commits only.
+5. Show the user a final table: finding, decision, commit. Suggest `/sdlc-pr`.

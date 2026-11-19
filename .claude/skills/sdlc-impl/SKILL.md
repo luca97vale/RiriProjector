@@ -1,27 +1,26 @@
 ---
 name: sdlc-impl
-description: Fase 3 SDLC di RiriProjector. Implementa un piano approvato in docs/plans/ con commit piccoli, mantenendo build e formattazione verdi.
-argument-hint: <numero issue>
+description: SDLC phase 3 for RiriProjector. Implements an approved plan from docs/plans/ in small commits, keeping build and formatting green.
+argument-hint: <issue number>
 ---
 
-# Piano → Codice
+# Plan → Code
 
 Issue: #$ARGUMENTS
 
-1. Trova il piano: `docs/plans/$ARGUMENTS-*.md`. Se manca o non è `Stato: APPROVATO`, fermati e
-   proponi `/sdlc-plan $ARGUMENTS`.
-2. Verifica di essere sul branch dell'issue (`git branch --show-current`) e che il working tree sia pulito.
-3. Per ogni passo della checklist "Passi di implementazione":
-   a. implementa il minimo necessario rispettando le convenzioni di `CLAUDE.md`
-      (hot path senza allocazioni, risorse rilasciate in `finally`, thread dedicati);
-   b. aggiungi i test JVM ovvi per la logica pura che hai appena scritto (i test approfonditi
-      arrivano in `/sdlc-test`);
-   c. `./gradlew spotlessApply` e poi il comando di verifica più stretto possibile
-      (`./gradlew :<modulo>:testDebugUnitTest` o `:<modulo>:assembleDebug`);
-   d. spunta il passo nel file del piano e fai commit Conventional (`feat(sender): ...`,
-      `perf(receiver): ...`) con riferimento `Refs #$ARGUMENTS`.
-4. Se un passo richiede di uscire dal piano (nuovo modulo, cambio di protocollo non previsto,
-   nuova libreria) **fermati e chiedi all'utente**; poi aggiorna il piano.
-5. Alla fine: `./gradlew assembleDebug testDebugUnitTest spotlessCheck` devono essere verdi.
-6. Riassumi cosa è stato fatto e suggerisci `/sdlc-test` (e `/firetv-deploy both` se il cambiamento
-   è visibile su device).
+1. Find the plan: `docs/plans/$ARGUMENTS-*.md`. If missing or not `Status: APPROVED`, stop and
+   suggest `/sdlc-plan $ARGUMENTS`.
+2. Make sure you are on the issue branch (`git branch --show-current`) with a clean working tree.
+3. For each step of the "Implementation steps" checklist:
+   a. implement the minimum needed following `CLAUDE.md` conventions
+      (allocation-free hot path, resources released in `finally`, dedicated threads);
+   b. add the obvious JVM tests for the pure logic you just wrote (thorough tests come in `/sdlc-test`);
+   c. `./gradlew spotlessApply` then the narrowest possible check
+      (`./gradlew :<module>:testDebugUnitTest` or `:<module>:assembleDebug`);
+   d. tick the step in the plan file and commit with a Conventional message (`feat(sender): ...`,
+      `perf(receiver): ...`) referencing `Refs #$ARGUMENTS`.
+4. If a step requires leaving the plan (new module, unplanned protocol change, new library)
+   **stop and ask the user**; then update the plan.
+5. At the end: `./gradlew assembleDebug testDebugUnitTest spotlessCheck` must be green.
+6. Summarize what was done and suggest `/sdlc-test` (and `/firetv-deploy both` if the change is
+   visible on device).

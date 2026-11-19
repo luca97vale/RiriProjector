@@ -1,113 +1,112 @@
-# Architettura e decisioni (ADR leggere)
+# Architecture and decisions (lightweight ADRs)
 
-Ogni decisione ha uno stato: **Accettata**, **Proposta**, **Superata**. Le nuove decisioni si
-aggiungono in fondo con numero progressivo; non si riscrivono quelle accettate, si superano.
+Each decision has a status: **Accepted**, **Proposed**, **Superseded**. New decisions are appended
+with a progressive number; accepted ones are not rewritten, they are superseded.
 
 ---
 
-## ADR-001 — App unica con due modalità
-**Accettata.** Un solo APK. All'avvio: se il dispositivo ha `FEATURE_LEANBACK` (Fire TV/proiettore)
-parte direttamente il receiver; altrimenti si mostra la scelta (default sender).
-Il manifest dichiara sia `LAUNCHER` sia `LEANBACK_LAUNCHER`, `touchscreen required=false`,
-banner per la TV.
+## ADR-001 — Single app with two modes
+**Accepted.** One APK. On launch: if the device has `FEATURE_LEANBACK` (Fire TV/projector) the
+receiver starts directly; otherwise the user chooses (default sender).
+The manifest declares both `LAUNCHER` and `LEANBACK_LAUNCHER`, `touchscreen required=false`,
+and a TV banner.
 
-## ADR-002 — Trasporto: TCP con framing proprio, niente RTP/WebRTC
-**Accettata.** In una LAN domestica TCP con `TCP_NODELAY` dà latenza sufficiente e affidabilità
-gratuita; la gestione della congestione si fa a livello applicativo scartando frame non-chiave
-quando la coda di invio cresce e chiedendo un keyframe al receiver. UDP/RTP con FEC resta
-un'opzione futura (ADR da scrivere) se le misure mostrano picchi da head-of-line blocking su Wi-Fi.
+## ADR-002 — Transport: TCP with custom framing, no RTP/WebRTC
+**Accepted.** On a home LAN, TCP with `TCP_NODELAY` gives sufficient latency and free reliability;
+congestion is handled at the application level by dropping non-key frames when the send queue grows
+and asking the receiver for a keyframe. UDP/RTP with FEC remains a future option (ADR to be written)
+if measurements show head-of-line blocking spikes on Wi-Fi.
 
-Socket: `sendBufferSize` piccolo (≈ 2–4 frame al bitrate corrente) per non nascondere la congestione
-nel kernel; `trafficClass` con DSCP AF41 / video; `keepAlive`.
+Socket: small `sendBufferSize` (≈ 2–4 frames at the current bitrate) so congestion is not hidden in
+the kernel; `trafficClass` with DSCP AF41 / video; `keepAlive`.
 
-## ADR-003 — Formato wire v1
-**Proposta** (da finalizzare nel milestone M1).
+## ADR-003 — Wire format v1
+**Proposed** (to be finalized in milestone M1).
 
-Header fisso 16 byte, big-endian:
+Fixed 16-byte header, big-endian:
 
-| Offset | Campo | Tipo | Note |
+| Offset | Field | Type | Notes |
 |---|---|---|---|
 | 0 | magic | u16 | `0x5252` ("RR") |
 | 2 | version | u8 | `PROTOCOL_VERSION` = 1 |
-| 3 | type | u8 | vedi tabella messaggi |
+| 3 | type | u8 | see message table |
 | 4 | flags | u8 | bit0 = keyframe, bit1 = codec config |
 | 5 | reserved | u8 | 0 |
-| 6 | payloadLen | u32 | limite massimo configurabile (default 8 MiB) → oltre = errore di protocollo |
-| 10 | ptsUs/seq | u48 | pts in µs per i frame, numero di sequenza per i controlli |
+| 6 | payloadLen | u32 | configurable maximum (default 8 MiB) → above = protocol error |
+| 10 | ptsUs/seq | u48 | pts in µs for frames, sequence number for control messages |
 
-Messaggi:
+Messages:
 
-| type | Nome | Direzione | Payload |
+| type | Name | Direction | Payload |
 |---|---|---|---|
-| 0x01 | HELLO | R→S | versione, nome dispositivo, risoluzione display, refresh rate, lista codec decodificabili con profili/livelli e flag low-latency |
-| 0x02 | START | S→R | codec scelto, larghezza, altezza, fps, bitrate iniziale |
-| 0x03 | CONFIG | S→R | CSD (VPS/SPS/PPS) così come escono da `BUFFER_FLAG_CODEC_CONFIG` |
-| 0x04 | FRAME | S→R | access unit Annex-B |
-| 0x05 | AUDIO_CONFIG | S→R | codec audio (PCM s16le / Opus), sample rate, canali, durata pacchetto; CSD Opus se presente |
-| 0x06 | AUDIO_FRAME | S→R | pacchetto audio (PCM o Opus) con pts in µs sulla stessa base tempi del video |
+| 0x01 | HELLO | R→S | version, device name, display resolution, refresh rate, decodable codecs with profiles/levels and low-latency flag, audio capabilities |
+| 0x02 | START | S→R | chosen codec, width, height, fps, initial bitrate, audio format |
+| 0x03 | CONFIG | S→R | CSD (VPS/SPS/PPS) as emitted with `BUFFER_FLAG_CODEC_CONFIG` |
+| 0x04 | FRAME | S→R | Annex-B access unit |
+| 0x05 | AUDIO_CONFIG | S→R | audio codec (PCM s16le / Opus), sample rate, channels, packet duration; Opus CSD if any |
+| 0x06 | AUDIO_FRAME | S→R | audio packet (PCM or Opus) with pts in µs on the same timebase as video |
 | 0x10 | REQUEST_KEYFRAME | R→S | — |
-| 0x11 | PING / 0x12 PONG | ↔ | timestamp monotono del mittente (RTT e stima offset di clock) |
-| 0x13 | STATS | R→S | fps decodificati, frame scartati, latenza di decode media/p95 |
-| 0x14 | BITRATE_HINT | R→S | bitrate suggerito (adattamento) |
-| 0x7F | BYE | ↔ | codice motivo |
+| 0x11 | PING / 0x12 PONG | ↔ | sender monotonic timestamp (RTT and clock offset estimate) |
+| 0x13 | STATS | R→S | decoded fps, dropped frames, mean/p95 decode latency, audio underruns, A/V offset |
+| 0x14 | BITRATE_HINT | R→S | suggested bitrate (adaptation) |
+| 0x7F | BYE | ↔ | reason code |
 
-## ADR-004 — Pipeline encoder (sender)
-**Accettata.**
-- Sorgente: `MediaProjection.createVirtualDisplay` direttamente sulla input `Surface` dell'encoder
-  (zero copie). Risoluzione = min(display tablet, display receiver), allineata a 16.
-- Codec: HEVC se entrambi supportano HW; altrimenti AVC. Solo codec hardware (`isHardwareAccelerated`).
-- Parametri: `KEY_PRIORITY=0` (realtime), `KEY_BITRATE_MODE=CBR` (fallback VBR),
-  `KEY_I_FRAME_INTERVAL` lungo (es. 10 s) + `PARAMETER_KEY_REQUEST_SYNC_FRAME` su richiesta,
-  `KEY_REPEAT_PREVIOUS_FRAME_AFTER` per schermi statici, `KEY_MAX_B_FRAMES=0`, profilo Main/High
-  senza B-frame, `KEY_LATENCY=1` dove supportato, intra-refresh se disponibile
-  (`FEATURE_IntraRefresh`) per evitare picchi di keyframe.
-- Bitrate adattivo: `PARAMETER_KEY_VIDEO_BITRATE` modificato da una policy pura (testabile) che
-  legge occupazione coda di invio + STATS del receiver.
+## ADR-004 — Encoder pipeline (sender)
+**Accepted.**
+- Source: `MediaProjection.createVirtualDisplay` directly onto the encoder input `Surface`
+  (zero copies). Resolution = min(tablet display, receiver display), aligned to 16.
+- Codec: HEVC if both sides support it in hardware; otherwise AVC. Hardware codecs only
+  (`isHardwareAccelerated`).
+- Parameters: `KEY_PRIORITY=0` (realtime), `KEY_BITRATE_MODE=CBR` (fallback VBR),
+  long `KEY_I_FRAME_INTERVAL` (e.g. 10 s) + `PARAMETER_KEY_REQUEST_SYNC_FRAME` on demand,
+  `KEY_REPEAT_PREVIOUS_FRAME_AFTER` for static screens, `KEY_MAX_B_FRAMES=0`, Main/High profile
+  without B-frames, `KEY_LATENCY=1` where supported, intra-refresh when available
+  (`FEATURE_IntraRefresh`) to avoid keyframe spikes.
+- Adaptive bitrate: `PARAMETER_KEY_VIDEO_BITRATE` changed by a pure (testable) policy that reads
+  send-queue occupancy + receiver STATS.
 
-## ADR-005 — Pipeline decoder (receiver)
-**Accettata.**
-- `SurfaceView` (non `TextureView`) per avere il percorso di composizione più corto.
-- `KEY_LOW_LATENCY=1` se `FEATURE_LowLatency` (API 30+); su Fire OS 7 si provano chiavi vendor
-  note (es. `vendor.low-latency.enable`) solo se annunciate dal codec; `KEY_PRIORITY=0`,
-  `KEY_OPERATING_RATE` alto.
-- Modalità asincrona (`setCallback`) con thread dedicato; output rilasciati subito
-  (`releaseOutputBuffer(index, true)`), nessuna sincronizzazione A/V, nessun jitter buffer oltre 1 frame.
-- Se si accumulano più di N access unit in ingresso → si scartano fino al prossimo keyframe e si
-  invia REQUEST_KEYFRAME.
-- Display: `Surface.setFrameRate` / preferenza di modalità del display allineata agli fps sorgente
-  per evitare judder.
+## ADR-005 — Decoder pipeline (receiver)
+**Accepted.**
+- `SurfaceView` (not `TextureView`) for the shortest composition path.
+- `KEY_LOW_LATENCY=1` if `FEATURE_LowLatency` (API 30+); on Fire OS 7 try known vendor keys
+  (e.g. `vendor.low-latency.enable`) only if the codec advertises them; `KEY_PRIORITY=0`,
+  high `KEY_OPERATING_RATE`.
+- Asynchronous mode (`setCallback`) on a dedicated thread; outputs released immediately
+  (`releaseOutputBuffer(index, true)`), no jitter buffer beyond 1 frame.
+- If more than N access units pile up on input → drop until the next keyframe and send
+  REQUEST_KEYFRAME.
+- Display: `Surface.setFrameRate` / display mode preference aligned with source fps to avoid judder.
 
-## ADR-006 — Scoperta: NSD (mDNS)
-**Accettata.** Receiver registra `_ririproj._tcp` con TXT record `v=1`, `name`, `codecs`.
-Il sender usa `NsdManager.discoverServices`; fallback inserimento manuale IP:porta
-(alcune reti/router filtrano il multicast).
+## ADR-006 — Discovery: NSD (mDNS)
+**Accepted.** The receiver registers `_ririproj._tcp` with TXT records `v=1`, `name`, `codecs`.
+The sender uses `NsdManager.discoverServices`; fallback to manual IP:port entry
+(some networks/routers filter multicast).
 
-## ADR-007 — Audio (parte del MVP)
-**Accettata.** L'audio del tablet va riprodotto sulla TV: senza audio la proiezione non è considerata
-funzionante.
-- **Cattura**: `AudioPlaybackCapture` (API 29+, ok sul tablet) dalla stessa `MediaProjection` del video,
-  permesso `RECORD_AUDIO`, usage `MEDIA`, `GAME`, `UNKNOWN`. Limite noto: le app che dichiarano
-  `allowAudioPlaybackCapture=false` (o usano usage non catturabili, es. chiamate) non vengono catturate
-  → va segnalato in UI, non è un bug.
-- **Formato**: default **PCM s16le 48 kHz stereo** in pacchetti da 10 ms (~1,5 Mbps, nessuna latenza
-  di codec, trascurabile in LAN accanto al video). **Opus** (encoder MediaCodec API 29+, decoder
-  disponibile su Fire OS 7) come opzione per reti deboli, selezionato in negoziazione.
-- **Trasporto**: **Proposta da validare nel piano dell'audio** — connessione TCP dedicata all'audio,
-  associata alla sessione video tramite id in HELLO/START, per non far aspettare i pacchetti audio
-  dietro un keyframe video di centinaia di KB. Alternativa: stesso socket con scheduler a priorità
-  (audio prima) e frame video frammentati.
-- **Riproduzione (receiver)**: `AudioTrack` con `PERFORMANCE_MODE_LOW_LATENCY`, buffer minimo,
-  jitter buffer adattivo 20–60 ms; in caso di underrun si inserisce silenzio, in caso di accumulo
-  si scartano campioni per tornare al target.
-- **Sincronizzazione A/V**: il video resta "render immediato" (ADR-005); è l'audio ad allinearsi al
-  video usando i pts comuni e `AudioTrack.getTimestamp` per stimare la latenza di uscita HDMI.
-  Obiettivo: scarto A/V entro ±40 ms (soglia di percezione del lip-sync). Se l'uscita audio della
-  TV è più lenta del video, si applica un ritardo video configurabile (default 0).
-- **Da verificare su device**: se l'audio continua a uscire anche dagli speaker del tablet durante
-  la cattura e come silenziarlo senza alterare il flusso catturato.
+## ADR-007 — Audio (part of the MVP)
+**Accepted.** Tablet audio must play on the TV: mirroring without audio is not considered working.
+- **Capture**: `AudioPlaybackCapture` (API 29+, fine on the tablet) from the same `MediaProjection` as
+  video, `RECORD_AUDIO` permission, usages `MEDIA`, `GAME`, `UNKNOWN`. Known limitation: apps that
+  declare `allowAudioPlaybackCapture=false` (or use non-capturable usages, e.g. calls) are not
+  captured → shown in the UI, not a bug.
+- **Format**: default **PCM s16le 48 kHz stereo** in 10 ms packets (~1.5 Mbps, no codec latency,
+  negligible next to video on a LAN). **Opus** (MediaCodec encoder API 29+, decoder available on
+  Fire OS 7) as an option for weak networks, selected during negotiation.
+- **Transport**: **Proposed, to be validated in the audio plan** — a dedicated TCP connection for audio,
+  bound to the video session via an id in HELLO/START, so audio packets do not wait behind a video
+  keyframe of hundreds of KB. Alternative: same socket with a priority scheduler (audio first) and
+  fragmented video frames.
+- **Playback (receiver)**: `AudioTrack` with `PERFORMANCE_MODE_LOW_LATENCY`, minimal buffer,
+  adaptive 20–60 ms jitter buffer; on underrun insert silence, on build-up drop samples to return
+  to target.
+- **A/V sync**: video stays "render immediately" (ADR-005); audio aligns to video using the shared pts
+  and `AudioTrack.getTimestamp` to estimate HDMI output latency. Target: A/V offset within ±40 ms
+  (lip-sync perception threshold). If the TV audio output is slower than video, apply a
+  configurable video delay (default 0).
+- **To verify on device**: whether audio keeps playing from the tablet speakers during capture and
+  how to mute it without affecting the captured stream.
 
-## ADR-008 — Strumenti
-**Accettata.** Gradle Kotlin DSL + version catalog, AGP/Kotlin stabili più recenti al momento
-dello scaffolding, Compose per la UI del tablet, View minimale per il receiver,
-Spotless (ktlint) + Android Lint, JUnit4 + Truth + kotlinx-coroutines-test per i test JVM,
-AndroidX Test per gli strumentati.
+## ADR-008 — Tooling
+**Accepted.** Gradle Kotlin DSL + version catalog, latest stable AGP/Kotlin at scaffolding time,
+Gradle running on JDK 25 LTS with Java 17 bytecode, Compose for the tablet UI, minimal Views for the
+receiver, Spotless (ktlint) + Android Lint, JUnit4 + Truth + kotlinx-coroutines-test for JVM tests,
+AndroidX Test for instrumented tests.

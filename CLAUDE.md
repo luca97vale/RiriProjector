@@ -1,109 +1,110 @@
-# RiriProjector — guida per Claude Code
+# RiriProjector — guide for Claude Code
 
-Un'unica app Android (Kotlin) che proietta lo schermo di un **Galaxy Tab** (sender) su una
-**Fire TV Stick / proiettore Android** (receiver) in LAN, con latenza e qualità migliori di Miracast.
+A single Android app (Kotlin) that mirrors the screen **and audio** of a **Galaxy Tab** (sender) to a
+**Fire TV Stick / Android projector** (receiver) over the LAN, with lower latency and better quality
+than Miracast.
 
 ```
 Tablet (sender)                                         Fire TV (receiver)
 MediaProjection → VirtualDisplay → Surface              NSD discovery (_ririproj._tcp)
   → MediaCodec encoder HEVC|H.264 (realtime, CBR)       TCP server ← HELLO/caps
-  → framing protocollo → TCP (TCP_NODELAY) ───────────→ deframing → MediaCodec decoder (low-latency)
-  ← REQUEST_KEYFRAME / PING / BITRATE  ←─────────────── → SurfaceView (render immediato)
-AudioPlaybackCapture → PCM 48k (o Opus) ─────────────→ jitter buffer → AudioTrack low-latency
-                                                         (allineato ai pts del video, A/V ±40 ms)
+  → protocol framing → TCP (TCP_NODELAY) ─────────────→ deframing → MediaCodec decoder (low-latency)
+  ← REQUEST_KEYFRAME / PING / BITRATE  ←─────────────── → SurfaceView (render immediately)
+AudioPlaybackCapture → PCM 48k (or Opus) ────────────→ jitter buffer → low-latency AudioTrack
+                                                         (aligned to video pts, A/V ±40 ms)
 ```
 
-L'**audio è obbligatorio**: una proiezione senza audio non è considerata funzionante (ADR-007).
-
-Il receiver pubblica il servizio via NSD; il sender lo scopre e si connette. Decisioni di dettaglio
+**Audio is mandatory**: mirroring without audio is not considered working (ADR-007).
+The receiver advertises itself via NSD; the sender discovers it and connects. Detailed decisions
 in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); roadmap in [docs/PLAN.md](docs/PLAN.md).
 
-## Struttura dei moduli (target)
+## Module structure
 
-| Modulo | Tipo | Responsabilità |
+| Module | Type | Responsibility |
 |---|---|---|
-| `:app` | Android app | Activity di avvio, scelta modalità (auto-receiver su TV/leanback), DI, manifest unico |
-| `:core:protocol` | **Kotlin/JVM puro** | Framing, messaggi, (de)serializzazione, versioning. Zero dipendenze Android → test JVM veloci |
-| `:core:net` | Android lib | Trasporto TCP (client/server), NSD publish/discover, backpressure, misure RTT |
-| `:core:media` | Android lib | Wrapper encoder/decoder MediaCodec (video e Opus), selezione codec da `MediaCodecList`, parametri low-latency, cattura audio (`AudioPlaybackCapture`) e riproduzione (`AudioTrack`) |
-| `:feature:sender` | Android lib | MediaProjection (video + audio), foreground service `mediaProjection`, UI tablet |
-| `:feature:receiver` | Android lib | Activity leanback full-screen con `SurfaceView`, player audio, sincronizzazione A/V, overlay statistiche |
+| `:app` | Android app | Launch activity, mode selection (auto-receiver on TV/leanback), wiring, single manifest |
+| `:core:protocol` | **Pure Kotlin/JVM** | Framing, messages, (de)serialization, versioning, codec negotiation. No Android deps → fast JVM tests |
+| `:core:net` | Android lib | TCP transport (client/server), NSD publish/discover, backpressure, RTT measurement |
+| `:core:media` | Android lib | MediaCodec encoder/decoder wrappers (video and Opus), codec selection from `MediaCodecList`, low-latency params, audio capture (`AudioPlaybackCapture`) and playback (`AudioTrack`) |
+| `:feature:sender` | Android lib | MediaProjection (video + audio), `mediaProjection` foreground service, tablet UI |
+| `:feature:receiver` | Android lib | Full-screen leanback activity with `SurfaceView`, audio player, A/V sync, stats overlay |
 
-Regola di dipendenza: `feature → core:media/net → core:protocol`. Le `feature` non dipendono tra loro.
-Tutta la logica testabile senza dispositivo (framing, policy di bitrate, scelta codec da una lista
-di capabilities, macchina a stati di sessione) sta in codice puro, iniettabile e coperto da test JVM.
+Dependency rule: `feature → core:media/net → core:protocol`. Features never depend on each other.
+All logic that can be tested without a device (framing, bitrate policy, codec choice from a capability
+list, session state machine, jitter buffer) lives in pure, injectable code covered by JVM tests.
 
-## Comandi
+## Commands
 
-Su Windows usa `./gradlew` da Git Bash (o `gradlew.bat`). JDK 25 LTS (in locale `D:\Android\jdk25`)
-per eseguire Gradle, Android SDK in `D:\Android\Sdk` con platform-tools. Il bytecode dell'app
-resta target Java 17 (`jvmTarget`/`compileOptions`), che è quello supportato da Android.
+On Windows use `./gradlew` from Git Bash (or `gradlew.bat`). Gradle runs on JDK 25 LTS
+(locally `D:\Android\jdk25`); Android SDK in `D:\Android\Sdk`; Gradle cache in `D:\Android\gradle-home`
+(`GRADLE_USER_HOME`). App bytecode targets Java 17, which is what Android supports.
 
 ```bash
-./gradlew assembleDebug              # build APK unico (sender+receiver)
-./gradlew testDebugUnitTest          # unit test JVM (tutti i moduli)
-./gradlew :core:protocol:test        # solo protocollo, il ciclo più veloce
-./gradlew spotlessApply              # formattazione ktlint
-./gradlew spotlessCheck lint         # quello che gira in CI
-./gradlew connectedDebugAndroidTest  # test strumentati (tablet collegato)
-scripts/deploy.sh firetv|tablet|both # build + install via adb (vedi /firetv-deploy)
+./gradlew assembleDebug              # build the single APK (sender + receiver)
+./gradlew testDebugUnitTest          # JVM unit tests (all Android modules)
+./gradlew :core:protocol:test        # protocol only, the fastest loop
+./gradlew spotlessApply              # ktlint formatting
+./gradlew spotlessCheck lintDebug    # what CI runs besides tests and build
+./gradlew connectedDebugAndroidTest  # instrumented tests (device attached)
+scripts/deploy.sh firetv|tablet|both # build + install via adb (see /firetv-deploy)
 ```
 
-Variabili d'ambiente locali (mai committate): `FIRETV_HOST` (IP della Fire TV, porta 5555 di default),
-`TABLET_SERIAL` (seriale adb del tablet, opzionale).
+Local environment variables (never committed): `FIRETV_HOST` (Fire TV IP, port 5555 by default),
+`TABLET_SERIAL` (adb serial of the tablet, optional).
 
-## Flusso SDLC (obbligatorio)
+## SDLC flow (mandatory)
 
-Ogni modifica non banale segue: **requisito → piano → implementazione → test → review → PR**.
-Dettagli in [docs/SDLC.md](docs/SDLC.md). Skill disponibili:
+Every non-trivial change follows: **requirement → plan → implementation → tests → review → PR**.
+Details in [docs/SDLC.md](docs/SDLC.md). Available skills:
 
-| Fase | Skill | Output |
+| Phase | Skill | Output |
 |---|---|---|
-| Requisito | `/sdlc-req` | Issue GitHub con criteri di accettazione misurabili |
-| Piano | `/sdlc-plan <issue>` | `docs/plans/<issue>-<slug>.md` validato dall'agente `android-architect` |
-| Implementazione | `/sdlc-impl <issue>` | Commit piccoli sul branch `feat/<issue>-<slug>` |
-| Test | `/sdlc-test` | Test scritti dall'agente `test-writer`, suite verde |
-| Review | `/sdlc-review` | Review dell'agente `media-net-reviewer` + correzioni |
-| PR | `/sdlc-pr` | PR con template compilato, collegata all'issue |
-| Tutto il giro | `/sdlc-feature <descrizione>` | Orchestrazione delle fasi sopra, con pause per l'approvazione |
-| Device | `/firetv-deploy` | Build, install su Fire TV/tablet, logcat filtrato |
+| Requirement | `/sdlc-req` | GitHub issue with measurable acceptance criteria |
+| Plan | `/sdlc-plan <issue>` | `docs/plans/<issue>-<slug>.md` reviewed by the `android-architect` agent |
+| Implementation | `/sdlc-impl <issue>` | Small commits on `feat/<issue>-<slug>` |
+| Tests | `/sdlc-test` | Tests written by the `test-writer` agent, green suite |
+| Review | `/sdlc-review` | Review by the `media-net-reviewer` agent + fixes |
+| PR | `/sdlc-pr` | PR with the filled-in template, linked to the issue |
+| Full cycle | `/sdlc-feature <description>` | Orchestrates the phases above, pausing for approval |
+| Device | `/firetv-deploy` | Build, install on Fire TV/tablet, filtered logcat |
 
-## Convenzioni
+## Conventions
 
-- Kotlin idiomatico, coroutines + `Flow`; niente `GlobalScope`. Thread dedicati (non `Dispatchers.Default`)
-  per i loop bloccanti di codec e socket, con priorità alta (`THREAD_PRIORITY_URGENT_DISPLAY` / `_AUDIO`).
-- **Hot path senza allocazioni**: nel loop encoder→socket e socket→decoder riusa `ByteBuffer`/array,
-  niente boxing, niente log per-frame (solo contatori aggregati ogni secondo).
-- Ogni risorsa (MediaCodec, VirtualDisplay, MediaProjection, Socket, NsdManager listener) ha un
-  proprietario chiaro e viene rilasciata in `finally`/`close()`; gli stati di errore portano a
-  una ricostruzione pulita della sessione, non a un crash.
-- Formato wire: big-endian, versione nell'header, campi a lunghezza fissa; ogni modifica al protocollo
-  incrementa `PROTOCOL_VERSION` e aggiorna `docs/ARCHITECTURE.md`.
-- Log: tag `Riri/<Componente>`; metriche (fps, bitrate, RTT, frame scartati, latenza decode)
-  esposte via `StateFlow` per l'overlay.
-- Commit: Conventional Commits (`feat:`, `fix:`, `perf:`, `test:`, `chore:`, `docs:`), in inglese.
-  Branch: `feat/<issue>-<slug>`, `fix/<issue>-<slug>`, `chore/<slug>`. Mai commit diretti su `main`.
-- Documentazione e discussione con l'utente in italiano; codice, identificatori e commit in inglese.
+- **Everything in English**: code, identifiers, comments, docs, commits, issues, PRs, UI strings
+  (UI strings in `strings.xml`, so they can be localized later).
+- Idiomatic Kotlin, coroutines + `Flow`; no `GlobalScope`. Dedicated threads (not `Dispatchers.Default`)
+  for blocking codec and socket loops, with high priority (`THREAD_PRIORITY_URGENT_DISPLAY` / `_AUDIO`).
+- **Allocation-free hot path**: in the encoder→socket and socket→decoder loops reuse `ByteBuffer`s/arrays,
+  no boxing, no per-frame logging (only counters aggregated every second).
+- Every resource (MediaCodec, VirtualDisplay, MediaProjection, AudioRecord, AudioTrack, Socket,
+  NsdManager listener) has a clear owner and is released in `finally`/`close()`; error states lead to a
+  clean session rebuild, not a crash.
+- Wire format: big-endian, version in the header, fixed-size fields; every protocol change bumps
+  `PROTOCOL_VERSION` and updates `docs/ARCHITECTURE.md`.
+- Logging: tag `Riri/<Component>`; metrics (fps, bitrate, RTT, dropped frames, decode latency,
+  A/V offset) exposed via `StateFlow` for the overlay.
+- Commits: Conventional Commits (`feat:`, `fix:`, `perf:`, `test:`, `chore:`, `docs:`).
+  Branches: `feat/<issue>-<slug>`, `fix/<issue>-<slug>`, `chore/<slug>`. Never commit directly to `main`.
 
-## Vincoli di piattaforma da ricordare
+## Platform constraints to remember
 
 - Fire TV Stick: Fire OS 7 = Android 9 (API 28), Fire OS 8 = Android 11 (API 30) → `minSdk 28`.
-  `KEY_LOW_LATENCY` solo da API 30: su API 28 usare chiavi vendor se presenti, altrimenti
-  ridurre il buffering lato app. Serve `LEANBACK_LAUNCHER`, banner 320×180,
+  `KEY_LOW_LATENCY` only from API 30: on API 28 use vendor keys when present, otherwise minimize
+  app-side buffering. Requires `LEANBACK_LAUNCHER`, a 320×180 banner,
   `uses-feature touchscreen required=false`.
-- Galaxy Tab (Android 14+): consenso MediaProjection a ogni sessione, foreground service con
-  `foregroundServiceType="mediaProjection"` avviato **prima** di `getMediaProjection`,
-  callback `MediaProjection.Callback` registrata prima di creare il VirtualDisplay.
-- Audio: `AudioPlaybackCapture` richiede API 29+ e `RECORD_AUDIO`; le app con
-  `allowAudioPlaybackCapture=false` non sono catturabili (limite da mostrare in UI, non un bug).
-  Il jitter buffer audio è logica pura testata su JVM; mai bloccare il thread di `AudioTrack`.
-- Non dare per scontato HEVC: negozia il codec in base alle capabilities annunciate dal receiver
-  (HELLO) e a quelle dell'encoder locale; fallback H.264.
+- Galaxy Tab (Android 14+): MediaProjection consent for every session, foreground service with
+  `foregroundServiceType="mediaProjection"` started **before** `getMediaProjection`,
+  `MediaProjection.Callback` registered before creating the VirtualDisplay.
+- Audio: `AudioPlaybackCapture` requires API 29+ and `RECORD_AUDIO`; apps with
+  `allowAudioPlaybackCapture=false` cannot be captured (a limitation to surface in the UI, not a bug).
+  The audio jitter buffer is pure logic tested on the JVM; never block the `AudioTrack` thread.
+- Do not assume HEVC: negotiate the codec from the capabilities announced by the receiver (HELLO)
+  and those of the local encoder; fall back to H.264.
 
-## Cose da non fare
+## Don'ts
 
-- Non aggiungere librerie di streaming pesanti (WebRTC, ffmpeg, ExoPlayer) senza una decisione
-  registrata in `docs/ARCHITECTURE.md` e approvata dall'utente.
-- Non modificare `gradle/wrapper/gradle-wrapper.jar`, keystore o file `*.properties` con segreti
-  (bloccato dagli hook).
-- Non fare `git push --force` né push su `main` (bloccato dagli hook). Le PR si aprono con `/sdlc-pr`.
+- Do not add heavy streaming libraries (WebRTC, ffmpeg, ExoPlayer) without a decision recorded in
+  `docs/ARCHITECTURE.md` and approved by the user.
+- Do not modify `gradle/wrapper/gradle-wrapper.jar`, keystores or `*.properties` files with secrets
+  (blocked by hooks).
+- No `git push --force` and no push to `main` (blocked by hooks). PRs are opened with `/sdlc-pr`.

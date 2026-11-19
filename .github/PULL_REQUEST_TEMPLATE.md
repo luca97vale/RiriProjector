@@ -1,11 +1,11 @@
-## Sintesi
-<!-- Cosa cambia e perché, in 2-4 righe. -->
+## Summary
+<!-- What changes and why, in 2-4 lines. -->
 
 Closes #
 
-Piano: `docs/plans/<n>-<slug>.md`
+Plan: `docs/plans/<n>-<slug>.md`
 
-## Modifiche per modulo
+## Changes per module
 - `core:protocol`:
 - `core:net`:
 - `core:media`:
@@ -13,36 +13,36 @@ Piano: `docs/plans/<n>-<slug>.md`
 - `feature:receiver`:
 - `app` / build / CI:
 
-## Protocollo
-- [ ] Nessuna modifica al formato wire
-- [ ] Modificato → `PROTOCOL_VERSION` incrementata, ADR aggiornato in `docs/ARCHITECTURE.md`, test di round-trip aggiunti
+## Protocol
+- [ ] No wire format change
+- [ ] Changed → `PROTOCOL_VERSION` bumped, ADR updated in `docs/ARCHITECTURE.md`, round-trip tests added
 
-## Test
-- [ ] `./gradlew testDebugUnitTest` verde
-- [ ] `./gradlew spotlessCheck lintDebug` verde
-- [ ] Test strumentati (`connectedDebugAndroidTest`) su: <!-- device o "non applicabile" -->
+## Tests
+- [ ] `./gradlew testDebugUnitTest` green
+- [ ] `./gradlew spotlessCheck lintDebug` green
+- [ ] Instrumented tests (`connectedDebugAndroidTest`) on: <!-- device or "not applicable" -->
 
-### Test su device
-| Voce | Esito |
+### On-device tests
+| Item | Result |
 |---|---|
-| Galaxy Tab (modello / One UI) | |
-| Fire TV (modello / Fire OS) | |
-| Scoperta NSD automatica | |
-| Avvio/stop proiezione, revoca consenso | |
-| Riconnessione dopo perdita Wi-Fi / riavvio receiver | |
-| Rotazione tablet | |
-| Audio riprodotto sulla TV (musica/video, 10 min senza buchi) | |
-| Lip-sync (clap/flash di test) | |
+| Galaxy Tab (model / One UI) | |
+| Fire TV (model / Fire OS) | |
+| Automatic NSD discovery | |
+| Start/stop mirroring, consent revoked | |
+| Reconnection after Wi-Fi loss / receiver restart | |
+| Tablet rotation | |
+| Audio played on the TV (music/video, 10 min without gaps) | |
+| Lip-sync (clap/flash test) | |
 
-### Prestazioni (obbligatorio se tocca il hot path media/rete)
-| Metrica | Prima | Dopo |
+### Performance (required if the media/network hot path is touched)
+| Metric | Before | After |
 |---|---|---|
-| Risoluzione / fps | | |
-| Bitrate medio | | |
-| Latenza (RTT + decode, o glass-to-glass) | | |
-| Frame scartati / min | | |
-| Scarto A/V (ms) / underrun audio per min | | |
+| Resolution / fps | | |
+| Average bitrate | | |
+| Latency (RTT + decode, or glass-to-glass) | | |
+| Dropped frames / min | | |
+| A/V offset (ms) / audio underruns per min | | |
 
 ## Review
-- [ ] `/sdlc-review` eseguita, nessun blocker aperto
-- Follow-up non inclusi:
+- [ ] `/sdlc-review` run, no open blockers
+- Follow-ups not included:
