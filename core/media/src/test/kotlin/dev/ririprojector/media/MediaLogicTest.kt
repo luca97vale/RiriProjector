@@ -79,48 +79,79 @@ class CodecCatalogTest {
 }
 
 class DecoderBacklogTest {
+    private var now = 0L
+
+    /** Advances the fake clock by [ms] and offers one unit. */
+    private fun DecoderBacklog.au(isConfig: Boolean = false, key: Boolean = false, ms: Long = 16) =
+        onAccessUnit(isConfig, key, (now + ms * 1000).also { now = it })
+
+    private fun started(maxLagUs: Long = 60_000, hardCap: Int = 8) = DecoderBacklog(maxLagUs, hardCap).apply {
+        au(isConfig = true)
+        au(key = true)
+    }
+
     @Test
     fun `nothing decodes before config and a keyframe`() {
         val b = DecoderBacklog()
-        assertThat(b.onAccessUnit(isConfig = false, isKeyframe = false)).isEqualTo(DROP_AND_REQUEST_KEYFRAME)
-        assertThat(b.onAccessUnit(isConfig = false, isKeyframe = true)).isEqualTo(DROP) // keyframe without config
-        assertThat(b.onAccessUnit(isConfig = true, isKeyframe = false)).isEqualTo(DECODE)
-        assertThat(b.onAccessUnit(isConfig = false, isKeyframe = false)).isEqualTo(DROP)
-        assertThat(b.onAccessUnit(isConfig = false, isKeyframe = true)).isEqualTo(DECODE)
-        assertThat(b.onAccessUnit(isConfig = false, isKeyframe = false)).isEqualTo(DECODE)
+        assertThat(b.au()).isEqualTo(DROP_AND_REQUEST_KEYFRAME)
+        assertThat(b.au(key = true)).isEqualTo(DROP) // keyframe without config
+        assertThat(b.au(isConfig = true)).isEqualTo(DECODE)
+        assertThat(b.au()).isEqualTo(DROP)
+        assertThat(b.au(key = true)).isEqualTo(DECODE)
+        assertThat(b.au()).isEqualTo(DECODE)
         assertThat(b.dropped).isEqualTo(3)
     }
 
     @Test
-    fun `backlog over the cap drops until the next keyframe and requests one once`() {
-        val b = started(maxInFlight = 2) // keyframe in flight
-        assertThat(b.onAccessUnit(false, false)).isEqualTo(DECODE) // 2 in flight
-        assertThat(b.onAccessUnit(false, false)).isEqualTo(DROP_AND_REQUEST_KEYFRAME)
-        b.onFrameOutput()
-        b.onFrameOutput()
-        // Room again, but P-frames still reference the dropped one.
-        assertThat(b.onAccessUnit(false, false)).isEqualTo(DROP)
-        assertThat(b.onAccessUnit(false, true)).isEqualTo(DECODE)
-        assertThat(b.onAccessUnit(false, false)).isEqualTo(DECODE)
+    fun `a burst is fine while the decoder keeps up`() {
+        val b = started()
+        repeat(5) { assertThat(b.au(ms = 0)).isEqualTo(DECODE) } // 6 in flight, none old
+        repeat(6) { b.onFrameOutput() }
+        assertThat(b.au()).isEqualTo(DECODE)
     }
 
     @Test
-    fun `a new episode requests a keyframe again`() {
-        val b = started(maxInFlight = 1)
-        assertThat(b.onAccessUnit(false, false)).isEqualTo(DROP_AND_REQUEST_KEYFRAME)
+    fun `decoder lagging beyond the limit drops until a keyframe and requests one once`() {
+        val b = started(maxLagUs = 60_000)
+        assertThat(b.au(ms = 50)).isEqualTo(DECODE) // oldest waited 50 ms
+        assertThat(b.au(ms = 20)).isEqualTo(DROP_AND_REQUEST_KEYFRAME) // 70 ms > 60 ms
+        assertThat(b.au()).isEqualTo(DROP)
         b.onFrameOutput()
-        assertThat(b.onAccessUnit(false, true)).isEqualTo(DECODE)
-        assertThat(b.onAccessUnit(false, false)).isEqualTo(DROP_AND_REQUEST_KEYFRAME)
+        b.onFrameOutput()
+        assertThat(b.au()).isEqualTo(DROP) // P-frames still reference the dropped one
+        assertThat(b.au(key = true)).isEqualTo(DECODE)
+        assertThat(b.au()).isEqualTo(DECODE)
+    }
+
+    @Test
+    fun `hard cap applies even when frames are fresh`() {
+        val b = started(hardCap = 3)
+        assertThat(b.au(ms = 0)).isEqualTo(DECODE)
+        assertThat(b.au(ms = 0)).isEqualTo(DECODE)
+        assertThat(b.au(ms = 0)).isEqualTo(DROP_AND_REQUEST_KEYFRAME)
+    }
+
+    @Test
+    fun `a leaked in-flight unit costs one episode, not an IDR per keyframe`() {
+        val b = started()
+        // The decoder swallows the keyframe without output: it stays "in flight" forever.
+        assertThat(b.au(ms = 100)).isEqualTo(DROP_AND_REQUEST_KEYFRAME)
+        assertThat(b.au(key = true)).isEqualTo(DECODE) // resyncs the window
+        b.onFrameOutput()
+        repeat(20) {
+            assertThat(b.au()).isEqualTo(DECODE)
+            b.onFrameOutput()
+        }
     }
 
     @Test
     fun `failed submit waits for a keyframe without a second request`() {
         val b = started()
-        assertThat(b.onAccessUnit(false, false)).isEqualTo(DECODE)
+        assertThat(b.au()).isEqualTo(DECODE)
         b.onSubmitFailed(isConfig = false)
         assertThat(b.inFlight).isEqualTo(1)
-        assertThat(b.onAccessUnit(false, false)).isEqualTo(DROP)
-        assertThat(b.onAccessUnit(false, true)).isEqualTo(DECODE)
+        assertThat(b.au()).isEqualTo(DROP)
+        assertThat(b.au(key = true)).isEqualTo(DECODE)
     }
 
     @Test
@@ -128,7 +159,10 @@ class DecoderBacklogTest {
         val b = started()
         b.reset()
         assertThat(b.inFlight).isEqualTo(0)
-        assertThat(b.onAccessUnit(false, true)).isEqualTo(DROP_AND_REQUEST_KEYFRAME)
+        assertThat(b.haveConfig).isFalse()
+        assertThat(b.au(key = true)).isEqualTo(DROP_AND_REQUEST_KEYFRAME)
+        assertThat(b.au(isConfig = true)).isEqualTo(DECODE) // replayed CSD
+        assertThat(b.au(key = true)).isEqualTo(DECODE)
     }
 
     @Test
@@ -137,10 +171,21 @@ class DecoderBacklogTest {
         b.onFrameOutput()
         assertThat(b.inFlight).isEqualTo(0)
     }
+}
 
-    private fun started(maxInFlight: Int = 3) = DecoderBacklog(maxInFlight).apply {
-        onAccessUnit(isConfig = true, isKeyframe = false)
-        onAccessUnit(isConfig = false, isKeyframe = true)
+class KeyframeRequestLimiterTest {
+    @Test
+    fun `at most one request per interval`() {
+        val l = KeyframeRequestLimiter(minIntervalMs = 300)
+        assertThat(l.tryAcquire(1_000)).isTrue()
+        assertThat(l.tryAcquire(1_100)).isFalse()
+        assertThat(l.tryAcquire(1_299)).isFalse()
+        assertThat(l.tryAcquire(1_300)).isTrue()
+    }
+
+    @Test
+    fun `first request is always allowed`() {
+        assertThat(KeyframeRequestLimiter().tryAcquire(0)).isTrue()
     }
 }
 

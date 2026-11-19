@@ -1,13 +1,14 @@
 package dev.ririprojector.feature.receiver
 
 import android.content.Context
+import android.os.Build
 import android.os.Process
 import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
 import dev.ririprojector.media.AndroidCodecs
 import dev.ririprojector.media.CodecCatalog
-import dev.ririprojector.media.DecoderStats
+import dev.ririprojector.media.KeyframeRequestLimiter
 import dev.ririprojector.media.VideoDecoder
 import dev.ririprojector.net.Connection
 import dev.ririprojector.net.Handshake
@@ -25,6 +26,8 @@ import dev.ririprojector.protocol.model.DisplayInfo
 import dev.ririprojector.protocol.model.StreamParams
 import java.io.Closeable
 import java.io.IOException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
@@ -54,7 +57,11 @@ data class ReceiverStats(
 
 /**
  * Owns the TCP server and the NSD registration while the receiver screen is started, and runs one
- * session at a time on its own thread: HELLO → START → decoder → read loop (ADR-002, ADR-003).
+ * session at a time: HELLO → START → decoder → read loop (ADR-002, ADR-003).
+ *
+ * Threads per session: the session thread reads and feeds the decoder; the control thread is the
+ * only writer after the handshake (PONG, STATS, REQUEST_KEYFRAME, BYE), so no other thread ever
+ * blocks on the socket. Public methods are called from the main thread and never do network I/O.
  */
 class ReceiverController(
     private val context: Context,
@@ -94,18 +101,21 @@ class ReceiverController(
     fun stop() {
         runCatching { nsd?.close() }
         nsd = null
-        session?.end(ByeReason.NORMAL)
+        session?.endAndAwait(ByeReason.NORMAL)
         server?.close()
         server = null
     }
 
-    /** Called from the SurfaceHolder callbacks. Losing the surface ends the current session. */
+    /**
+     * Called from the SurfaceHolder callbacks. Losing the surface ends the current session and
+     * waits (bounded) until its decoder is released, so the codec never renders into a dead surface.
+     */
     fun setSurface(value: Surface?) {
         surfaceLock.withLock {
             surface = value
             if (value != null) surfaceReady.signalAll()
         }
-        if (value == null) session?.end(ByeReason.NORMAL)
+        if (value == null) session?.endAndAwait(ByeReason.NORMAL)
     }
 
     private fun awaitSurface(timeoutMs: Long): Surface? = surfaceLock.withLock {
@@ -128,78 +138,93 @@ class ReceiverController(
     }
 
     private inner class Session(private val connection: Connection) {
-        private val writeLock = ReentrantLock()
-        private var decoder: VideoDecoder? = null
+        private val outbox = LinkedBlockingQueue<ControlMessage>(OUTBOX_CAPACITY)
+        private val keyframes = KeyframeRequestLimiter()
+        private val done = CountDownLatch(1)
+
+        @Volatile private var decoder: VideoDecoder? = null
+
+        @Volatile private var params: StreamParams? = null
+
+        @Volatile private var decoderName = ""
 
         @Volatile private var ended = false
+
+        @Volatile private var writerStarted = false
 
         @Volatile private var bytesReceived = 0L
 
         fun run() {
             Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY)
-            var statsThread: Thread? = null
+            var writer: Thread? = null
             try {
-                val params = Handshake.asReceiver(connection, hello())
-                Log.i(TAG, "session ${params.sessionId} from ${connection.remoteAddress}: ${params.video}")
-                val target = awaitSurface(SURFACE_WAIT_MS) ?: throw IOException("no surface")
-                onStreamStarted(params)
-                val best = catalog.best(params.video.codec, encoder = false) ?: throw IOException("no decoder")
-                if (android.os.Build.VERSION.SDK_INT >= 30) {
+                val p = Handshake.asReceiver(connection, hello())
+                params = p
+                Log.i(TAG, "session ${p.sessionId} from ${connection.remoteAddress}: ${p.video}")
+                writer = startWriter()
+                val target = awaitSurface(SURFACE_WAIT_MS)
+                if (target == null || ended) throw IOException("no surface")
+                onStreamStarted(p)
+                val best = catalog.best(p.video.codec, encoder = false) ?: throw IOException("no decoder")
+                decoderName = best.name
+                if (Build.VERSION.SDK_INT >= 30) {
                     runCatching {
-                        target.setFrameRate(params.video.fps.toFloat(), Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE)
+                        target.setFrameRate(p.video.fps.toFloat(), Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE)
                     }
                 }
                 decoder =
                     VideoDecoder(
                         codecName = best.name,
-                        config = params.video,
+                        config = p.video,
                         surface = target,
                         lowLatencySupported = best.lowLatency,
-                        onKeyframeNeeded = { send(ControlMessage.RequestKeyframe) },
+                        onKeyframeNeeded = ::requestKeyframe,
                         onFatalError = { end(ByeReason.ERROR) },
                     ).start()
                 _state.value =
-                    ReceiverState.Streaming(params, connection.remoteAddress, ReceiverStats(decoderName = best.name))
-                statsThread = startStatsLoop(params, best.name)
+                    ReceiverState.Streaming(p, connection.remoteAddress, ReceiverStats(decoderName = best.name))
                 readLoop()
             } catch (e: HandshakeException) {
                 Log.w(TAG, "handshake failed: ${e.message}")
             } catch (e: Exception) {
-                if (!ended) Log.w(TAG, "session ended: ${e.message}")
-                if (!ended) runCatching { send(ControlMessage.Bye(ByeReason.ERROR)) }
+                if (!ended) {
+                    Log.w(TAG, "session failed: ${e.message}")
+                    end(ByeReason.ERROR)
+                }
             } finally {
                 ended = true
-                statsThread?.interrupt()
+                if (writer != null) {
+                    writer.join(WRITER_DRAIN_MS) // lets a queued BYE go out
+                    writer.interrupt()
+                }
+                connection.close()
                 decoder?.close()
                 decoder = null
                 server?.sessionEnded(connection)
                 if (session === this) session = null
                 showWaiting()
+                done.countDown()
             }
         }
 
         private fun readLoop() {
             val reader = connection.reader
             while (!ended) {
-                val p = reader.read() ?: return
-                bytesReceived += p.payloadLength + HEADER_BYTES
-                when (p.type) {
-                    MessageType.CONFIG, MessageType.FRAME ->
-                        decoder?.submit(
-                            p.payload,
-                            p.payloadLength,
-                            p.ptsOrSeq,
-                            p.isCodecConfig || p.type == MessageType.CONFIG,
-                            p.isKeyframe,
-                        )
+                val pk = reader.read() ?: return
+                bytesReceived += pk.payloadLength + HEADER_BYTES
+                when (pk.type) {
+                    MessageType.CONFIG, MessageType.FRAME -> {
+                        val isConfig = pk.type == MessageType.CONFIG || pk.isCodecConfig
+                        decoder?.submit(pk.payload, pk.payloadLength, pk.ptsOrSeq, isConfig, pk.isKeyframe)
+                    }
 
                     MessageType.AUDIO_FRAME -> Unit
 
                     // M5
 
                     MessageType.PING -> {
-                        val ping = p.decodeControl() as ControlMessage.Ping
-                        send(ControlMessage.Pong(ping.senderTimeUs, nowUs()))
+                        val ping = pk.decodeControl() as ControlMessage.Ping
+                        outbox.offer(ControlMessage.Pong(ping.senderTimeUs, nowUs()))
                     }
 
                     MessageType.BYE -> return
@@ -209,15 +234,31 @@ class ReceiverController(
             }
         }
 
-        private fun startStatsLoop(params: StreamParams, decoderName: String): Thread = Thread({
+        /** Non-blocking; safe from the codec thread. */
+        private fun requestKeyframe() {
+            if (keyframes.tryAcquire(SystemClock.elapsedRealtime())) outbox.offer(ControlMessage.RequestKeyframe)
+        }
+
+        /** The only socket writer after the handshake; also produces STATS once per second. */
+        private fun startWriter(): Thread = Thread({
+            var nextStatsAt = SystemClock.elapsedRealtime() + 1_000
             var lastFrames = 0L
             var lastBytes = 0L
             var lastAt = SystemClock.elapsedRealtime()
             try {
-                while (!ended) {
-                    Thread.sleep(1_000)
-                    val d: DecoderStats = decoder?.stats() ?: continue
+                while (true) {
+                    val wait = (nextStatsAt - SystemClock.elapsedRealtime()).coerceAtLeast(0)
+                    val msg = outbox.poll(wait, TimeUnit.MILLISECONDS)
+                    if (msg != null) {
+                        connection.writer.writeControl(msg)
+                        connection.writer.flush()
+                        if (msg is ControlMessage.Bye) break
+                        continue
+                    }
+                    if (ended) break
                     val now = SystemClock.elapsedRealtime()
+                    nextStatsAt = now + 1_000
+                    val d = decoder?.stats() ?: continue
                     val secs = (now - lastAt).coerceAtLeast(1) / 1000.0
                     val bytes = bytesReceived
                     val stats =
@@ -233,8 +274,8 @@ class ReceiverController(
                     lastFrames = d.decodedFrames
                     lastBytes = bytes
                     lastAt = now
-                    _state.value = ReceiverState.Streaming(params, connection.remoteAddress, stats)
-                    send(
+                    params?.let { _state.value = ReceiverState.Streaming(it, connection.remoteAddress, stats) }
+                    connection.writer.writeControl(
                         ControlMessage.Stats(
                             decodedFpsX100 = (stats.fps * 100).toInt(),
                             droppedFrames = d.droppedFrames.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
@@ -244,36 +285,37 @@ class ReceiverController(
                             avOffsetUs = 0,
                         ),
                     )
+                    connection.writer.flush()
                 }
             } catch (_: InterruptedException) {
                 // session ended
             } catch (e: IOException) {
-                end(ByeReason.ERROR)
+                if (!ended) Log.w(TAG, "control write failed: ${e.message}")
+            } finally {
+                ended = true
+                connection.close() // unblocks the reader
             }
-        }, "Riri/Stats").apply {
+        }, "Riri/Control").apply {
             isDaemon = true
             start()
+            writerStarted = true
         }
 
-        fun send(message: ControlMessage) {
-            if (connection.isClosed) return
-            try {
-                writeLock.withLock {
-                    connection.writer.writeControl(message)
-                    connection.writer.flush()
-                }
-            } catch (e: IOException) {
-                Log.w(TAG, "send ${message.type} failed: ${e.message}")
-                end(ByeReason.ERROR)
-            }
-        }
-
-        /** Ends the session from any thread; the session thread cleans up. */
+        /** Ends the session from any thread without touching the socket's output. */
         fun end(reason: ByeReason) {
             if (ended) return
             ended = true
-            if (reason != ByeReason.ERROR) runCatching { send(ControlMessage.Bye(reason)) }
-            connection.close() // unblocks the reader
+            if (writerStarted && reason != ByeReason.ERROR && outbox.offer(ControlMessage.Bye(reason))) return
+            connection.close()
+        }
+
+        /** [end], then wait (bounded) for the decoder to be released. Main-thread safe. */
+        fun endAndAwait(reason: ByeReason) {
+            end(reason)
+            if (!done.await(GRACE_MS, TimeUnit.MILLISECONDS)) {
+                connection.close() // BYE could not be written in time; force the reader out
+                done.await(GRACE_MS, TimeUnit.MILLISECONDS)
+            }
         }
     }
 
@@ -290,6 +332,9 @@ class ReceiverController(
         const val TAG = "Riri/Receiver"
         const val SURFACE_WAIT_MS = 2_000L
         const val HEADER_BYTES = 16
+        const val OUTBOX_CAPACITY = 32
+        const val WRITER_DRAIN_MS = 300L
+        const val GRACE_MS = 500L
 
         fun nowUs() = SystemClock.elapsedRealtimeNanos() / 1_000
     }
