@@ -35,4 +35,12 @@
     <string name="sender_share">Share</string>
     <string name="sender_share_screen">Entire screen</string>
     <string name="sender_share_app">One app</string>
+    <string name="sender_audio_from">Audio from</string>
+    <string name="sender_audio_from_none">None (video only)</string>
+    <string name="sender_audio_from_hint">Choose the same app in the next dialog. Other apps stay silent.</string>
+    <string name="sender_audio_from_hint_none">Android shares sound from every app, so pick the app whose sound to mirror. With none, only video is mirrored.</string>
+    <string name="sender_audio_no_app">Audio: off (no app chosen for sound)</string>
+    <string name="sender_cancel">Cancel</string>
+    <string name="sender_video_delay">Lip-sync: video delayed %1$d ms to match the sound</string>
+    <string name="sender_content_hidden">The shared app is not on screen: the projector shows nothing until you return to it.</string>
 </resources>

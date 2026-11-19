@@ -46,6 +46,10 @@ class SenderSession(
     private val densityDpi: Int,
     /** True when RECORD_AUDIO is granted and the platform supports playback capture (API 29+). */
     private val audioPermitted: Boolean,
+    /** The consent covered one app (API 34+): audio must come from that app only (ADR-009). */
+    private val singleApp: Boolean,
+    /** Uid of the app chosen as the audio source when [singleApp]; null = none chosen. */
+    private val audioUid: Int?,
     /** Shown when the receiver runs a different protocol version (localized by the caller). */
     private val versionMismatchText: String,
     private val onEnded: (message: String?) -> Unit,
@@ -63,6 +67,8 @@ class SenderSession(
     @Volatile private var audioFailed = false
 
     @Volatile private var endMessage: String? = null
+
+    @Volatile private var contentHidden = false
     private val queue = SendQueue(onKeyframeNeeded = { encoder?.requestKeyframe() })
     private val clock = ClockSync()
 
@@ -94,6 +100,11 @@ class SenderSession(
             isDaemon = true
             start()
         }
+    }
+
+    /** Single-app sharing: the shared app left/returned to the screen (shown with the next STATS). */
+    fun onContentVisibilityChanged(visible: Boolean) {
+        contentHidden = !visible
     }
 
     private fun run() {
@@ -176,6 +187,10 @@ class SenderSession(
     @SuppressLint("MissingPermission") // checked by the caller: audioPermitted
     private fun startAudio(params: StreamParams): AudioStatus {
         if (!preferences.audioEnabled) return AudioStatus.OFF
+        if (singleApp && audioUid == null) {
+            Log.i(TAG, "single-app sharing without an audio app: video only")
+            return AudioStatus.NO_APP
+        }
         if (!audioPermitted || Build.VERSION.SDK_INT < 29) {
             Log.w(TAG, "audio capture unavailable (permission or API level): video only")
             return AudioStatus.UNAVAILABLE
@@ -186,6 +201,7 @@ class SenderSession(
                     projection = projection,
                     config = params.audio,
                     sink = { data, pts -> queue.offerAudio(pts, data) },
+                    onlyUid = if (singleApp) audioUid else null,
                     onError = {
                         Log.w(TAG, "audio capture stopped: ${it.message}")
                         audioFailed = true // the next STATS update shows audio as off
@@ -241,6 +257,8 @@ class SenderSession(
                             audio = if (audioFailed) AudioStatus.UNAVAILABLE else audioStatus,
                             receiverUnderruns = s.audioUnderruns,
                             avOffsetMs = s.avOffsetUs / 1000,
+                            receiverVideoDelayMs = s.videoDelayUs / 1000,
+                            contentHidden = contentHidden,
                         )
                     if (++statsCount % DIAG_EVERY_STATS == 0) {
                         audio?.let {

@@ -17,14 +17,19 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -32,11 +37,13 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -51,13 +58,20 @@ import dev.ririprojector.net.nsd.NsdBrowser
 import dev.ririprojector.protocol.model.StreamPreferences
 import dev.ririprojector.protocol.model.SyncMode
 import dev.ririprojector.protocol.model.VideoCodec
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.withContext
 
 /** Tablet entry point: pick a receiver, tune the stream, start/stop mirroring. */
 class SenderActivity : ComponentActivity() {
     /** A mirroring request waiting for the audio permission and the consent dialog. */
-    private data class Pending(val target: ReceiverEndpoint, val prefs: StreamPreferences, val singleApp: Boolean)
+    private data class Pending(
+        val target: ReceiverEndpoint,
+        val prefs: StreamPreferences,
+        val singleApp: Boolean,
+        val audioPackage: String?,
+    )
 
     private var pending: Pending? = null
 
@@ -67,7 +81,7 @@ class SenderActivity : ComponentActivity() {
             pending = null
             val data = result.data
             if (result.resultCode == Activity.RESULT_OK && data != null) {
-                ProjectionService.start(this, result.resultCode, data, p.target, p.prefs)
+                ProjectionService.start(this, result.resultCode, data, p.target, p.prefs, p.singleApp, p.audioPackage)
             }
         }
 
@@ -81,7 +95,7 @@ class SenderActivity : ComponentActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         // The consent dialog may outlive this instance (rotation): keep what the result is for.
-        pending?.let { (t, p, singleApp) ->
+        pending?.let { (t, p, singleApp, audioPackage) ->
             outState.putString(KEY_HOST, t.host)
             outState.putInt(KEY_PORT, t.port)
             outState.putString(KEY_NAME, t.name)
@@ -92,6 +106,7 @@ class SenderActivity : ComponentActivity() {
             outState.putBoolean(KEY_AUDIO, p.audioEnabled)
             outState.putString(KEY_SYNC, p.syncMode.name)
             outState.putBoolean(KEY_SINGLE_APP, singleApp)
+            outState.putString(KEY_AUDIO_PACKAGE, audioPackage)
         }
     }
 
@@ -114,7 +129,10 @@ class SenderActivity : ComponentActivity() {
                 audioEnabled = state.getBoolean(KEY_AUDIO, true),
                 syncMode = SyncMode.entries.firstOrNull { it.name == state.getString(KEY_SYNC) } ?: SyncMode.LIP_SYNC,
             )
-        if (target != null) pending = Pending(target, prefs, state.getBoolean(KEY_SINGLE_APP, false))
+        if (target != null) {
+            pending =
+                Pending(target, prefs, state.getBoolean(KEY_SINGLE_APP, false), state.getString(KEY_AUDIO_PACKAGE))
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -137,6 +155,7 @@ class SenderActivity : ComponentActivity() {
                         state = state,
                         onStart = ::requestProjection,
                         onStop = { ProjectionService.stop(this) },
+                        loadApps = { AudioApps.launchable(this) },
                     )
                 }
             }
@@ -146,8 +165,8 @@ class SenderActivity : ComponentActivity() {
     private fun granted(permission: String) = checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
 
     /** Audio permission first (only when audio is wanted), then the system consent dialog. */
-    private fun requestProjection(target: ReceiverEndpoint, prefs: StreamPreferences, singleApp: Boolean) {
-        pending = Pending(target, prefs, singleApp)
+    private fun requestProjection(target: ReceiverEndpoint, prefs: StreamPreferences, source: ShareSource) {
+        pending = Pending(target, prefs, source.singleApp, source.audioPackage)
         if (prefs.audioEnabled && Build.VERSION.SDK_INT >= 29 && !granted(Manifest.permission.RECORD_AUDIO)) {
             audioPermission.launch(Manifest.permission.RECORD_AUDIO)
         } else {
@@ -179,15 +198,20 @@ class SenderActivity : ComponentActivity() {
         const val KEY_AUDIO = "pending.audio"
         const val KEY_SYNC = "pending.sync"
         const val KEY_SINGLE_APP = "pending.singleApp"
+        const val KEY_AUDIO_PACKAGE = "pending.audioPackage"
     }
 }
+
+/** What the consent dialog should offer, and which app's audio to capture when sharing one app. */
+private data class ShareSource(val singleApp: Boolean, val audioPackage: String?)
 
 @Composable
 private fun SenderScreen(
     receivers: List<ReceiverEndpoint>,
     state: SenderState,
-    onStart: (ReceiverEndpoint, StreamPreferences, singleApp: Boolean) -> Unit,
+    onStart: (ReceiverEndpoint, StreamPreferences, ShareSource) -> Unit,
     onStop: () -> Unit,
+    loadApps: () -> List<AudioApp>,
 ) {
     var manual by rememberSaveable { mutableStateOf("") }
     var codec by rememberSaveable { mutableStateOf<String?>(null) }
@@ -197,6 +221,10 @@ private fun SenderScreen(
     var audio by rememberSaveable { mutableStateOf(true) }
     var sync by rememberSaveable { mutableStateOf(SyncMode.LIP_SYNC) }
     var singleApp by rememberSaveable { mutableStateOf(false) }
+    var audioPackage by rememberSaveable { mutableStateOf<String?>(null) }
+    var audioLabel by rememberSaveable { mutableStateOf<String?>(null) }
+    var pickingApp by remember { mutableStateOf(false) }
+    val source = ShareSource(singleApp, if (singleApp && audio) audioPackage else null)
     val prefs =
         remember(codec, maxHeight, fps, bitrateMbps, audio, sync) {
             StreamPreferences(
@@ -229,7 +257,7 @@ private fun SenderScreen(
             receivers.forEach { r ->
                 Card(
                     modifier =
-                        Modifier.fillMaxWidth().clickable(enabled = !active) { onStart(r, prefs, singleApp) },
+                        Modifier.fillMaxWidth().clickable(enabled = !active) { onStart(r, prefs, source) },
                 ) {
                     Column(Modifier.padding(16.dp)) {
                         Text(r.name, style = MaterialTheme.typography.titleMedium)
@@ -248,7 +276,7 @@ private fun SenderScreen(
                 )
                 val parsed = ReceiverEndpoint.parse(manual)
                 Button(enabled = parsed != null && !active, onClick = {
-                    parsed?.let { onStart(it, prefs, singleApp) }
+                    parsed?.let { onStart(it, prefs, source) }
                 }) {
                     Text(stringResource(R.string.sender_connect))
                 }
@@ -296,9 +324,76 @@ private fun SenderScreen(
                     ),
                     singleApp,
                 ) { singleApp = it }
+                if (singleApp && audio) {
+                    // Playback capture is device-wide and Android does not say which app was
+                    // picked in the consent dialog: the user names the audio source here (ADR-009).
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(stringResource(R.string.sender_audio_from), style = MaterialTheme.typography.labelLarge)
+                        OutlinedButton(onClick = { pickingApp = true }) {
+                            Text(audioLabel ?: stringResource(R.string.sender_audio_from_none))
+                        }
+                        Text(
+                            stringResource(
+                                if (audioPackage ==
+                                    null
+                                ) {
+                                    R.string.sender_audio_from_hint_none
+                                } else {
+                                    R.string.sender_audio_from_hint
+                                },
+                            ),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
             }
         }
     }
+
+    if (pickingApp) {
+        AppPickerDialog(
+            loadApps = loadApps,
+            onPick = { app ->
+                audioPackage = app?.packageName
+                audioLabel = app?.label
+                pickingApp = false
+            },
+            onDismiss = { pickingApp = false },
+        )
+    }
+}
+
+/** Lists launchable apps (loaded off the main thread); "None" means video only. */
+@Composable
+private fun AppPickerDialog(loadApps: () -> List<AudioApp>, onPick: (AudioApp?) -> Unit, onDismiss: () -> Unit) {
+    val apps by produceState<List<AudioApp>?>(initialValue = null) {
+        value = withContext(Dispatchers.IO) { runCatching(loadApps).getOrDefault(emptyList()) }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.sender_audio_from)) },
+        text = {
+            val list = apps
+            if (list == null) {
+                CircularProgressIndicator()
+            } else {
+                LazyColumn(modifier = Modifier.heightIn(max = 420.dp)) {
+                    item {
+                        TextButton(onClick = { onPick(null) }, modifier = Modifier.fillMaxWidth()) {
+                            Text(stringResource(R.string.sender_audio_from_none), Modifier.fillMaxWidth())
+                        }
+                    }
+                    items(list, key = { it.packageName }) { app ->
+                        TextButton(onClick = { onPick(app) }, modifier = Modifier.fillMaxWidth()) {
+                            Text(app.label, Modifier.fillMaxWidth())
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.sender_cancel)) } },
+    )
 }
 
 @Composable
@@ -348,9 +443,24 @@ private fun StatusCard(state: SenderState, onStop: () -> Unit) {
                             AudioStatus.OFF -> stringResource(R.string.sender_audio_off)
 
                             AudioStatus.UNAVAILABLE -> stringResource(R.string.sender_audio_unavailable)
+
+                            AudioStatus.NO_APP -> stringResource(R.string.sender_audio_no_app)
                         },
                         style = MaterialTheme.typography.bodySmall,
                     )
+                    if (s.receiverVideoDelayMs > 0) {
+                        Text(
+                            stringResource(R.string.sender_video_delay, s.receiverVideoDelayMs),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    if (s.contentHidden) {
+                        Text(
+                            stringResource(R.string.sender_content_hidden),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
                     Button(onClick = onStop) { Text(stringResource(R.string.sender_stop)) }
                 }
 

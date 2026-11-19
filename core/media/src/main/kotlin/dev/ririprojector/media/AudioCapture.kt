@@ -23,13 +23,15 @@ fun interface AudioSink {
  * Captures what other apps play (ADR-007) from the session's [MediaProjection] as PCM s16 in
  * packets of [AudioConfig.frameDurationUs]. Pts are `CLOCK_MONOTONIC` µs, the video timebase,
  * derived from `AudioRecord.getTimestamp` when available. Apps that opt out of playback capture
- * are simply not heard.
+ * are simply not heard. With [onlyUid] only that app's audio is captured (single-app sharing,
+ * ADR-009): playback capture is device-wide otherwise, whatever the projection shows.
  */
 @TargetApi(29) // callers check API 29+
 class AudioCapture(
     private val projection: MediaProjection,
     private val config: AudioConfig,
     private val sink: AudioSink,
+    private val onlyUid: Int? = null,
     private val onError: (Throwable) -> Unit = {},
 ) : Closeable {
     private var record: AudioRecord? = null
@@ -55,11 +57,13 @@ class AudioCapture(
         val channelMask = if (config.channels == 1) AudioFormat.CHANNEL_IN_MONO else AudioFormat.CHANNEL_IN_STEREO
         val packetBytes = config.pcmBytesPerFrame
         val minBuffer = AudioRecord.getMinBufferSize(config.sampleRateHz, channelMask, AudioFormat.ENCODING_PCM_16BIT)
+        // Rules of different kinds are ANDed: (media | game | unknown usage) and, if set, that uid.
         val capture =
             AudioPlaybackCaptureConfiguration.Builder(projection)
                 .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
                 .addMatchingUsage(AudioAttributes.USAGE_GAME)
                 .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
+                .apply { onlyUid?.let { addMatchingUid(it) } }
                 .build()
         val rec =
             AudioRecord.Builder()
