@@ -181,11 +181,15 @@ class SenderSession(
                 )
             val audioStatus = startAudio(params)
             SenderStatus.set(
-                SenderState.Streaming(target, params, SenderStats(encoderName = codec.name, audio = audioStatus)),
+                SenderState.Streaming(
+                    target,
+                    params,
+                    SenderStats(encoderName = "${codec.name} · ${enc.tier.label}", audio = audioStatus),
+                ),
             )
             // The receiver sends PONG and STATS every second: silence means it is gone.
             conn.setReadTimeout(RECEIVER_SILENCE_MS)
-            readLoop(conn, params, codec.name, audioStatus)
+            readLoop(conn, params, "${codec.name} · ${enc.tier.label}", audioStatus)
         } catch (e: HandshakeException) {
             failure =
                 if (e.cause is ProtocolException && e.bye == ByeReason.INCOMPATIBLE) versionMismatchText else e.message
