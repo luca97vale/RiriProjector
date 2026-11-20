@@ -55,9 +55,9 @@ class JitterBufferTest {
         repeat(4) { assertThat(b.pull(out, packet)).isNotEqualTo(JitterBuffer.NO_PTS) }
         assertThat(b.pull(out, packet)).isEqualTo(JitterBuffer.NO_PTS) // 50 ms without a packet
         assertThat(b.underruns).isEqualTo(1)
-        assertThat(b.targetMs).isEqualTo(30)
-        // Restarts once 30 + 50 ms is buffered.
+        // The next packet tells the gap (50 ms, coverable): margin +10, restart at 30 + 50 ms.
         repeat(7) { b.feed(40_000L + it * 10_000L) }
+        assertThat(b.targetMs).isEqualTo(30)
         assertThat(b.pull(out, packet)).isEqualTo(JitterBuffer.NO_PTS)
         b.feed(110_000)
         assertThat(b.pull(out, packet)).isEqualTo(40_000L)
@@ -66,14 +66,30 @@ class JitterBufferTest {
 
     @Test
     fun `target is capped at the maximum`() {
-        val b = JitterBuffer(48_000, 2, maxTargetMs = 30, initialGapMs = 10)
-        var p = 0L
-        repeat(3) {
-            repeat(40) { b.feed(p).also { p += 10_000 } } // 400 ms: enough for the capped priming
-            repeat(41) { b.pull(out, packet) } // plays them, then underruns
+        val b = JitterBuffer(48_000, 2, maxTargetMs = 25)
+        // Steady packets, then a 100 ms gap: one underrun, then the low-water control covers it.
+        b.run(20) { step ->
+            if (step in 1_000 until 1_010) {
+                0
+            } else if (step == 1_010) {
+                11
+            } else {
+                1
+            }
         }
-        assertThat(b.underruns).isEqualTo(3)
-        assertThat(b.targetMs).isEqualTo(30)
+        assertThat(b.underruns).isEqualTo(1)
+        assertThat(b.targetMs).isEqualTo(25)
+    }
+
+    @Test
+    fun `a stall longer than the cover limit neither raises the margin nor sizes the restart`() {
+        val b = jb()
+        b.run(20) { 1 }
+        b.run(1, startStep = 2_000) { if (it < 2_040) 0 else 1 } // 400 ms stall
+        assertThat(b.underruns).isEqualTo(1)
+        assertThat(b.targetMs).isEqualTo(20)
+        b.run(10, startStep = 2_100) { 1 }
+        assertThat(b.bufferedMs).isAtMost(b.targetMs + 6)
     }
 
     @Test
@@ -124,16 +140,28 @@ class JitterBufferTest {
     }
 
     @Test
-    fun `audio piled up after a stall jumps back instead of draining slowly`() {
+    fun `a stall's backlog is trimmed as it arrives instead of adding latency`() {
         val b = jb()
         b.run(20) { 1 }
         b.run(1, startStep = 2_000) { 0 } // 1 s outage: underrun, then silence
         b.run(1, startStep = 2_100) { if (it == 2_100) 50 else 1 } // the backlog arrives at once
-        assertThat(b.bufferedMs).isAtLeast(300)
-        b.run(6, startStep = 2_200) { 1 }
+        assertThat(b.bufferedMs).isAtMost(b.targetMs + 20 + 50)
+        assertThat(b.droppedMs).isAtLeast(400L)
+        b.run(20, startStep = 2_200) { 1 }
 
         assertThat(b.bufferedMs).isAtMost(b.targetMs + 6)
-        assertThat(b.droppedMs).isAtLeast(300L)
+        assertThat(b.underruns).isEqualTo(1)
+    }
+
+    @Test
+    fun `audio piled up for the whole history jumps back at once`() {
+        val b = jb()
+        b.run(20) { 1 }
+        b.run(1, startStep = 2_000) { if (it == 2_000) 9 else 1 } // +90 ms, then steady
+        assertThat(b.bufferedMs).isAtLeast(100)
+        b.run(9, startStep = 2_100) { 1 }
+        assertThat(b.bufferedMs).isAtMost(b.targetMs + 6)
+        assertThat(b.droppedMs).isAtLeast(80L)
     }
 
     @Test

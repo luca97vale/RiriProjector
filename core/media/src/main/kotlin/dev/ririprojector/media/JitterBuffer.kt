@@ -9,33 +9,38 @@ package dev.ririprojector.media
  * Audio over Wi-Fi arrives in clumps: the buffer level is a sawtooth, high right after a clump and
  * lowest just before the next one. So the buffer controls its **low-water mark** (the lowest level
  * after a pull), never its instantaneous level, which would throw every clump away:
- * - Arrival gaps are measured as the audio pulled between two pushes.
- * - After an underrun (silence is output) the target grows by [stepUpMs] and playback restarts
- *   once target + the largest recent gap is buffered. After [stableMs] without one it shrinks by
- *   [stepDownMs]. [targetMs] is thus the margin kept *below* the deepest dip seen recently.
+ * - Arrival gaps are measured as the audio pulled between two pushes. Gaps longer than [coverMs]
+ *   are stalls: they are not covered (that would add their length to the latency for good).
+ * - After an underrun (silence is output) the target grows by [stepUpMs] unless its gap was a
+ *   stall, and playback restarts once target + the largest recent coverable gap is buffered.
+ *   After [stableMs] without one it shrinks by [stepDownMs]. [targetMs] is thus the margin kept
+ *   *below* the deepest dip seen recently.
  * - Every [windowMs] the lowest level over the last [historyWindows] windows is compared with the
  *   target: an excess is removed by dropping, a deficit rebuilt by repeating, at most
  *   [maxCorrectionFrames] single frames per pull (≤ 0.8 % speed change for 10 ms pulls,
  *   inaudible). This also absorbs clock drift between the sender's capture and our output.
- * - A whole window whose low-water is more than [jumpMs] above target (audio piled up after a
- *   network stall) jumps back at once instead of draining slowly.
+ * - Excess audio jumps back at once instead of draining slowly: when the low-water of the whole
+ *   history is more than [jumpMs] above target, and when a stall's backlog arrives during a
+ *   restart (trimmed to the restart level as it arrives).
  */
 class JitterBuffer(
     sampleRateHz: Int,
     channels: Int,
     capacityMs: Int = 500,
     private val minTargetMs: Int = 10,
-    private val maxTargetMs: Int = 120,
+    private val maxTargetMs: Int = 60,
     initialTargetMs: Int = 20,
     /** Gap assumed before any is measured (priming = target + gap). */
     private val initialGapMs: Int = 20,
+    /** Longest arrival gap the buffer is sized for; longer ones are stalls, met with an underrun. */
+    private val coverMs: Int = 150,
     private val stepUpMs: Int = 10,
     private val stepDownMs: Int = 5,
     private val stableMs: Int = 30_000,
     private val windowMs: Int = 2_000,
     private val historyWindows: Int = 4,
     private val bandMs: Int = 5,
-    private val jumpMs: Int = 100,
+    private val jumpMs: Int = 50,
     private val maxCorrectionFrames: Int = 4,
 ) {
     private val frameBytes = channels * 2
@@ -55,6 +60,7 @@ class JitterBuffer(
     // Arrival gap in progress: audio pulled since the last push.
     private var pulledSincePushMs = 0.0
     private var sawPush = false
+    private var raisePending = false // an underrun waits for its gap length to decide
 
     // The window being measured.
     private var windowPlayedMs = 0.0
@@ -102,7 +108,16 @@ class JitterBuffer(
     /** Appends [src]`[offset, offset + length)`. [ptsUs] is the pts of the first sample. */
     fun push(src: ByteArray, offset: Int, length: Int, ptsUs: Long) {
         synchronized(lock) {
-            if (sawPush && pulledSincePushMs > windowMaxGapMs) windowMaxGapMs = pulledSincePushMs
+            val gap = pulledSincePushMs
+            val coverable = gap <= coverMs
+            if (sawPush && coverable && gap > windowMaxGapMs) windowMaxGapMs = gap
+            if (raisePending) {
+                // The gap that caused the underrun is now known: only a coverable one raises the
+                // margin and sizes the restart; a stall would otherwise bloat latency for good.
+                raisePending = false
+                if (coverable) targetMs = (targetMs + stepUpMs).coerceAtMost(maxTargetMs)
+                if (priming) primeMs = primeFor(if (coverable) gap else 0.0)
+            }
             sawPush = true
             pulledSincePushMs = 0.0
             var n = length - length % frameBytes
@@ -124,6 +139,8 @@ class JitterBuffer(
                 left -= chunk
             }
             size += n
+            // A stall's backlog arriving while we restart: keep only what the restart needs.
+            if (priming && bytesToMs(size) > primeMs + jumpMs) discardLocked(size - msToBytes(primeMs))
             tailPtsUs = ptsUs + (bytesToMs(length - skip) * 1000).toLong()
         }
     }
@@ -142,7 +159,7 @@ class JitterBuffer(
             }
             if (size < length) {
                 underruns++
-                targetMs = (targetMs + stepUpMs).coerceAtMost(maxTargetMs)
+                raisePending = true
                 playedSinceUnderrunMs = 0.0
                 // Levels measured so far no longer describe the buffer; the gaps still do.
                 for (i in 0 until historyCount) historyMin[i] = Double.NaN
@@ -205,6 +222,7 @@ class JitterBuffer(
             historyCount = 0
             historyNext = 0
             peakGapMs = initialGapMs
+            raisePending = false
             lowWaterMs = -1
             startPriming()
         }
@@ -217,9 +235,14 @@ class JitterBuffer(
         return NO_PTS
     }
 
+    /** Restart level: the margin plus the largest coverable gap seen recently (or [lastGapMs]). */
+    private fun primeFor(lastGapMs: Double): Int {
+        val gap = maxOf(recentGapMs(), lastGapMs, initialGapMs.toDouble()).toInt()
+        return (targetMs + gap).coerceAtMost(maxPrimeMs)
+    }
+
     private fun startPriming() {
-        val gap = maxOf(recentGapMs(), pulledSincePushMs).toInt()
-        primeMs = (targetMs + maxOf(gap, initialGapMs)).coerceAtMost(maxPrimeMs)
+        primeMs = primeFor(0.0)
         priming = true
         correctionFrames = 0
         resetWindow()
@@ -232,23 +255,13 @@ class JitterBuffer(
         historyGap[historyNext] = windowMaxGapMs
         historyNext = (historyNext + 1) % historyWindows
         if (historyCount < historyWindows) historyCount++
-        val latestMin = if (windowClean) windowMinMs else Double.NaN
         resetWindow()
         peakGapMs = recentGapMs().toInt()
-        decideLocked(latestMin)
+        decideLocked()
     }
 
     /** Sets the level correction from the low-water marks (see the class comment). */
-    private fun decideLocked(latestMin: Double) {
-        if (!latestMin.isNaN() && latestMin - targetMs > jumpMs) {
-            val ms = minOf(latestMin, bytesToMs(size)) - targetMs
-            if (ms > 0) {
-                discardLocked(msToBytes(ms.toInt()))
-                shiftLevels(-ms)
-            }
-            correctionFrames = 0
-            return
-        }
+    private fun decideLocked() {
         var low = Double.MAX_VALUE
         for (i in 0 until historyCount) {
             val m = historyMin[i]
@@ -262,6 +275,14 @@ class JitterBuffer(
         lowWaterMs = low.toInt()
         if (historyCount < historyWindows) return
         val excess = low - targetMs
+        if (excess > jumpMs) { // far above for the whole history: jump instead of draining slowly
+            val ms = minOf(excess, bytesToMs(size))
+            discardLocked(msToBytes(ms.toInt()))
+            shiftLevels(-ms)
+            lowWaterMs = targetMs
+            correctionFrames = 0
+            return
+        }
         correctionFrames =
             when {
                 excess > bandMs -> (excess * bytesPerMs).toInt() / frameBytes

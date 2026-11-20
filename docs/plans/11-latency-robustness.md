@@ -197,13 +197,15 @@ empties the buffer (~70 ms/s discarded, constant frame repeating, underrun → s
 Changes:
 - `JitterBuffer` v2 (pure, JVM-tested). It measures arrival gaps in played time and controls the
   buffer's **low-water mark** instead of its instantaneous level:
-  - `targetMs` is the margin kept below the largest recent gap (10–120 ms; +10 on underrun, −5
+  - `targetMs` is the margin kept below the largest recent gap (10–60 ms; +10 on underrun, −5
     after 30 s without one);
   - after an underrun it primes to target + the largest gap of the last ~8 s;
   - every 2 s window, if the lowest level over the last 4 windows is above target, the excess is
     removed by dropping up to 4 frames per pull (≤ 0.8 %, inaudible); if below target, it is
     built up by repeating frames. That also absorbs clock drift;
-  - a whole window above target + 100 ms (after a network stall) jumps back at once.
+  - gaps over 150 ms are stalls (not covered, no margin raise); a history 50 ms above target
+    jumps back at once, and a stall's backlog is trimmed as it arrives (first device run: one
+    380 ms stall had re-primed the buffer to 420 ms).
 - Receiver holds a `WifiLatencyLock` (`WIFI_MODE_FULL_LOW_LATENCY`, `HIGH_PERF` on API 28) while
   its screen is up. It is measured as a small improvement and costs nothing on mains power.
 - Overlay diagnostics line: capture→arrive/shown/played for video and audio, buffer level/target,

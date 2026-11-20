@@ -157,15 +157,17 @@ The sender uses `NsdManager.discoverServices`; fallback to manual IP:port entry
   clumps 40–80 ms apart, so the level is a sawtooth. The first design (20–60 ms target, anything
   above target + 20 ms discarded at once) threw each clump away and underran on the next gap
   (~1 per second on Fire TV). `JitterBuffer` now controls the **low-water mark**:
-  - arrival gaps are measured in played time (audio pulled between two pushes);
-  - `target` (10–120 ms) is the margin kept below the deepest recent dip: +10 ms per underrun,
-    −5 ms after 30 s without one; after an underrun, playback restarts at target + largest recent
-    gap;
+  - arrival gaps are measured in played time (audio pulled between two pushes); gaps over 150 ms
+    are stalls, met with an underrun rather than covered (covering them would add their length to
+    the latency for good);
+  - `target` (10–60 ms) is the margin kept below the deepest recent dip: +10 ms per underrun,
+    −5 ms after 30 s without one (stalls do not raise it); after an underrun, playback restarts at
+    target + largest recent coverable gap;
   - every 2 s the lowest level of the last 8 s is compared with the target. The difference is
     corrected by dropping or repeating up to 4 single frames per 10 ms pull (≤ 0.8 %, inaudible),
     which also absorbs clock drift between the devices;
-  - a whole window more than 100 ms above target (backlog after a network stall) jumps back at
-    once.
+  - a history whose low-water is more than 50 ms above target jumps back at once, and a stall's
+    backlog arriving during the restart is trimmed as it arrives.
 - The receiver holds a Wi-Fi lock (`FULL_LOW_LATENCY`, `HIGH_PERF` on API 28) while its screen is
   up, so power save does not batch packets around beacons. It is a small gain; it costs nothing on
   a mains-powered TV.
