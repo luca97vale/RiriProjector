@@ -183,3 +183,30 @@ writer immediately on preemption; an instrumented preemption test on device.
 - Deferred from the second review: a config+key IDR is still sent as CONFIG only, so the receiver
   waits for the requested keyframe (sender requests one after each reconfigure; that doubles the
   rotation IDR); the preemption latch covers one step back only (A→B→C with B failing early).
+
+## Addendum — audio continuity (added after device measurement, approved by the user: "Fix audio first")
+Measured on Fire TV Stick (Fire OS 7) mirroring a YouTube video, times after capture on the tablet:
+video arrives 25–35 ms, shown ~135 ms (+ ~200 ms lip-sync delay); audio arrives ~90 ms (capture
+~78 ms), plays ~345 ms. The ~220 ms between our AudioTrack and the speaker is the Fire TV output
+path (HDMI primary mixer, no fast output, no FAST profile in its audio policy): not fixable here.
+Audio underran ~0.5–1.5/s although packets never arrived more than ~40–80 ms apart and only
+~4 ms/s was missing at the source. Cause: the jitter buffer target is capped at 60 ms and any level
+above target + 20 ms is discarded at once, so every arrival clump is thrown away and the next gap
+empties the buffer (~70 ms/s discarded, constant frame repeating, underrun → silence → re-prime).
+
+Changes:
+- `JitterBuffer` v2 (pure, JVM-tested). It measures arrival gaps in played time and controls the
+  buffer's **low-water mark** instead of its instantaneous level:
+  - `targetMs` is the margin kept below the largest recent gap (10–120 ms; +10 on underrun, −5
+    after 30 s without one);
+  - after an underrun it primes to target + the largest gap of the last ~8 s;
+  - every 2 s window, if the lowest level over the last 4 windows is above target, the excess is
+    removed by dropping up to 4 frames per pull (≤ 0.8 %, inaudible); if below target, it is
+    built up by repeating frames. That also absorbs clock drift;
+  - a whole window above target + 100 ms (after a network stall) jumps back at once.
+- Receiver holds a `WifiLatencyLock` (`WIFI_MODE_FULL_LOW_LATENCY`, `HIGH_PERF` on API 28) while
+  its screen is up. It is measured as a small improvement and costs nothing on mains power.
+- Overlay diagnostics line: capture→arrive/shown/played for video and audio, buffer level/target,
+  largest gap, audio missing at the source, discarded and corrected frames.
+Acceptance: on the same video, < 1 underrun per minute after the first 10 s, and capture→played
+audio no more than ~30 ms above today's ~345 ms.

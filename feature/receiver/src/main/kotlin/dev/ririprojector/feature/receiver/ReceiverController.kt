@@ -23,6 +23,7 @@ import dev.ririprojector.net.Handshake
 import dev.ririprojector.net.HandshakeException
 import dev.ririprojector.net.ReceiverEndpoint
 import dev.ririprojector.net.ReceiverServer
+import dev.ririprojector.net.WifiLatencyLock
 import dev.ririprojector.net.nsd.NsdPublisher
 import dev.ririprojector.protocol.ByeReason
 import dev.ririprojector.protocol.ControlMessage
@@ -73,6 +74,8 @@ data class ReceiverStats(
     val videoDelayMs: Int = 0,
     /** Capture on the tablet to shown on this screen (includes the lip-sync delay); null until known. */
     val latency: CaptureLatency.Snapshot? = null,
+    /** Diagnostics line: capture→stage delays for audio and video plus the audio buffers. */
+    val pipeline: String = "",
 )
 
 /**
@@ -98,6 +101,7 @@ class ReceiverController(
     private val catalog: CodecCatalog by lazy { AndroidCodecs.catalog() }
     private var server: ReceiverServer? = null
     private var nsd: Closeable? = null
+    private var wifiLock: WifiLatencyLock? = null
 
     @Volatile private var session: Session? = null
 
@@ -116,6 +120,7 @@ class ReceiverController(
             server = s
             bindAttempts = 0
             nsd = NsdPublisher(context).publish(deviceName, s.boundPort)
+            wifiLock = WifiLatencyLock.acquire(context, "Riri/Receiver")
             showWaiting()
         } catch (e: BindException) {
             // Another instance (or a previous session) may still be releasing the port.
@@ -146,6 +151,8 @@ class ReceiverController(
         session?.endAndAwait(leaveReason)
         server?.close()
         server = null
+        wifiLock?.close()
+        wifiLock = null
     }
 
     /**
@@ -194,6 +201,15 @@ class ReceiverController(
 
         /** Capture→shown latency; fed by the codec thread, clock set by PINGs. */
         private val captureLatency = CaptureLatency()
+
+        private var lastAudioPtsUs = 0L
+        private var audioPacketUs = 10_000L
+
+        // Diagnostics: audio missing from the stream (pts jumps), cumulative.
+        @Volatile private var audioHoleUs = 0L
+
+        /** Receiver minus sender clock from the latest PING, null while unknown (diagnostics). */
+        @Volatile private var clockOffsetUs: Long? = null
 
         /** Lip-sync only (ADR-007): video waits here for its audio. Null in low-latency mode. */
         @Volatile private var delayLine: VideoDelayLine? = null
@@ -280,6 +296,25 @@ class ReceiverController(
         }
 
         private var videoSurface: Surface? = null
+
+        /**
+         * Overlay diagnostics, once per second. Line 1: ms after capture on the tablet when video and
+         * audio arrive here and reach the screen / the speaker (needs the PING clock offset). Line 2:
+         * the audio jitter buffer (level, low-water/target, largest arrival gap), the AudioTrack
+         * queue, audio missing at the source, and audio discarded / frames corrected by the buffer.
+         */
+        private fun pipeline(jb: JitterBuffer?): String {
+            val offset = clockOffsetUs ?: return ""
+            val s = avSync.stages()
+            fun ms(v: Long?) = v?.let { ((it - offset) / 1000).toString() } ?: "-"
+            val stages =
+                "video arrive ${ms(s.videoArrived)} shown ${ms(s.videoShown)} · " +
+                    "audio arrive ${ms(s.audioArrived)} played ${ms(s.audioPlayed)}"
+            if (jb == null) return stages
+            return "$stages\naudio buffer ${jb.bufferedMs} ms, low ${jb.lowWaterMs}/${jb.targetMs}, " +
+                "gap ${jb.peakGapMs} · track ${player?.trackQueuedMs} · missing ${audioHoleUs / 1000} · " +
+                "discarded ${jb.droppedMs} · corrected ${jb.driftFrames}"
+        }
 
         /**
          * Creates the decoder (and, in lip-sync, the delay line in front of it) for [p]'s video.
@@ -378,11 +413,18 @@ class ReceiverController(
 
                     MessageType.AUDIO_FRAME -> {
                         avSync.onAudioArrived(pk.ptsOrSeq, System.nanoTime() / 1000)
+                        // Audio lost before it was sent (capture overrun): a pts jump.
+                        val expectedPts = lastAudioPtsUs + audioPacketUs
+                        if (lastAudioPtsUs != 0L && pk.ptsOrSeq - expectedPts > PTS_HOLE_TOLERANCE_US) {
+                            audioHoleUs += pk.ptsOrSeq - expectedPts
+                        }
+                        lastAudioPtsUs = pk.ptsOrSeq
                         jitter?.push(pk.payload, 0, pk.payloadLength, pk.ptsOrSeq)
                     }
 
                     MessageType.PING -> {
                         val ping = pk.decodeControl() as ControlMessage.Ping
+                        clockOffsetUs = ping.offsetUs.takeIf { it != ControlMessage.NO_OFFSET }
                         captureLatency.setClock(
                             ping.offsetUs.takeIf { it != ControlMessage.NO_OFFSET },
                             ping.rttUs,
@@ -407,6 +449,7 @@ class ReceiverController(
                 Log.w(TAG, "unsupported audio codec ${config.codec}")
                 return
             }
+            audioPacketUs = config.frameDurationUs.toLong()
             val buffer = JitterBuffer(config.sampleRateHz, config.channels)
             avSync.reset()
             delayResetPending = true
@@ -473,6 +516,7 @@ class ReceiverController(
                             avOffsetMs = offsetUs?.let { (it / 1000).toInt() },
                             videoDelayMs = (videoDelayUs / 1000).toInt(),
                             latency = captureLatency.snapshot(),
+                            pipeline = pipeline(jb),
                         )
                     if (++ticks % DIAG_EVERY_TICKS == 0 && jb != null) {
                         Log.d(
@@ -561,6 +605,7 @@ class ReceiverController(
 
         /** The sender PINGs every second: 3 s of silence means it is gone (ADR-010). */
         const val READ_TIMEOUT_MS = 3_000
+        const val PTS_HOLE_TOLERANCE_US = 2_000L
         const val PREEMPT_WAIT_MS = 1_500L
 
         /** Keeps [min] off the wire's sentinel values. */

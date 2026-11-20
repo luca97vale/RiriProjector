@@ -150,10 +150,25 @@ The sender uses `NsdManager.discoverServices`; fallback to manual IP:port entry
   receiver creates a `JitterBuffer` + `AudioPlayer` for that format; audio failures never end the session
   (mirroring continues video-only and the sender UI says so).
 - **Opus** is deferred to the bandwidth policy work (M6): PCM adds no codec latency.
-- **Playback (receiver)**: `AudioTrack` with `PERFORMANCE_MODE_LOW_LATENCY`, minimal buffer,
-  adaptive 20–60 ms jitter buffer; on underrun insert silence, on build-up drop samples to return
-  to target. Clock drift between the devices is absorbed by dropping or repeating single frames
-  when the smoothed level leaves target ± 10 ms (no audible jumps).
+- **Playback (receiver)**: `AudioTrack` with `PERFORMANCE_MODE_LOW_LATENCY`, minimal buffer (on
+  Fire TV it still lands on the normal HDMI mixer: the audio policy has no fast output, and the
+  path after our track adds ~220 ms we cannot reduce).
+- **Jitter buffer** *(revised in M6, after device measurements)*. Over Wi-Fi, audio arrives in
+  clumps 40–80 ms apart, so the level is a sawtooth. The first design (20–60 ms target, anything
+  above target + 20 ms discarded at once) threw each clump away and underran on the next gap
+  (~1 per second on Fire TV). `JitterBuffer` now controls the **low-water mark**:
+  - arrival gaps are measured in played time (audio pulled between two pushes);
+  - `target` (10–120 ms) is the margin kept below the deepest recent dip: +10 ms per underrun,
+    −5 ms after 30 s without one; after an underrun, playback restarts at target + largest recent
+    gap;
+  - every 2 s the lowest level of the last 8 s is compared with the target. The difference is
+    corrected by dropping or repeating up to 4 single frames per 10 ms pull (≤ 0.8 %, inaudible),
+    which also absorbs clock drift between the devices;
+  - a whole window more than 100 ms above target (backlog after a network stall) jumps back at
+    once.
+- The receiver holds a Wi-Fi lock (`FULL_LOW_LATENCY`, `HIGH_PERF` on API 28) while its screen is
+  up, so power save does not batch packets around beacons. It is a small gain; it costs nothing on
+  a mains-powered TV.
 - **A/V measurement**: `AvSync`, for each side, (receiver monotonic time the sample is shown/played)
   − (sender pts), smoothed; the difference is the A/V offset (positive = audio late), shown in the
   overlay and sent in STATS. The unknown clock offset between the devices cancels out. Video "shown"

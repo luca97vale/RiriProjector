@@ -8,7 +8,7 @@ class JitterBufferTest {
     private val packet = 1920
     private val out = ByteArray(packet)
 
-    private fun jb(initialTargetMs: Int = 40) = JitterBuffer(48_000, 2, initialTargetMs = initialTargetMs)
+    private fun jb() = JitterBuffer(48_000, 2) // target 20 ms, first priming at 20 + 20 ms
 
     private fun JitterBuffer.feed(ptsUs: Long, fill: Byte = 1) = push(
         ByteArray(packet) { fill },
@@ -17,8 +17,24 @@ class JitterBufferTest {
         ptsUs,
     )
 
+    /**
+     * Plays [seconds] of 10 ms pulls; [packetsAt] says how many 10 ms packets arrive before the
+     * pull of each step (the arrival pattern). Returns the largest level seen.
+     */
+    private fun JitterBuffer.run(seconds: Int, startStep: Int = 0, packetsAt: (Int) -> Int): Int {
+        var maxLevel = 0
+        for (step in startStep until startStep + seconds * 100) {
+            repeat(packetsAt(step)) { feed(pts).also { pts += 10_000 } }
+            pull(out, packet)
+            maxLevel = maxOf(maxLevel, bufferedMs)
+        }
+        return maxLevel
+    }
+
+    private var pts = 0L
+
     @Test
-    fun `outputs silence until the target is buffered`() {
+    fun `outputs silence until target plus the assumed gap is buffered`() {
         val b = jb()
         b.feed(0)
         b.feed(10_000)
@@ -33,61 +49,104 @@ class JitterBufferTest {
     }
 
     @Test
-    fun `underrun outputs silence, counts, raises target and re-primes`() {
+    fun `underrun outputs silence, raises target and re-primes to cover the gap just seen`() {
         val b = jb()
         repeat(4) { b.feed(it * 10_000L) }
-        repeat(4) { b.pull(out, packet) }
-        assertThat(b.pull(out, packet)).isEqualTo(JitterBuffer.NO_PTS)
+        repeat(4) { assertThat(b.pull(out, packet)).isNotEqualTo(JitterBuffer.NO_PTS) }
+        assertThat(b.pull(out, packet)).isEqualTo(JitterBuffer.NO_PTS) // 50 ms without a packet
         assertThat(b.underruns).isEqualTo(1)
-        assertThat(b.targetMs).isEqualTo(50)
-        // re-priming: 4 packets (40 ms) are below the new 50 ms target
-        repeat(4) { b.feed(40_000L + it * 10_000L) }
+        assertThat(b.targetMs).isEqualTo(30)
+        // Restarts once 30 + 50 ms is buffered.
+        repeat(7) { b.feed(40_000L + it * 10_000L) }
         assertThat(b.pull(out, packet)).isEqualTo(JitterBuffer.NO_PTS)
-        b.feed(80_000)
+        b.feed(110_000)
         assertThat(b.pull(out, packet)).isEqualTo(40_000L)
         assertThat(b.underruns).isEqualTo(1)
     }
 
     @Test
     fun `target is capped at the maximum`() {
-        val b = jb()
-        repeat(5) {
-            repeat(8) { i -> b.feed(i * 10_000L) }
-            repeat(20) { b.pull(out, packet) } // drains, then one underrun per cycle
+        val b = JitterBuffer(48_000, 2, maxTargetMs = 30, initialGapMs = 10)
+        var p = 0L
+        repeat(3) {
+            repeat(40) { b.feed(p).also { p += 10_000 } } // 400 ms: enough for the capped priming
+            repeat(41) { b.pull(out, packet) } // plays them, then underruns
         }
-        assertThat(b.underruns).isEqualTo(5)
-        assertThat(b.targetMs).isEqualTo(60)
+        assertThat(b.underruns).isEqualTo(3)
+        assertThat(b.targetMs).isEqualTo(30)
     }
 
     @Test
-    fun `build-up beyond target plus hysteresis drops back to target`() {
+    fun `clumped arrival never underruns and keeps the low-water mark at the target`() {
+        // Six packets every 60 ms, as measured on Wi-Fi: the old buffer discarded every clump.
         val b = jb()
-        repeat(10) { b.feed(it * 10_000L) } // 100 ms buffered, limit is 40 + 20
-        val pts = b.pull(out, packet)
-        // dropped the oldest 60 ms, played the packet at 60 ms
-        assertThat(pts).isEqualTo(60_000L)
-        assertThat(b.droppedMs).isEqualTo(60L)
-        assertThat(b.bufferedMs).isEqualTo(30)
+        b.run(30) { if (it % 6 == 0) 6 else 0 }
+        val maxLevel = b.run(300, startStep = 3_000) { if (it % 6 == 0) 6 else 0 }
+
+        assertThat(b.underruns).isEqualTo(0)
+        assertThat(b.peakGapMs).isEqualTo(60)
+        assertThat(b.lowWaterMs).isIn(b.targetMs - 6..b.targetMs + 6)
+        assertThat(maxLevel).isAtMost(b.targetMs + 60 + 10)
+    }
+
+    @Test
+    fun `a rare longer gap is learned once and then covered`() {
+        // Clumps every 60 ms, but every 5 s one clump is late by another 60 ms.
+        val pattern = { step: Int ->
+            when {
+                step % 6 != 0 -> 0
+
+                step % 498 == 0 -> 0
+
+                // the late clump...
+                (step - 6) % 498 == 0 -> 12
+
+                // ...arrives with the next one
+                else -> 6
+            }
+        }
+        val b = jb()
+        b.run(60, packetsAt = pattern)
+        val learned = b.underruns
+        b.run(240, startStep = 6_000, packetsAt = pattern)
+
+        assertThat(learned).isAtMost(2)
+        assertThat(b.underruns).isEqualTo(learned)
+    }
+
+    @Test
+    fun `steady arrival trims the buffer down to the target`() {
+        val b = jb()
+        b.run(60) { 1 }
+        assertThat(b.underruns).isEqualTo(0)
+        assertThat(b.bufferedMs).isAtMost(b.targetMs + 6)
+        assertThat(b.droppedMs).isLessThan(60L) // single frames only
+    }
+
+    @Test
+    fun `audio piled up after a stall jumps back instead of draining slowly`() {
+        val b = jb()
+        b.run(20) { 1 }
+        b.run(1, startStep = 2_000) { 0 } // 1 s outage: underrun, then silence
+        b.run(1, startStep = 2_100) { if (it == 2_100) 50 else 1 } // the backlog arrives at once
+        assertThat(b.bufferedMs).isAtLeast(300)
+        b.run(6, startStep = 2_200) { 1 }
+
+        assertThat(b.bufferedMs).isAtMost(b.targetMs + 6)
+        assertThat(b.droppedMs).isAtLeast(300L)
     }
 
     @Test
     fun `target shrinks after a stable period`() {
         val b = jb()
-        var pts = 0L
-        repeat(4) { b.feed(pts).also { pts += 10_000 } }
-        repeat(1000) {
-            // 10 s of steady playback
-            b.feed(pts)
-            pts += 10_000
-            assertThat(b.pull(out, packet)).isNotEqualTo(JitterBuffer.NO_PTS)
-        }
-        assertThat(b.targetMs).isEqualTo(35)
+        b.run(31) { 1 }
+        assertThat(b.targetMs).isEqualTo(15)
         assertThat(b.underruns).isEqualTo(0)
     }
 
     @Test
     fun `overflow keeps the newest audio`() {
-        val b = JitterBuffer(48_000, 2, capacityMs = 50, initialTargetMs = 20, hysteresisMs = 100, driftBandMs = 100)
+        val b = JitterBuffer(48_000, 2, capacityMs = 50, initialTargetMs = 10, initialGapMs = 10)
         repeat(8) { b.feed(it * 10_000L, fill = it.toByte()) }
         assertThat(b.bufferedMs).isEqualTo(50)
         assertThat(b.pull(out, packet)).isEqualTo(30_000L)
@@ -96,50 +155,49 @@ class JitterBufferTest {
 
     @Test
     fun `odd byte counts are trimmed to whole frames`() {
-        val b = jb(initialTargetMs = 20)
+        val b = jb()
         b.push(ByteArray(packet * 3 + 5), 2, packet * 3 + 3, 0)
         assertThat(b.bufferedMs).isEqualTo(30)
     }
 
     @Test
-    fun `pts advance by the packet duration across pulls`() {
+    fun `pts advance by the packet duration across pulls and a clump is kept`() {
         val b = jb()
         repeat(8) { b.feed(it * 10_000L) }
-        // 80 ms buffered: above target + hysteresis, so the first pull jumps to the newest 40 ms
-        val first = b.pull(out, packet)
-        assertThat(first).isEqualTo(40_000L)
-        assertThat(b.pull(out, packet)).isEqualTo(50_000L)
-        assertThat(b.pull(out, packet)).isEqualTo(60_000L)
+        assertThat(b.pull(out, packet)).isEqualTo(0L)
+        assertThat(b.pull(out, packet)).isEqualTo(10_000L)
+        assertThat(b.pull(out, packet)).isEqualTo(20_000L)
+        assertThat(b.droppedMs).isEqualTo(0L)
     }
 
     @Test
     fun `pulls longer than the target never read past the buffered audio`() {
         val chunk = 30 * 192 // 30 ms pulls, target 20 ms
         val dst = ByteArray(chunk)
-        val b = JitterBuffer(48_000, 2, initialTargetMs = 20)
-        var pts = 0L
-        repeat(20) { b.push(ByteArray(chunk) { 1 }, 0, chunk, pts).also { pts += 30_000 } } // 600 ms
-        repeat(200) {
-            b.push(ByteArray(chunk) { 1 }, 0, chunk, pts)
-            pts += 30_000
+        val b = jb()
+        var p = 0L
+        repeat(20) { b.push(ByteArray(chunk) { 1 }, 0, chunk, p).also { p += 30_000 } } // 600 ms
+        repeat(400) {
+            b.push(ByteArray(chunk) { 1 }, 0, chunk, p)
+            p += 30_000
             assertThat(b.pull(dst, chunk)).isNotEqualTo(JitterBuffer.NO_PTS)
             assertThat(dst.all { it == 1.toByte() }).isTrue()
             assertThat(b.bufferedMs).isAtLeast(0)
         }
     }
 
-    /** 10 simulated minutes with the sender clock [ppm] off; one extra or missing frame per [every] packets. */
+    /** 10 simulated minutes with the sender clock off; one extra or missing frame per [every] packets. */
     private fun driftRun(extraFrame: Boolean, every: Int): JitterBuffer {
         val b = jb()
         val big = ByteArray(packet + 4) { 1 }
         val small = ByteArray(packet - 4) { 1 }
         val normal = ByteArray(packet) { 1 }
-        var pts = 0L
-        repeat(4) { b.push(normal, 0, packet, pts).also { pts += 10_000 } }
+        var p = 0L
+        repeat(4) { b.push(normal, 0, packet, p).also { p += 10_000 } }
         repeat(60_000) { i ->
             val src = if (i % every == 0) (if (extraFrame) big else small) else normal
-            b.push(src, 0, src.size, pts)
-            pts += 10_000
+            b.push(src, 0, src.size, p)
+            p += 10_000
             b.pull(out, packet)
         }
         return b
@@ -158,7 +216,6 @@ class JitterBufferTest {
     fun `slow sender drift is absorbed by repeating single frames`() {
         val b = driftRun(extraFrame = false, every = 208) // -100 ppm
         assertThat(b.underruns).isEqualTo(0)
-        assertThat(b.bufferedMs).isAtLeast(b.targetMs - 20)
         // The shrinking target is also reached by dropping single frames, so compare with no drift.
         val steady = driftRun(extraFrame = true, every = Int.MAX_VALUE)
         assertThat(b.driftFrames).isLessThan(steady.driftFrames)
@@ -166,7 +223,7 @@ class JitterBufferTest {
 
     @Test
     fun `clear empties and re-primes`() {
-        val b = jb(initialTargetMs = 20)
+        val b = jb()
         repeat(3) { b.feed(it * 10_000L) }
         b.clear()
         assertThat(b.bufferedMs).isEqualTo(0)

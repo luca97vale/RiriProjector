@@ -159,6 +159,7 @@ class ReceiverActivity : Activity() {
                                 (it.uncertaintyUs / 1000).toInt(),
                             )
                         } ?: getString(R.string.receiver_av_unknown),
+                        s.pipeline,
                     )
             }
 
