@@ -73,6 +73,12 @@ class P2pRecordsTest {
         }
     }
 
+    @Test fun permissionsPerApiLevel() {
+        assertTrue(WifiDirectSupport.requiredPermissions(28).isEmpty())
+        assertEquals(2, WifiDirectSupport.requiredPermissions(30).size)
+        assertEquals(listOf("android.permission.NEARBY_WIFI_DEVICES"), WifiDirectSupport.requiredPermissions(36))
+    }
+
     @Test fun dhcpAddressesAreLittleEndian() {
         assertEquals("192.168.49.1", P2pPolicy.ipv4(0x0131A8C0))
         assertEquals("192.168.49.229", P2pPolicy.ipv4(0xE531A8C0.toInt()))
