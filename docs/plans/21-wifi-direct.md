@@ -261,8 +261,9 @@ targets in the same room. Open items for implementation:
 - **Credential delivery.** The TV must find the tablet's group offer. Planned: the TV advertises its
   receiver service and runs P2P service discovery while idle; the tablet, after creating its
   group, advertises a service whose TXT carries the SSID, PSK and the target TV's device address.
-  Check whether the TV's discovery (social channels) finds a tablet whose group is on 5 GHz, and
-  what idle discovery costs router mode.
+  **Verified:** with the tablet GO on 5220 MHz advertising `{v, name, port, ssid, psk}` and calling
+  `discoverPeers`, the TV's `discoverServices` received the TXT in 4.2 s. The TV runs discovery
+  only while idle (no session), so it never overlaps streaming in either mode.
 - **The TV leaves the router while mirroring** (accepted in the issue). It is restored with
   `removeNetwork` + `reconnect()`, and it also re-joins by itself if the group disappears.
 - **Underrun rate.** 2 underruns in ~6 minutes is not yet proven ≤ 0.2/min after the first 10 s;
