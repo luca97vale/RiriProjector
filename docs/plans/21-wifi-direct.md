@@ -225,6 +225,49 @@ case the receiver passes a lower `coverMs` (~60 ms) for sessions that arrived ov
   - per-phase time from the button press to the first frame;
   - the router path checked once.
 
+## Spike results (2026-11-20/21, Tab S9 SM-X710 API 36 → Fire TV Stick AFTSSS API 28)
+Harness: `app/src/debug/.../P2pSpikeService.kt` (debug build only), driven over adb.
+
+Facts that do not depend on distance:
+- The TV creates a group in ~0.4 s with no location permission and no prompt. The group is
+  persistent: same SSID and PSK every time.
+- The tablet finds the TV GO's P2P service in ~1 s, **without the TV calling `discoverPeers`**.
+- `setDeviceAddress` on the join must not be the P2P *device* address. The GO's interface address
+  differs (`76:…` device vs `7e:…` GO), and the join fails with "failed to find the group". Join
+  by SSID and passphrase only.
+- The TV GO's channel follows its station link: ch 5 (2432) with the router up. With
+  `disconnect()` it moved to ch 1 (2412), and the TV re-joined the router by itself within seconds.
+  API 28 cannot choose the band, so **topology A is 2.4 GHz only**.
+- The tablet has no DBS (`mIsDbs: false`). A 2.4 GHz group means switching channels with its
+  5 GHz router link.
+- The tablet as GO: with `setGroupOperatingBand(5GHz)` it picked 5745 (ch 149, a different channel
+  from its station on ch 44); with `setGroupOperatingFrequency(5220)` it shares the station
+  channel (SCC). On API 35+ the GO sees the client's IP (`WifiP2pDevice.getIpAddress`).
+
+Runs (one tablet log line every 5 s; TV overlay):
+| Variant | Placement | Result |
+|---|---|---|
+| A1: TV GO, 2.4 GHz ch 5 | different rooms | joined in 6.7 s, no prompts; writes blocked 500–1 850 ms, hundreds of queue drops: unusable |
+| A2: TV GO after `disconnect()` | different rooms | GO on ch 1, TV back on the router by itself (two channels on the TV): rejected |
+| B′: tablet GO 5220 MHz, TV as legacy station | different rooms | TV never saw the SSID in its scans |
+| B′: same | **same room** | TV joined in ~6 s; tablet: write max 1–12 ms, 0 queue drops, send age ~100 ms (150 s); TV overlay (~6 min): **audio played 330 ms** (router ~460), video shown 353 ms, latency p95 361, buffer at its 10 ms floor, 2 underruns in total, no audible gaps (user) |
+
+Router reference (M6, TV on 2.4 GHz −68 dBm): writes blocked 50–190 ms, ~1 underrun/min,
+~460 ms audio played. The tablet's own router link in the TV's room is weak too (−76…−79 dBm).
+
+**Decision: topology B′** (tablet GO on its station channel, TV joins as a legacy station). It is
+the only variant that reaches 5 GHz, and it meets the write-block (≤ 50 ms) and audio (≤ 380 ms)
+targets in the same room. Open items for implementation:
+- **Credential delivery.** The TV must find the tablet's group offer. Planned: the TV advertises its
+  receiver service and runs P2P service discovery while idle; the tablet, after creating its
+  group, advertises a service whose TXT carries the SSID, PSK and the target TV's device address.
+  Check whether the TV's discovery (social channels) finds a tablet whose group is on 5 GHz, and
+  what idle discovery costs router mode.
+- **The TV leaves the router while mirroring** (accepted in the issue). It is restored with
+  `removeNetwork` + `reconnect()`, and it also re-joins by itself if the group disappears.
+- **Underrun rate.** 2 underruns in ~6 minutes is not yet proven ≤ 0.2/min after the first 10 s;
+  the 10-minute acceptance run decides.
+
 ## Implementation steps
 1. `chore(spike)`: a debug-only harness, kept out of the release flow. Run A1/A2/B′, record the
    results here and pick the topology (and decide whether the TV needs a toggle).
