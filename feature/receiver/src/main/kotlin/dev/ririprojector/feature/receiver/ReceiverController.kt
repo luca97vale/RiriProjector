@@ -309,7 +309,7 @@ class ReceiverController(
                     MessageType.PING -> {
                         val ping = pk.decodeControl() as ControlMessage.Ping
                         val now = nowUs()
-                        outbox.offer(ControlMessage.Pong(ping.senderTimeUs, now, now))
+                        outbox.offer(ControlMessage.Pong(ping.senderTimeUs, receiverRxUs = now, receiverTxUs = now))
                     }
 
                     MessageType.BYE -> return
@@ -356,7 +356,9 @@ class ReceiverController(
                     val wait = (nextStatsAt - SystemClock.elapsedRealtime()).coerceAtLeast(0)
                     val msg = outbox.poll(wait, TimeUnit.MILLISECONDS)
                     if (msg != null) {
-                        connection.writer.writeControl(msg)
+                        // NTP t3: stamped right before writing, so outbox queuing is excluded.
+                        val out = if (msg is ControlMessage.Pong) msg.copy(receiverTxUs = nowUs()) else msg
+                        connection.writer.writeControl(out)
                         connection.writer.flush()
                         if (msg is ControlMessage.Bye) break
                         continue
@@ -474,6 +476,7 @@ class ReceiverController(
         const val DIAG_EVERY_TICKS = 5
         const val MAX_VIDEO_DELAY_MS = 300
 
-        fun nowUs() = SystemClock.elapsedRealtimeNanos() / 1_000
+        /** `CLOCK_MONOTONIC` µs: the clock of video pts and of PING/PONG (protocol v3). */
+        fun nowUs() = System.nanoTime() / 1_000
     }
 }

@@ -3,44 +3,74 @@ package dev.ririprojector.net
 import com.google.common.truth.Truth.assertThat
 import dev.ririprojector.protocol.ControlMessage
 import dev.ririprojector.protocol.MessageType
+import dev.ririprojector.protocol.model.VideoCodec
+import dev.ririprojector.protocol.model.VideoConfig
 import java.nio.ByteBuffer
 import org.junit.Test
 
 class ClockSyncTest {
+    /** Sample for a receiver clock [offset] ahead, one-way [oneWay] µs each way, [hold] µs inside. */
+    private fun ClockSync.exchange(t1: Long, offset: Long, oneWay: Long, hold: Long = 0, back: Long = oneWay) {
+        val t2 = t1 + oneWay + offset
+        val t3 = t2 + hold
+        addSample(t1, t2, t3, t3 - offset + back)
+    }
+
     @Test
     fun `symmetric exchange yields exact offset and rtt`() {
         val sync = ClockSync()
-        // sender sends at 1000, receiver clock is +5000 ahead, one-way 300us
-        sync.addSample(sentUs = 1_000, receiverUs = 1_000 + 300 + 5_000, receivedUs = 1_600)
+        sync.exchange(t1 = 1_000, offset = 5_000, oneWay = 300)
         assertThat(sync.rttUs).isEqualTo(600)
+        assertThat(sync.lastRttUs).isEqualTo(600)
         assertThat(sync.offsetUs).isEqualTo(5_000)
         assertThat(sync.toSenderTime(10_000)).isEqualTo(5_000)
     }
 
     @Test
-    fun `lowest rtt sample wins`() {
+    fun `time held inside the receiver does not bias rtt or offset`() {
         val sync = ClockSync()
-        sync.addSample(0, 5_000 + 4_000, 8_000) // queued: rtt 8000, offset 5000
-        sync.addSample(10_000, 10_000 + 100 + 5_000, 10_200) // clean: rtt 200, offset 5000
-        sync.addSample(20_000, 20_000 + 9_000 + 5_000, 21_000) // asymmetric spike
+        sync.exchange(t1 = 1_000, offset = -7_000, oneWay = 300, hold = 40_000)
+        assertThat(sync.rttUs).isEqualTo(600)
+        assertThat(sync.offsetUs).isEqualTo(-7_000)
+    }
+
+    @Test
+    fun `lowest rtt sample wins and lastRtt tracks the newest`() {
+        val sync = ClockSync()
+        sync.exchange(0, 5_000, oneWay = 4_000) // queued
+        sync.exchange(10_000, 5_000, oneWay = 100) // clean
+        sync.exchange(20_000, 5_000, oneWay = 9_000, back = 1_000) // asymmetric spike
         assertThat(sync.rttUs).isEqualTo(200)
         assertThat(sync.offsetUs).isEqualTo(5_000)
+        assertThat(sync.lastRttUs).isEqualTo(10_000)
     }
 
     @Test
     fun `old samples age out of the window`() {
         val sync = ClockSync(window = 2)
-        sync.addSample(0, 100, 100) // rtt 100
-        sync.addSample(1_000, 1_500, 2_000) // rtt 1000
-        sync.addSample(3_000, 3_500, 4_000) // rtt 1000, first sample evicted
+        sync.exchange(0, 0, oneWay = 50)
+        sync.exchange(1_000, 0, oneWay = 500)
+        sync.exchange(3_000, 0, oneWay = 500) // first sample evicted
         assertThat(sync.rttUs).isEqualTo(1_000)
     }
 
     @Test
-    fun `negative rtt is ignored`() {
+    fun `negative rtt or hold is ignored`() {
         val sync = ClockSync()
-        sync.addSample(1_000, 0, 500)
+        sync.addSample(1_000, 0, 0, 500)
+        sync.addSample(1_000, 2_000, 1_500, 3_000)
         assertThat(sync.rttUs).isNull()
+        assertThat(sync.lastRttUs).isNull()
+    }
+
+    @Test
+    fun `reset forgets every sample`() {
+        val sync = ClockSync()
+        sync.exchange(0, 5_000, oneWay = 100)
+        sync.reset()
+        assertThat(sync.offsetUs).isNull()
+        sync.exchange(10_000, -3_000, oneWay = 2_000)
+        assertThat(sync.offsetUs).isEqualTo(-3_000)
     }
 }
 
@@ -185,6 +215,42 @@ class SendQueueTest {
         q.close()
         t.join(1_000)
         assertThat(t.isAlive).isFalse()
+    }
+
+    @Test
+    fun `video control stays ordered after earlier frames and survives overflow`() {
+        val q = SendQueue(maxVideoPackets = 3)
+        val reconfig = ControlMessage.VideoReconfig(1, VideoConfig(VideoCodec.AVC, 1280, 720, 60, 4_000_000))
+        q.offerVideo(1, keyframe = true, codecConfig = false, src = buf(10))
+        q.offerVideoControl(reconfig)
+        q.offerVideo(2, keyframe = false, codecConfig = false, src = buf(10))
+        q.offerVideo(3, keyframe = false, codecConfig = false, src = buf(10)) // overflow: frames dropped
+
+        assertThat(q.take(10)!!.control).isEqualTo(reconfig)
+        assertThat(q.take(10)).isNull()
+    }
+
+    @Test
+    fun `resetVideo without keyframe request does not call back but still waits for a keyframe`() {
+        var requests = 0
+        val q = SendQueue(onKeyframeNeeded = { requests++ })
+        q.resetVideo(requestKeyframe = false)
+        assertThat(q.offerVideo(1, keyframe = false, codecConfig = false, src = buf(10))).isFalse()
+        assertThat(requests).isEqualTo(0)
+        assertThat(q.offerVideo(2, keyframe = true, codecConfig = false, src = buf(10))).isTrue()
+
+        q.resetVideo()
+        assertThat(requests).isEqualTo(1)
+    }
+
+    @Test
+    fun `oldest queued video age uses the first frame pts`() {
+        val q = SendQueue()
+        assertThat(q.oldestQueuedVideoAgeUs(1_000_000)).isEqualTo(0)
+        q.offerVideo(0, keyframe = false, codecConfig = true, src = buf(4))
+        q.offerVideo(900_000, keyframe = true, codecConfig = false, src = buf(10))
+        q.offerVideo(950_000, keyframe = false, codecConfig = false, src = buf(10))
+        assertThat(q.oldestQueuedVideoAgeUs(1_000_000)).isEqualTo(100_000)
     }
 }
 

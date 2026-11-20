@@ -235,7 +235,7 @@ class SenderSession(
 
                 MessageType.PONG -> {
                     val pong = p.decodeControl() as ControlMessage.Pong
-                    clock.addSample(pong.senderTimeUs, pong.receiverRxUs, nowUs())
+                    clock.addSample(pong.senderTimeUs, pong.receiverRxUs, pong.receiverTxUs, nowUs())
                 }
 
                 MessageType.STATS -> {
@@ -292,7 +292,13 @@ class SenderSession(
             while (true) {
                 val now = SystemClock.elapsedRealtime()
                 if (now >= nextPingAt && !ended) {
-                    queue.offerControl(ControlMessage.Ping(nowUs()))
+                    queue.offerControl(
+                        ControlMessage.Ping(
+                            nowUs(),
+                            clock.offsetUs ?: ControlMessage.NO_OFFSET,
+                            clock.rttUs?.coerceAtMost(Int.MAX_VALUE.toLong())?.toInt() ?: 0,
+                        ),
+                    )
                     nextPingAt = now + PING_INTERVAL_MS
                 }
                 val packet = queue.take(PING_INTERVAL_MS) ?: if (ended) break else continue
@@ -331,6 +337,7 @@ class SenderSession(
         const val MAX_BITRATE_BPS = 40_000_000
         const val DIAG_EVERY_STATS = 5
 
-        fun nowUs() = SystemClock.elapsedRealtimeNanos() / 1_000
+        /** `CLOCK_MONOTONIC` µs: the clock of video pts and of PING/PONG (protocol v3). */
+        fun nowUs() = System.nanoTime() / 1_000
     }
 }
