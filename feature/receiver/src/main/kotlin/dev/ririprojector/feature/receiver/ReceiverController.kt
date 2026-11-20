@@ -238,46 +238,11 @@ class ReceiverController(
                 writer = startWriter()
                 val target = awaitSurface(SURFACE_WAIT_MS)
                 if (target == null || ended) throw IOException("no surface")
-                onStreamStarted(p)
-                val best = catalog.best(p.video.codec, encoder = false) ?: throw IOException("no decoder")
-                decoderName = best.name
-                if (Build.VERSION.SDK_INT >= 30) {
-                    runCatching {
-                        target.setFrameRate(p.video.fps.toFloat(), Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE)
-                    }
-                }
-                val dec =
-                    VideoDecoder(
-                        codecName = best.name,
-                        config = p.video,
-                        surface = target,
-                        lowLatencySupported = best.lowLatency,
-                        onKeyframeNeeded = ::requestKeyframe,
-                        onFatalError = { end(ByeReason.ERROR) },
-                        onFrameRendered = { pts, shownAt ->
-                            avSync.onVideoShown(pts, shownAt)
-                            captureLatency.onShown(pts, shownAt)
-                        },
-                    ).start()
-                decoder = dec
-                if (p.syncMode == SyncMode.LIP_SYNC) {
-                    delayLine =
-                        VideoDelayLine(
-                            capacityBytes = VideoDelayLine.capacityFor(p.video.bitrateBps, MAX_VIDEO_DELAY_MS),
-                            sink = { src, off, len, pts, cfg, key -> dec.submit(src, off, len, pts, cfg, key) },
-                            onOverflow = {
-                                Log.w(TAG, "video delay line overflow: dropping to the next keyframe")
-                                requestKeyframe()
-                            },
-                            onError = {
-                                Log.w(TAG, "video delay line failed: ${it.message}")
-                                end(ByeReason.ERROR)
-                            },
-                        ).start()
-                }
+                videoSurface = target
+                startVideo(p)
                 Log.i(TAG, "sync mode ${p.syncMode}")
                 _state.value =
-                    ReceiverState.Streaming(p, connection.remoteAddress, ReceiverStats(decoderName = best.name))
+                    ReceiverState.Streaming(p, connection.remoteAddress, ReceiverStats(decoderName = decoderName))
                 readLoop()
             } catch (e: HandshakeException) {
                 Log.w(TAG, "handshake failed: ${e.message}")
@@ -307,6 +272,72 @@ class ReceiverController(
             }
         }
 
+        private var videoSurface: Surface? = null
+
+        /**
+         * Creates the decoder (and, in lip-sync, the delay line in front of it) for [p]'s video.
+         * Session thread only: at the start and on VIDEO_RECONFIG.
+         */
+        private fun startVideo(p: StreamParams) {
+            val target = videoSurface ?: throw IOException("no surface")
+            onStreamStarted(p) // the activity sizes the view to the stream's aspect ratio
+            val best = catalog.best(p.video.codec, encoder = false) ?: throw IOException("no decoder")
+            decoderName = best.name
+            if (Build.VERSION.SDK_INT >= 30) {
+                runCatching {
+                    target.setFrameRate(p.video.fps.toFloat(), Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE)
+                }
+            }
+            val dec =
+                VideoDecoder(
+                    codecName = best.name,
+                    config = p.video,
+                    surface = target,
+                    lowLatencySupported = best.lowLatency,
+                    onKeyframeNeeded = ::requestKeyframe,
+                    onFatalError = { end(ByeReason.ERROR) },
+                    onFrameRendered = { pts, shownAt ->
+                        avSync.onVideoShown(pts, shownAt)
+                        captureLatency.onShown(pts, shownAt)
+                    },
+                ).start()
+            decoder = dec
+            if (p.syncMode == SyncMode.LIP_SYNC) {
+                delayLine =
+                    VideoDelayLine(
+                        capacityBytes = VideoDelayLine.capacityFor(p.video.bitrateBps, MAX_VIDEO_DELAY_MS),
+                        sink = { src, off, len, pts, cfg, key -> dec.submit(src, off, len, pts, cfg, key) },
+                        onOverflow = {
+                            Log.w(TAG, "video delay line overflow: dropping to the next keyframe")
+                            requestKeyframe()
+                        },
+                        onError = {
+                            Log.w(TAG, "video delay line failed: ${it.message}")
+                            end(ByeReason.ERROR)
+                        },
+                    ).start()
+            }
+        }
+
+        /**
+         * The tablet rotated or the shared app resized (VIDEO_RECONFIG, in order with video): rebuild
+         * the decoder for the new size. The lip-sync delay and A/V sync state are kept; video still
+         * waiting in the delay line belongs to the old size and is discarded.
+         */
+        private fun reconfigureVideo(msg: ControlMessage.VideoReconfig) {
+            val old = params ?: return
+            val p = old.copy(video = msg.video)
+            Log.i(TAG, "video reconfig #${msg.generation}: ${old.video.width}x${old.video.height} -> ${p.video}")
+            delayLine?.close()
+            delayLine = null
+            decoder?.close()
+            decoder = null
+            params = p
+            startVideo(p)
+            _state.value =
+                ReceiverState.Streaming(p, connection.remoteAddress, ReceiverStats(decoderName = decoderName))
+        }
+
         private fun readLoop() {
             val reader = connection.reader
             connection.setReadTimeout(READ_TIMEOUT_MS)
@@ -330,6 +361,8 @@ class ReceiverController(
                             decoder?.submit(pk.payload, 0, pk.payloadLength, pk.ptsOrSeq, isConfig, pk.isKeyframe)
                         }
                     }
+
+                    MessageType.VIDEO_RECONFIG -> reconfigureVideo(pk.decodeControl() as ControlMessage.VideoReconfig)
 
                     MessageType.AUDIO_CONFIG -> {
                         val setup = pk.decodeControl() as ControlMessage.AudioSetup
@@ -420,7 +453,8 @@ class ReceiverController(
                     }
                     val stats =
                         ReceiverStats(
-                            fps = (d.decodedFrames - lastFrames) / secs,
+                            // A reconfig restarts the decoder count.
+                            fps = (d.decodedFrames - lastFrames).coerceAtLeast(0) / secs,
                             bitrateBps = ((bytes - lastBytes) * 8 / secs).toLong(),
                             dropped = d.droppedFrames,
                             decodeMeanUs = d.latencyMeanUs,
