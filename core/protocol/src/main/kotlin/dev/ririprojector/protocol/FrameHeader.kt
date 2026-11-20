@@ -1,6 +1,6 @@
 package dev.ririprojector.protocol
 
-/** Message types of wire format v1 (ADR-003). */
+/** Message types of the wire format (ADR-003); VIDEO_RECONFIG since v3. */
 enum class MessageType(val code: Int, val isMedia: Boolean = false) {
     HELLO(0x01),
     START(0x02),
@@ -8,6 +8,7 @@ enum class MessageType(val code: Int, val isMedia: Boolean = false) {
     FRAME(0x04, isMedia = true),
     AUDIO_CONFIG(0x05),
     AUDIO_FRAME(0x06, isMedia = true),
+    VIDEO_RECONFIG(0x07),
     REQUEST_KEYFRAME(0x10),
     PING(0x11),
     PONG(0x12),

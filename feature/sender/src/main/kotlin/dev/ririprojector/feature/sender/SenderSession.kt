@@ -235,7 +235,7 @@ class SenderSession(
 
                 MessageType.PONG -> {
                     val pong = p.decodeControl() as ControlMessage.Pong
-                    clock.addSample(pong.senderTimeUs, pong.receiverTimeUs, nowUs())
+                    clock.addSample(pong.senderTimeUs, pong.receiverRxUs, nowUs())
                 }
 
                 MessageType.STATS -> {

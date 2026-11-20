@@ -308,7 +308,8 @@ class ReceiverController(
 
                     MessageType.PING -> {
                         val ping = pk.decodeControl() as ControlMessage.Ping
-                        outbox.offer(ControlMessage.Pong(ping.senderTimeUs, nowUs()))
+                        val now = nowUs()
+                        outbox.offer(ControlMessage.Pong(ping.senderTimeUs, now, now))
                     }
 
                     MessageType.BYE -> return

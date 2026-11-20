@@ -25,6 +25,32 @@ class ValidationTest {
     }
 
     @Test
+    fun `v2 PING and PONG without the v3 fields are rejected as malformed`() {
+        val ping = PayloadWriter().i64(1)
+        val pong = PayloadWriter().i64(1).i64(2)
+        for ((type, payload) in listOf(MessageType.PING to ping, MessageType.PONG to pong)) {
+            val e =
+                assertThrows(ProtocolException::class.java) {
+                    ControlCodec.decode(type, payload.bytes, 0, payload.size)
+                }
+            assertThat(e.reason).isEqualTo(Reason.MALFORMED_PAYLOAD)
+        }
+    }
+
+    @Test
+    fun `VIDEO_RECONFIG with an unknown codec or zero height is rejected as malformed`() {
+        val badCodec = PayloadWriter().u16(1).u8(99).u16(1920).u16(1080).u16(60).i32(8_000_000)
+        val zeroHeight = PayloadWriter().u16(1).u8(1).u16(1920).u16(0).u16(60).i32(8_000_000)
+        for (payload in listOf(badCodec, zeroHeight)) {
+            val e =
+                assertThrows(ProtocolException::class.java) {
+                    ControlCodec.decode(MessageType.VIDEO_RECONFIG, payload.bytes, 0, payload.size)
+                }
+            assertThat(e.reason).isEqualTo(Reason.MALFORMED_PAYLOAD)
+        }
+    }
+
+    @Test
     fun `v1 START without the sync mode byte is rejected as malformed`() {
         val payload = startPayload(syncByte = null)
         val e =

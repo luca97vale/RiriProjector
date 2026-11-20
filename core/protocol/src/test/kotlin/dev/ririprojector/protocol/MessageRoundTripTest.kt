@@ -56,9 +56,15 @@ class MessageRoundTripTest {
         ),
         ControlMessage.RequestKeyframe,
         ControlMessage.Ping(123_456_789_012L),
-        ControlMessage.Pong(-5L, Long.MAX_VALUE),
+        ControlMessage.Ping(1L, offsetUs = -42_000L, rttUs = 3_500),
+        ControlMessage.Pong(-5L, Long.MAX_VALUE, 0L),
         ControlMessage.Stats(5999, 3, 8000, 20000, 1, -1500),
         ControlMessage.Stats(6000, 0, 9000, 12000, 0, 3000, videoDelayUs = 180_000),
+        ControlMessage.Stats(6000, 0, 9000, 12000, 0, ControlMessage.UNKNOWN_SIGNED, 0, 45_000, 70_000),
+        ControlMessage.VideoReconfig(
+            65_535,
+            VideoConfig(VideoCodec.HEVC, 1080, 1920, 60, 8_000_000),
+        ),
         ControlMessage.BitrateHint(8_000_000),
         ControlMessage.Bye(ByeReason.PROJECTION_REVOKED),
     )

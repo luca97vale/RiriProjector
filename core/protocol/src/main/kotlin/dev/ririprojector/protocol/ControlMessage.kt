@@ -45,12 +45,20 @@ sealed interface ControlMessage {
         override val type get() = MessageType.REQUEST_KEYFRAME
     }
 
-    /** Sender monotonic clock in µs, echoed back in [Pong]. */
-    data class Ping(val senderTimeUs: Long) : ControlMessage {
+    /**
+     * S→R. [senderTimeUs] is sender `CLOCK_MONOTONIC` µs, echoed back in [Pong]. v3: carries the
+     * sender's current estimate of receiver-minus-sender clock offset ([NO_OFFSET] until known)
+     * and the best round-trip time, so the receiver can place sender pts on its own clock.
+     */
+    data class Ping(val senderTimeUs: Long, val offsetUs: Long = NO_OFFSET, val rttUs: Int = 0) : ControlMessage {
         override val type get() = MessageType.PING
     }
 
-    data class Pong(val senderTimeUs: Long, val receiverTimeUs: Long) : ControlMessage {
+    /**
+     * R→S, NTP-style (v3): receiver `CLOCK_MONOTONIC` µs when the PING was read ([receiverRxUs])
+     * and right before this PONG was written ([receiverTxUs]).
+     */
+    data class Pong(val senderTimeUs: Long, val receiverRxUs: Long, val receiverTxUs: Long) : ControlMessage {
         override val type get() = MessageType.PONG
     }
 
@@ -61,11 +69,24 @@ sealed interface ControlMessage {
         val decodeLatencyMeanUs: Int,
         val decodeLatencyP95Us: Int,
         val audioUnderruns: Int,
+        /** Audio minus video, positive = audio late; [UNKNOWN_SIGNED] until measurable. */
         val avOffsetUs: Int,
         /** Lip-sync delay the receiver applies to video (0 in LOW_LATENCY). Added in v2. */
         val videoDelayUs: Int = 0,
+        /** Capture (sender pts) to shown on the receiver, mean / p95; [UNKNOWN] until known. v3. */
+        val captureToShownUs: Int = UNKNOWN,
+        val captureToShownP95Us: Int = UNKNOWN,
     ) : ControlMessage {
         override val type get() = MessageType.STATS
+    }
+
+    /**
+     * S→R (v3): the video size changed (rotation, one-app resize). Sent in order with video: every
+     * unit after it belongs to [video], starting with CONFIG and a keyframe. [generation] counts
+     * reconfigurations in the session (u16, wraps).
+     */
+    data class VideoReconfig(val generation: Int, val video: VideoConfig) : ControlMessage {
+        override val type get() = MessageType.VIDEO_RECONFIG
     }
 
     data class BitrateHint(val bitrateBps: Int) : ControlMessage {
@@ -78,6 +99,15 @@ sealed interface ControlMessage {
 
     companion object {
         internal val EMPTY = ByteArray(0)
+
+        /** [Ping.offsetUs] before the sender has a clock estimate. */
+        const val NO_OFFSET = Long.MIN_VALUE
+
+        /** Unknown value of a non-negative duration field (latencies). */
+        const val UNKNOWN = -1
+
+        /** Unknown value of a signed field (offsets). */
+        const val UNKNOWN_SIGNED = Int.MIN_VALUE
     }
 }
 
@@ -115,9 +145,7 @@ object ControlCodec {
             is ControlMessage.Start -> {
                 val p = message.params
                 out.i64(p.sessionId)
-                out.u8(
-                    p.video.codec.code,
-                ).u16(p.video.width).u16(p.video.height).u16(p.video.fps).i32(p.video.bitrateBps)
+                writeVideoConfig(out, p.video)
                 writeAudioConfig(out, p.audio)
                 out.u8(p.syncMode.code)
             }
@@ -129,14 +157,20 @@ object ControlCodec {
 
             ControlMessage.RequestKeyframe -> Unit
 
-            is ControlMessage.Ping -> out.i64(message.senderTimeUs)
+            is ControlMessage.Ping -> out.i64(message.senderTimeUs).i64(message.offsetUs).i32(message.rttUs)
 
-            is ControlMessage.Pong -> out.i64(message.senderTimeUs).i64(message.receiverTimeUs)
+            is ControlMessage.Pong ->
+                out.i64(message.senderTimeUs).i64(message.receiverRxUs).i64(message.receiverTxUs)
 
             is ControlMessage.Stats ->
                 out.i32(message.decodedFpsX100).i32(message.droppedFrames).i32(message.decodeLatencyMeanUs)
                     .i32(message.decodeLatencyP95Us).i32(message.audioUnderruns).i32(message.avOffsetUs)
-                    .i32(message.videoDelayUs)
+                    .i32(message.videoDelayUs).i32(message.captureToShownUs).i32(message.captureToShownP95Us)
+
+            is ControlMessage.VideoReconfig -> {
+                out.u16(message.generation)
+                writeVideoConfig(out, message.video)
+            }
 
             is ControlMessage.BitrateHint -> out.i32(message.bitrateBps)
 
@@ -172,8 +206,7 @@ object ControlCodec {
 
                 MessageType.START -> {
                     val sessionId = r.i64()
-                    val codec = VideoCodec.fromCode(r.u8()) ?: throw malformed("unknown video codec")
-                    val video = VideoConfig(codec, r.u16(), r.u16(), r.u16(), r.i32())
+                    val video = readVideoConfig(r)
                     val audio = readAudioConfig(r)
                     val sync = SyncMode.fromCode(r.u8()) ?: throw malformed("unknown sync mode")
                     ControlMessage.Start(StreamParams(sessionId, video, audio, sync))
@@ -183,11 +216,24 @@ object ControlCodec {
 
                 MessageType.REQUEST_KEYFRAME -> ControlMessage.RequestKeyframe
 
-                MessageType.PING -> ControlMessage.Ping(r.i64())
+                MessageType.PING -> ControlMessage.Ping(r.i64(), r.i64(), r.i32())
 
-                MessageType.PONG -> ControlMessage.Pong(r.i64(), r.i64())
+                MessageType.PONG -> ControlMessage.Pong(r.i64(), r.i64(), r.i64())
 
-                MessageType.STATS -> ControlMessage.Stats(r.i32(), r.i32(), r.i32(), r.i32(), r.i32(), r.i32(), r.i32())
+                MessageType.STATS ->
+                    ControlMessage.Stats(
+                        decodedFpsX100 = r.i32(),
+                        droppedFrames = r.i32(),
+                        decodeLatencyMeanUs = r.i32(),
+                        decodeLatencyP95Us = r.i32(),
+                        audioUnderruns = r.i32(),
+                        avOffsetUs = r.i32(),
+                        videoDelayUs = r.i32(),
+                        captureToShownUs = r.i32(),
+                        captureToShownP95Us = r.i32(),
+                    )
+
+                MessageType.VIDEO_RECONFIG -> ControlMessage.VideoReconfig(r.u16(), readVideoConfig(r))
 
                 MessageType.BITRATE_HINT -> ControlMessage.BitrateHint(r.i32())
 
@@ -208,6 +254,15 @@ object ControlCodec {
     private fun readVideoCap(r: PayloadReader): VideoCodecCapability {
         val codec = VideoCodec.fromCode(r.u8()) ?: throw malformed("unknown video codec")
         return VideoCodecCapability(codec, r.u16(), r.u16(), r.u16(), r.bool(), r.bool())
+    }
+
+    private fun writeVideoConfig(out: PayloadWriter, v: VideoConfig) {
+        out.u8(v.codec.code).u16(v.width).u16(v.height).u16(v.fps).i32(v.bitrateBps)
+    }
+
+    private fun readVideoConfig(r: PayloadReader): VideoConfig {
+        val codec = VideoCodec.fromCode(r.u8()) ?: throw malformed("unknown video codec")
+        return VideoConfig(codec, r.u16(), r.u16(), r.u16(), r.i32())
     }
 
     private fun writeAudioConfig(out: PayloadWriter, c: AudioConfig) {

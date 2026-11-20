@@ -70,6 +70,29 @@ object CodecNegotiator {
         return Negotiation.Success(StreamParams(sessionId, video, audio, prefs.syncMode))
     }
 
+    /**
+     * Recomputes the video size after the source changed size (rotation, one-app resize), keeping
+     * the negotiated codec and fps. [sender] carries the new source size. The bitrate is the
+     * user's fixed value, or the automatic one for the new size; callers clamp it to their policy.
+     * Null if the codec is no longer usable or no size fits.
+     */
+    fun refit(
+        current: VideoConfig,
+        sender: SenderCapabilities,
+        receiver: ControlMessage.Hello,
+        prefs: StreamPreferences = StreamPreferences(),
+    ): VideoConfig? {
+        val order = listOf(current.codec)
+        val (enc, dec) =
+            pickPair(sender, receiver, order, requireHardwareDecoder = true)
+                ?: pickPair(sender, receiver, order, requireHardwareDecoder = false)
+                ?: return null
+        val (w, h) = fitResolution(sender, receiver, enc, dec, prefs.maxHeight) ?: return null
+        val bitrate = prefs.bitrateBps?.coerceIn(MIN_BITRATE_BPS, MAX_BITRATE_BPS)
+            ?: autoBitrate(current.codec, w, h, current.fps)
+        return current.copy(width = w, height = h, bitrateBps = bitrate)
+    }
+
     fun autoBitrate(codec: VideoCodec, width: Int, height: Int, fps: Int): Int {
         val bps = width.toDouble() * height * fps * bitsPerPixel(codec)
         return bps.toLong().coerceIn(MIN_BITRATE_BPS.toLong(), MAX_BITRATE_BPS.toLong()).toInt()
