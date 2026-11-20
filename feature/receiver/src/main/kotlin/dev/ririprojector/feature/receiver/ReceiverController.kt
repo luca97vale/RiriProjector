@@ -11,6 +11,7 @@ import android.view.Surface
 import dev.ririprojector.media.AndroidCodecs
 import dev.ririprojector.media.AudioPlayer
 import dev.ririprojector.media.AvSync
+import dev.ririprojector.media.CaptureLatency
 import dev.ririprojector.media.CodecCatalog
 import dev.ririprojector.media.JitterBuffer
 import dev.ririprojector.media.KeyframeRequestLimiter
@@ -36,6 +37,7 @@ import dev.ririprojector.protocol.model.SyncMode
 import java.io.Closeable
 import java.io.IOException
 import java.net.BindException
+import java.net.SocketTimeoutException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -69,6 +71,8 @@ data class ReceiverStats(
     val avOffsetMs: Int? = null,
     /** Lip-sync video delay currently applied (0 in low-latency mode). */
     val videoDelayMs: Int = 0,
+    /** Capture on the tablet to shown on this screen (includes the lip-sync delay); null until known. */
+    val latency: CaptureLatency.Snapshot? = null,
 )
 
 /**
@@ -178,6 +182,9 @@ class ReceiverController(
 
         private val avSync = AvSync()
 
+        /** Capture→shown latency; fed by the codec thread, clock set by PINGs. */
+        private val captureLatency = CaptureLatency()
+
         /** Lip-sync only (ADR-007): video waits here for its audio. Null in low-latency mode. */
         @Volatile private var delayLine: VideoDelayLine? = null
 
@@ -229,7 +236,10 @@ class ReceiverController(
                         lowLatencySupported = best.lowLatency,
                         onKeyframeNeeded = ::requestKeyframe,
                         onFatalError = { end(ByeReason.ERROR) },
-                        onFrameRendered = avSync::onVideoShown,
+                        onFrameRendered = { pts, shownAt ->
+                            avSync.onVideoShown(pts, shownAt)
+                            captureLatency.onShown(pts, shownAt)
+                        },
                     ).start()
                 decoder = dec
                 if (p.syncMode == SyncMode.LIP_SYNC) {
@@ -281,8 +291,15 @@ class ReceiverController(
 
         private fun readLoop() {
             val reader = connection.reader
+            connection.setReadTimeout(READ_TIMEOUT_MS)
             while (!ended) {
-                val pk = reader.read() ?: return
+                val pk =
+                    try {
+                        reader.read() ?: return
+                    } catch (e: SocketTimeoutException) {
+                        Log.w(TAG, "sender silent for $READ_TIMEOUT_MS ms: ending the session")
+                        throw e
+                    }
                 bytesReceived += pk.payloadLength + HEADER_BYTES
                 when (pk.type) {
                     MessageType.CONFIG, MessageType.FRAME -> {
@@ -308,6 +325,10 @@ class ReceiverController(
 
                     MessageType.PING -> {
                         val ping = pk.decodeControl() as ControlMessage.Ping
+                        captureLatency.setClock(
+                            ping.offsetUs.takeIf { it != ControlMessage.NO_OFFSET },
+                            ping.rttUs,
+                        )
                         val now = nowUs()
                         outbox.offer(ControlMessage.Pong(ping.senderTimeUs, receiverRxUs = now, receiverTxUs = now))
                     }
@@ -392,6 +413,7 @@ class ReceiverController(
                             audioUnderruns = jb?.underruns ?: 0,
                             avOffsetMs = offsetUs?.let { (it / 1000).toInt() },
                             videoDelayMs = (videoDelayUs / 1000).toInt(),
+                            latency = captureLatency.snapshot(),
                         )
                     if (++ticks % DIAG_EVERY_TICKS == 0 && jb != null) {
                         Log.d(
@@ -414,11 +436,13 @@ class ReceiverController(
                             decodeLatencyMeanUs = d.latencyMeanUs.toInt(),
                             decodeLatencyP95Us = d.latencyP95Us.toInt(),
                             audioUnderruns = stats.audioUnderruns,
-                            avOffsetUs = (offsetUs ?: 0).coerceIn(
-                                Int.MIN_VALUE.toLong(),
-                                Int.MAX_VALUE.toLong(),
-                            ).toInt(),
+                            avOffsetUs = offsetUs?.let { clampInt(it, Int.MIN_VALUE + 1L) }
+                                ?: ControlMessage.UNKNOWN_SIGNED,
                             videoDelayUs = videoDelayUs.toInt(),
+                            captureToShownUs = stats.latency?.let { clampInt(it.meanUs, 0) }
+                                ?: ControlMessage.UNKNOWN,
+                            captureToShownP95Us = stats.latency?.let { clampInt(it.p95Us, 0) }
+                                ?: ControlMessage.UNKNOWN,
                         ),
                     )
                     connection.writer.flush()
@@ -475,6 +499,12 @@ class ReceiverController(
         const val BIND_RETRY_MS = 300L
         const val DIAG_EVERY_TICKS = 5
         const val MAX_VIDEO_DELAY_MS = 300
+
+        /** The sender PINGs every second: 3 s of silence means it is gone (ADR-010). */
+        const val READ_TIMEOUT_MS = 3_000
+
+        /** Keeps [min] off the wire's sentinel values. */
+        fun clampInt(value: Long, min: Long): Int = value.coerceIn(min, Int.MAX_VALUE.toLong()).toInt()
 
         /** `CLOCK_MONOTONIC` µs: the clock of video pts and of PING/PONG (protocol v3). */
         fun nowUs() = System.nanoTime() / 1_000

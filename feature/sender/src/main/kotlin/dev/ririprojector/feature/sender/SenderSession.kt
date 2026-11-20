@@ -258,8 +258,10 @@ class SenderSession(
                             encoderName = encoderName,
                             audio = if (audioFailed) AudioStatus.UNAVAILABLE else audioStatus,
                             receiverUnderruns = s.audioUnderruns,
-                            avOffsetMs = s.avOffsetUs / 1000,
+                            avOffsetMs = if (s.avOffsetUs == ControlMessage.UNKNOWN_SIGNED) 0 else s.avOffsetUs / 1000,
                             receiverVideoDelayMs = s.videoDelayUs / 1000,
+                            latencyMs = s.captureToShownUs.takeIf { it >= 0 }?.div(1000),
+                            latencyP95Ms = s.captureToShownP95Us.takeIf { it >= 0 }?.div(1000),
                             contentHidden = contentHidden,
                         )
                     if (++statsCount % DIAG_EVERY_STATS == 0) {

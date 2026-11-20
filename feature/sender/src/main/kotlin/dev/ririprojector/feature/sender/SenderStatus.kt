@@ -23,6 +23,9 @@ data class SenderStats(
     val avOffsetMs: Int = 0,
     /** Lip-sync video delay the receiver applies (0 in low-latency mode). */
     val receiverVideoDelayMs: Int = 0,
+    /** Capture here to shown on the receiver, mean and p95; null until the receiver knows it. */
+    val latencyMs: Int? = null,
+    val latencyP95Ms: Int? = null,
     /** Single-app sharing: the shared app is not on screen, so the receiver shows nothing. */
     val contentHidden: Boolean = false,
 )

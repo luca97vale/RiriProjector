@@ -381,6 +381,12 @@ private fun StatusCard(state: SenderState, onStop: () -> Unit) {
                         },
                         style = MaterialTheme.typography.bodySmall,
                     )
+                    if (s.latencyMs != null) {
+                        Text(
+                            stringResource(R.string.sender_latency, s.latencyMs, s.latencyP95Ms ?: s.latencyMs),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                     if (s.receiverVideoDelayMs > 0) {
                         Text(
                             stringResource(R.string.sender_video_delay, s.receiverVideoDelayMs),

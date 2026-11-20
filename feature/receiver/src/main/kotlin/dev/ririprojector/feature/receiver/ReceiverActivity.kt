@@ -144,6 +144,14 @@ class ReceiverActivity : Activity() {
                         s.decoderName,
                         state.peer,
                         s.videoDelayMs,
+                        s.latency?.let {
+                            getString(
+                                R.string.receiver_latency,
+                                (it.meanUs / 1000).toInt(),
+                                (it.p95Us / 1000).toInt(),
+                                (it.uncertaintyUs / 1000).toInt(),
+                            )
+                        } ?: getString(R.string.receiver_av_unknown),
                     )
             }
 

@@ -37,6 +37,7 @@
     <string name="sender_usage_access_hint">When you share one app, RiriProjector mirrors only that app\'s sound. To know which app you picked it needs Usage access. Without it, sound from all apps is mirrored.</string>
     <string name="sender_usage_access_allow">Allow</string>
     <string name="sender_usage_access_skip">Not now</string>
+    <string name="sender_latency">Latency: %1$d ms (p95 %2$d ms) from capture to the projector screen</string>
     <string name="sender_video_delay">Lip-sync: video delayed %1$d ms to match the sound</string>
     <string name="sender_content_hidden">The shared app is not on screen: the projector shows nothing until you return to it.</string>
 </resources>
