@@ -62,6 +62,10 @@ object P2pPolicy {
             GroupChannel.Band5Ghz
         }
 
+    /** `DhcpInfo` addresses are little-endian ints: 0x0131A8C0 is 192.168.49.1. */
+    fun ipv4(littleEndian: Int): String =
+        "${littleEndian and 0xff}.${littleEndian shr 8 and 0xff}.${littleEndian shr 16 and 0xff}.${littleEndian ushr 24}"
+
     private const val PSK_ALPHABET = "abcdefghijkmnpqrstuvwxyz23456789"
     private const val SSID_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789"
 

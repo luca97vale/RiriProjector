@@ -73,6 +73,11 @@ class P2pRecordsTest {
         }
     }
 
+    @Test fun dhcpAddressesAreLittleEndian() {
+        assertEquals("192.168.49.1", P2pPolicy.ipv4(0x0131A8C0))
+        assertEquals("192.168.49.229", P2pPolicy.ipv4(0xE531A8C0.toInt()))
+    }
+
     @Test fun failureCodesMapToKinds() {
         assertTrue(P2pFailure.of(1, "x") is P2pFailure.Unsupported)
         assertTrue(P2pFailure.of(2, "x") is P2pFailure.Busy)

@@ -274,7 +274,7 @@ targets in the same room. Open items for implementation:
    results here and pick the topology (and decide whether the TV needs a toggle).
 2. [x] `feat(net)`: `P2pServiceRecord`, failure mapping, `linkKindOf`, outage limit per link kind,
    manifest; tests.
-3. `feat(net)`: `P2pReceiverHost`, `P2pBrowser`, `P2pJoiner`/`P2pLink` for the chosen topology.
+3. [x] `feat(net)`: `P2pReceiverHost`, `P2pBrowser`, `P2pJoiner`/`P2pLink` for the chosen topology.
 4. `feat(receiver)`: host ownership, waiting-screen text, link kind in the overlay.
 5. `feat(sender)`: button, discovery list, permission flow, `ProjectionService` scope, joining state
    and ownership, link loss, phase timestamps, status card.
