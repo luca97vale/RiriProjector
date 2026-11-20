@@ -212,3 +212,14 @@ Changes:
   largest gap, audio missing at the source, discarded and corrected frames.
 Acceptance: on the same video, < 1 underrun per minute after the first 10 s, and capture→played
 audio no more than ~30 ms above today's ~345 ms.
+
+### Where the gaps come from (tablet instrumentation, 2026-11-20)
+Sender log every 5 s with a YouTube video playing: capture reads are regular (largest gap
+24–35 ms, hand-off to the queue ≤ 6 ms, ≤ 7 ms/s missing, likely timestamp jitter), but the oldest
+audio leaves the tablet up to 290 ms after capture, and even 0–1 KiB writes block 50–190 ms. The
+tablet sits on 5 GHz at −36 dBm (1200 Mbps); the Fire TV on 2.4 GHz at −68 dBm (130–144 Mbps).
+When the TV's link retries, ACKs stop and the whole send buffer stays in flight: nothing, audio
+included, can be written. Capping unsent data (`TCP_NOTSENT_LOWAT` 16 KiB) made no measurable
+difference and was reverted. The fix is a better TV link (Wi-Fi Direct / 5 GHz, next milestone);
+until then the jitter buffer covers gaps up to 150 ms (~1 underrun/min, ~460 ms capture→shown
+with lip-sync).

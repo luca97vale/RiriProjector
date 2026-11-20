@@ -358,6 +358,14 @@ internal class ProjectionHost(
         /** Cumulative receiver drops from the latest STATS, sampled by the bitrate tick. */
         @Volatile private var receiverDropped = 0
 
+        // Diagnostics (writer thread, logged and reset with the audio line): oldest audio at send
+        // time (now − pts, includes the capture age), longest single write + flush and its size.
+        @Volatile private var maxAudioSendAgeUs = 0L
+
+        @Volatile private var maxWriteUs = 0L
+
+        @Volatile private var maxWriteBytes = 0
+
         private val clock = ClockSync()
 
         val queue =
@@ -613,8 +621,12 @@ internal class ProjectionHost(
                                 Log.d(
                                     TAG,
                                     "audio: capture age ${it.lastAgeUs / 1000} ms, peak ${it.takePeak()}, " +
-                                        "queue drops ${queue.droppedAudioPackets}",
+                                        "queue drops ${queue.droppedAudioPackets}; ${it.takeTiming()}; " +
+                                        "send age max ${maxAudioSendAgeUs / 1000} ms, " +
+                                        "write max ${maxWriteUs / 1000} ms (${maxWriteBytes / 1024} KiB)",
                                 )
+                                maxAudioSendAgeUs = 0
+                                maxWriteUs = 0
                             }
                         }
                         lastFrames = frames
@@ -655,12 +667,21 @@ internal class ProjectionHost(
                     val packet = queue.take(PING_INTERVAL_MS) ?: if (ended) break else continue
                     try {
                         val control = packet.control
+                        val startUs = nowUs()
+                        if (packet.type == MessageType.AUDIO_FRAME && startUs - packet.ptsUs > maxAudioSendAgeUs) {
+                            maxAudioSendAgeUs = startUs - packet.ptsUs
+                        }
                         if (control != null) {
                             conn.writer.writeControl(control)
                         } else {
                             conn.writer.writeMedia(packet.type, packet.flags, packet.ptsUs, packet.payload())
                         }
                         conn.writer.flush()
+                        val writeUs = nowUs() - startUs
+                        if (writeUs > maxWriteUs) {
+                            maxWriteUs = writeUs
+                            maxWriteBytes = packet.length
+                        }
                         if (control is ControlMessage.Bye) break
                     } finally {
                         queue.recycle(packet)
