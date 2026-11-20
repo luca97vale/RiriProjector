@@ -76,6 +76,29 @@ class BitratePolicyTest {
     }
 
     @Test
+    fun `oscillating congestion only steps down, at most every 2 s, then recovers when clean`() {
+        val p = BitratePolicy(ceilingBps = 20_000_000)
+        var last = p.currentBps
+        var decreases = 0
+        for (s in 1..20) {
+            // Receiver drops rise every other second: on, off, on, off...
+            val changed = p.tick(s * 1_000L, clean.copy(receiverDropped = s / 2))
+            if (changed != null) {
+                assertThat(changed).isLessThan(last)
+                decreases++
+                last = changed
+            }
+        }
+        assertThat(decreases).isAtMost(10)
+        assertThat(p.currentBps).isAtLeast(p.floorBps)
+
+        val atEnd = p.currentBps
+        // Last congestion at 20 s: 5 s clean before the first +5 %.
+        for (s in 21..24) assertThat(p.tick(s * 1_000L, clean.copy(receiverDropped = 10))).isNull()
+        assertThat(p.tick(25_000, clean.copy(receiverDropped = 10))).isGreaterThan(atEnd)
+    }
+
+    @Test
     fun `new link forgets the receiver drop baseline`() {
         val p = BitratePolicy(20_000_000)
         p.tick(1_000, clean.copy(receiverDropped = 50))

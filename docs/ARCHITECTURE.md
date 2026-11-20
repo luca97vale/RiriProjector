@@ -70,7 +70,7 @@ Messages:
 | 0x11 | PING | S→R | v3: `i64` t1, `i64` offset estimate (`NO_OFFSET` until known), `i32` best RTT µs |
 | 0x12 | PONG | R→S | v3: `i64` t1 echoed, `i64` t2 (PING read), `i64` t3 (PONG written) |
 | 0x13 | STATS | R→S | decoded fps, dropped frames, mean/p95 decode latency, audio underruns, A/V offset, video delay (v2), capture→shown mean/p95 (v3); all `i32` µs |
-| 0x14 | BITRATE_HINT | R→S | ignored since v3 (the sender's `BitratePolicy` decides); kept so old peers parse |
+| 0x14 | BITRATE_HINT | R→S | reserved, ignored; no v3 peer sends it (the sender's `BitratePolicy` decides) |
 | 0x7F | BYE | ↔ | reason code |
 
 ## ADR-004 — Encoder pipeline (sender)
@@ -101,7 +101,8 @@ Messages:
     - the last RTT above its 30 s floor + 40 ms on 2 consecutive ticks.
   - *Increase +5 %/s* after 5 s without congestion, up to the ceiling.
   - Ceiling = negotiated (Auto) or the user's fixed bitrate; floor = max(1 Mbps, 15 % of ceiling).
-  - Ticked once per second by the sender's writer thread.
+  - Ticked once per second by the sender's writer thread; a new value is applied to the encoder
+    on the host's `HostCtl` thread (never on the writer), and re-applied to each new encoder.
   - A size change refits the ceiling and clamps the current value; a new link resets the
     receiver-drop baseline and RTT history.
 
@@ -236,9 +237,11 @@ changes without asking the user to share again.
 
 **Reconnection.**
 - The existing `SessionStateMachine` drives the loop. Backoff is 250 ms, then 500 ms (capped).
-  Retries use 1 s connect and 1 s handshake timeouts.
+  Retries use a 1 s connect and a 2 s handshake timeout (the receiver may first have to preempt
+  its previous session).
 - It gives up when one outage lasts 30 s, counted from the first failure since the last
-  successful handshake.
+  *healthy* link: one whose receiver reported decoded frames (STATS). A handshake alone does not
+  reset the outage, so a receiver that accepts and then fails cannot keep the loop alive forever.
 - The very first connection is not retried: a receiver that never answered is a user error.
 - The tablet shows "Reconnecting…" while it keeps the projection.
 - `ReconnectPolicy.classify` decides between giving up (*final*) and trying again (*retry*):
@@ -255,8 +258,9 @@ changes without asking the user to share again.
   means it is gone.
 - **Preemption** in `ReceiverServer`: a new connection from the active session's own address
   replaces that session instead of being refused as `BUSY`. Its old link may still look alive for
-  up to 3 s. The new session waits (up to 1.5 s) for the old one to release its decoder, since a
-  Surface takes one codec at a time.
+  up to 3 s. The new session first completes its handshake (so the sender's handshake timeout
+  never waits on it), then waits up to 1.5 s for the old one to release its decoder (a latch counted
+  right after the decoder closes), since a Surface takes one codec at a time.
 - Leaving the receiver (Back) sends `BYE(USER_STOPPED)`, so the tablet stops. Backgrounding it
   sends `BYE(NORMAL)`, so the tablet keeps retrying and resumes if the TV app returns within 30 s.
 
@@ -285,5 +289,7 @@ changes without asking the user to share again.
 *Rejected:*
 - re-running consent on reconnect: it needs the user, and tokens are single-use;
 - a dummy 1×1 SurfaceTexture between links: a never-drained consumer stalls the producer;
+- a `ConnectivityManager.NetworkCallback` to retry as soon as Wi-Fi returns: deferred; the 500 ms
+  backoff already reconnects within ~1 s of the network coming back;
 - relying on adaptive playback for size changes: unreliable on Fire TV, and it mixes sizes in the
   delay line.

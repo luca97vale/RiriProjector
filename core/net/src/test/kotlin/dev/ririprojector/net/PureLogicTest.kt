@@ -46,6 +46,14 @@ class ClockSyncTest {
     }
 
     @Test
+    fun `asymmetric path biases the offset by half the asymmetry, within rtt over 2`() {
+        val sync = ClockSync()
+        sync.exchange(t1 = 0, offset = 5_000, oneWay = 1_000, back = 3_000)
+        assertThat(sync.rttUs).isEqualTo(4_000)
+        assertThat(sync.offsetUs).isEqualTo(4_000) // true 5 000, error 1 000 ≤ rtt/2
+    }
+
+    @Test
     fun `old samples age out of the window`() {
         val sync = ClockSync(window = 2)
         sync.exchange(0, 0, oneWay = 50)
@@ -251,6 +259,29 @@ class SendQueueTest {
         q.offerVideo(900_000, keyframe = true, codecConfig = false, src = buf(10))
         q.offerVideo(950_000, keyframe = false, codecConfig = false, src = buf(10))
         assertThat(q.oldestQueuedVideoAgeUs(1_000_000)).isEqualTo(100_000)
+    }
+
+    @Test
+    fun `an IDR flagged config plus key ends the keyframe wait`() {
+        val q = SendQueue()
+        q.resetVideo(requestKeyframe = false)
+        assertThat(q.offerVideo(1, keyframe = true, codecConfig = true, src = buf(10))).isTrue()
+        assertThat(q.offerVideo(2, keyframe = false, codecConfig = false, src = buf(10))).isTrue()
+        assertThat(q.droppedVideoFrames).isEqualTo(0)
+    }
+
+    @Test
+    fun `an uncounted reset flushes frames without counting them as drops`() {
+        val q = SendQueue()
+        q.offerVideo(1, keyframe = true, codecConfig = false, src = buf(10))
+        q.offerVideo(2, keyframe = false, codecConfig = false, src = buf(10))
+        q.resetVideo(requestKeyframe = false, countDropped = false)
+        assertThat(q.droppedVideoFrames).isEqualTo(0)
+        assertThat(q.take(0)).isNull()
+
+        q.offerVideo(3, keyframe = true, codecConfig = false, src = buf(10))
+        q.resetVideo()
+        assertThat(q.droppedVideoFrames).isEqualTo(1)
     }
 }
 

@@ -34,7 +34,7 @@ class CaptureLatencyTest {
     }
 
     @Test
-    fun `a new offset discards samples taken with the old one`() {
+    fun `an offset jump discards samples taken with the old one`() {
         val c = CaptureLatency()
         c.setClock(0, 1_000)
         c.onShown(0, 500_000)
@@ -47,5 +47,17 @@ class CaptureLatencyTest {
 
         c.reset()
         assertThat(c.snapshot()).isNull()
+    }
+
+    @Test
+    fun `small offset refinements keep the window and shift the result`() {
+        val c = CaptureLatency()
+        c.setClock(offsetUs = 100_000, rttUs = 4_000)
+        repeat(10) { c.onShown(ptsUs = it * 16_000L, shownAtUs = it * 16_000L + 160_000) } // 60 ms
+        c.setClock(offsetUs = 101_500, rttUs = 2_000) // ClockSync found a better sample
+
+        val s = c.snapshot()!!
+        assertThat(s.meanUs).isEqualTo(58_500)
+        assertThat(s.uncertaintyUs).isEqualTo(1_000)
     }
 }

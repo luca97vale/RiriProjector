@@ -185,6 +185,9 @@ class ReceiverController(
         private val keyframes = KeyframeRequestLimiter()
         private val done = CountDownLatch(1)
 
+        /** Counted down once this session's decoder no longer holds the Surface. */
+        private val videoReleased = CountDownLatch(1)
+
         @Volatile private var decoder: VideoDecoder? = null
 
         private val avSync = AvSync()
@@ -221,21 +224,18 @@ class ReceiverController(
             Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY)
             var writer: Thread? = null
             try {
-                // One codec per Surface: let a preempted session release its decoder first.
-                previous?.let {
-                    if (!it.done.await(
-                            PREEMPT_WAIT_MS,
-                            TimeUnit.MILLISECONDS,
-                        )
-                    ) {
-                        Log.w(TAG, "previous session slow to end")
-                    }
-                }
-                previous = null
+                // Handshake first: the reconnecting sender is waiting for HELLO (ADR-010).
                 val p = Handshake.asReceiver(connection, hello())
                 params = p
                 Log.i(TAG, "session ${p.sessionId} from ${connection.remoteAddress}: ${p.video}")
                 writer = startWriter()
+                // One codec per Surface: let a preempted session release its decoder first.
+                previous?.let {
+                    if (!it.videoReleased.await(PREEMPT_WAIT_MS, TimeUnit.MILLISECONDS)) {
+                        Log.w(TAG, "previous session slow to release its decoder")
+                    }
+                }
+                previous = null
                 val target = awaitSurface(SURFACE_WAIT_MS)
                 if (target == null || ended) throw IOException("no surface")
                 videoSurface = target
@@ -253,21 +253,26 @@ class ReceiverController(
                 }
             } finally {
                 ended = true
+                // Video first: a session preempting this one waits for the Surface to be free.
+                delayLine?.close() // before the decoder: it is the decoder's feeding thread
+                delayLine = null
+                decoder?.close()
+                decoder = null
+                videoReleased.countDown()
                 if (writer != null) {
                     writer.join(WRITER_DRAIN_MS) // lets a queued BYE go out
                     writer.interrupt()
                 }
                 connection.close()
-                delayLine?.close() // before the decoder: it is the decoder's feeding thread
-                delayLine = null
-                decoder?.close()
-                decoder = null
                 player?.close()
                 player = null
                 jitter = null
                 server?.sessionEnded(connection)
-                if (session === this) session = null
-                showWaiting()
+                // A preempting session may already be streaming: do not overwrite its state.
+                if (session === this) {
+                    session = null
+                    showWaiting()
+                }
                 done.countDown()
             }
         }

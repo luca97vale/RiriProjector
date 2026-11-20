@@ -148,6 +148,8 @@ class SendQueue(
         if (closed) return false
         val size = src.remaining()
         if (codecConfig) {
+            // Some encoders flag their first IDR as config + key: it ends a keyframe wait too.
+            if (keyframe) waitingForKeyframe = false
             video.addLast(copy(MessageType.CONFIG, HeaderFlags.CODEC_CONFIG, ptsUs, src))
             videoBytes += size
             notEmpty.signal()
@@ -192,9 +194,9 @@ class SendQueue(
      * Drops pending video (e.g. after a reconnection or before an encoder swap) and waits for the
      * next keyframe. [requestKeyframe] false when a new encoder will start with one anyway.
      */
-    fun resetVideo(requestKeyframe: Boolean = true) {
+    fun resetVideo(requestKeyframe: Boolean = true, countDropped: Boolean = true) {
         lock.withLock {
-            dropQueuedVideo(keepConfig = false)
+            dropQueuedVideo(keepConfig = false, countDropped)
             enterWaitForKeyframe()
             if (!requestKeyframe) keyframeRequestPending = false
         }
@@ -219,7 +221,7 @@ class SendQueue(
         if (notify) onKeyframeNeeded()
     }
 
-    private fun dropQueuedVideo(keepConfig: Boolean) {
+    private fun dropQueuedVideo(keepConfig: Boolean, countDropped: Boolean = true) {
         val it = video.iterator()
         while (it.hasNext()) {
             val p = it.next()
@@ -227,7 +229,7 @@ class SendQueue(
             if (keepConfig && p.type == MessageType.CONFIG) continue
             it.remove()
             videoBytes -= p.length
-            if (p.type == MessageType.FRAME) droppedVideoFrames++
+            if (countDropped && p.type == MessageType.FRAME) droppedVideoFrames++
             recycleLocked(p)
         }
     }

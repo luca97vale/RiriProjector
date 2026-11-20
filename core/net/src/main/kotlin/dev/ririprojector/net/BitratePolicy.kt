@@ -12,7 +12,8 @@ package dev.ririprojector.net
  *   the ceiling.
  * - Ceiling = negotiated (Auto) or user's fixed bitrate; floor = max(1 Mbps, 15 % of ceiling).
  *
- * Thread-safe: [onVideoDrop] comes from the encoder thread, [tick] from a timer.
+ * Thread-safe: [onVideoDrop] comes from the encoder thread, [tick] from the socket writer thread
+ * (once per second); the resulting bitrate is applied to the encoder on the HostCtl thread.
  */
 class BitratePolicy(ceilingBps: Int, startBps: Int = ceilingBps, nowMs: Long = 0) {
     /** Inputs sampled once per second. */

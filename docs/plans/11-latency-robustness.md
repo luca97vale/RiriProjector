@@ -162,3 +162,20 @@ malformed tests for each.
    receiver preemption + `done` wait, `USER_STOPPED` on finish; tests.
 8. `feat(sender,receiver)`: rotation/resize → VIDEO_RECONFIG; receiver rebuild and aspect update.
 9. `docs`: ADR-003 v3, ADR-004 revision, ADR-010, `docs/LATENCY.md`.
+
+## Deviations (recorded after implementation and review)
+- The bitrate tick runs on the sender's writer thread (once per second, next to PING), not on a
+  separate timer; the resulting bitrate is applied on the host's `HostCtl` thread.
+- The first link is never retried: a receiver that never answered is a user error.
+- Encoder swaps, link start and link end are serialized by a `videoLock` in `ProjectionHost`
+  instead of being confined to `HostCtl`, because the link's own thread starts the first encoder.
+- The receiver stamps PING `t2` when the message is decoded from the stream (not at socket read);
+  the difference is a few µs of parsing.
+- Only a *healthy* link (receiver reported decoded frames) restarts the 30 s outage window, so a
+  receiver that accepts and then fails cannot keep the loop alive.
+- Retry handshake timeout is 2 s (not 1 s): the receiver completes the handshake first and then
+  waits up to 1.5 s for its previous session to release the decoder.
+- No `NetworkCallback`: the 500 ms backoff already reconnects within ~1 s of Wi-Fi returning.
+
+Follow-ups (not in this milestone): cancel an in-flight `connect` on stop; wake the old receiver
+writer immediately on preemption; an instrumented preemption test on device.

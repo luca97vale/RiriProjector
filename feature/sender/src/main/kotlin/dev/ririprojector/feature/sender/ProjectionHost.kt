@@ -35,6 +35,7 @@ import dev.ririprojector.protocol.MessageType
 import dev.ririprojector.protocol.ProtocolException
 import dev.ririprojector.protocol.model.AudioCodec
 import dev.ririprojector.protocol.model.AudioCodecCapability
+import dev.ririprojector.protocol.model.AudioConfig
 import dev.ririprojector.protocol.model.DisplayInfo
 import dev.ririprojector.protocol.model.SenderCapabilities
 import dev.ririprojector.protocol.model.StreamParams
@@ -51,9 +52,14 @@ internal data class LinkEnd(
     val cause: Throwable? = null,
     /** BYE reason sent by the receiver, if it said goodbye. */
     val peerBye: ByeReason? = null,
-    /** True once media was flowing (the handshake succeeded). */
+    /** True once the handshake succeeded and the encoder started. */
     val streamed: Boolean = false,
     val encoderFailed: Boolean = false,
+    /**
+     * True once the receiver reported decoded frames: only a healthy link restarts the 30 s outage
+     * clock, so a receiver that fails right after START cannot keep the session retrying forever.
+     */
+    val healthy: Boolean = false,
 )
 
 /**
@@ -67,10 +73,13 @@ internal data class LinkEnd(
  *   captured audio is dropped.
  *
  * Threads: the host thread (connect, handshake, then the link's reads), the link writer (only
- * socket writer), the encoder drain thread and the audio capture thread. The host thread
- * releases everything in `finally`, in reverse order of creation.
+ * socket writer, PINGs and samples the bitrate policy every second), HostCtl (resize debounce,
+ * encoder swaps and bitrate changes, so `MediaCodec.setParameters` never runs on the writer), the
+ * encoder drain thread and the audio capture thread. `videoLock` serializes everything that
+ * touches the VirtualDisplay and the link's encoder: link start, link teardown and reconfigure.
+ * The host thread releases everything in `finally`, in reverse order of creation.
  */
-class ProjectionHost(
+internal class ProjectionHost(
     private val target: ReceiverEndpoint,
     private val preferences: StreamPreferences,
     private val projection: MediaProjection,
@@ -110,6 +119,9 @@ class ProjectionHost(
     // Host thread only.
     private var audio: AudioCapture? = null
     private var audioStatus: AudioStatus? = null
+
+    /** Format the running capture was started with; every link announces this one. */
+    @Volatile private var audioConfig: AudioConfig? = null
     private val sessionId = Random.nextLong() and Long.MAX_VALUE
     private val catalog by lazy { AndroidCodecs.catalog() }
 
@@ -117,7 +129,7 @@ class ProjectionHost(
     @Volatile private var currentSource: DisplayInfo = initialSource
 
     /** HostCtl: debounces size changes and runs encoder swaps off the callers' threads. */
-    private val ctlThread = HandlerThread("Riri/HostCtl").apply { start() }
+    private val ctlThread = HandlerThread("Riri/HostCtl", Process.THREAD_PRIORITY_URGENT_DISPLAY).apply { start() }
     private val ctl = Handler(ctlThread.looper)
     private val applyResize = Runnable { link?.reconfigure(currentSource) }
 
@@ -171,6 +183,7 @@ class ProjectionHost(
                 try {
                     wake.wait(left)
                 } catch (_: InterruptedException) {
+                    stopRequested = true // nothing interrupts this thread but a shutdown
                     return
                 }
             }
@@ -199,10 +212,15 @@ class ProjectionHost(
                 val l = StreamLink()
                 link = l
                 if (stopRequested) break // stop() raced with the link creation
-                val timeoutMs = if (everStreamed) RETRY_TIMEOUT_MS else SenderClient.DEFAULT_CONNECT_TIMEOUT_MS
-                val end = l.run(timeoutMs, if (everStreamed) RETRY_TIMEOUT_MS else Handshake.DEFAULT_TIMEOUT_MS)
+                val end =
+                    if (everStreamed) {
+                        // The handshake timeout covers the receiver waiting for a preempted session.
+                        l.run(RETRY_CONNECT_TIMEOUT_MS, RETRY_HANDSHAKE_TIMEOUT_MS)
+                    } else {
+                        l.run(SenderClient.DEFAULT_CONNECT_TIMEOUT_MS, Handshake.DEFAULT_TIMEOUT_MS)
+                    }
                 link = null
-                if (end.streamed) {
+                if (end.healthy) {
                     everStreamed = true
                     machine.on(SessionEvent.Connected)
                     machine.on(SessionEvent.HandshakeCompleted)
@@ -311,6 +329,7 @@ class ProjectionHost(
                     },
                 )
             audio = capture.start()
+            audioConfig = params.audio
             AudioStatus.ON
         } catch (e: Exception) {
             Log.w(TAG, "cannot start audio capture: ${e.message}")
@@ -331,6 +350,9 @@ class ProjectionHost(
         @Volatile private var encoderError: Throwable? = null
 
         @Volatile private var peerBye: ByeReason? = null
+
+        /** The receiver reported decoded frames (see [LinkEnd.healthy]). */
+        @Volatile private var healthy = false
 
         /** Cumulative receiver drops from the latest STATS, sampled by the bitrate tick. */
         @Volatile private var receiverDropped = 0
@@ -387,17 +409,25 @@ class ProjectionHost(
                     }
                 policy.onNewLink()
                 policy.refit(params.video.bitrateBps)
-                this.hello = hello
-                this.codec = codec
-                this.params = params
                 writer = startWriter(conn)
                 synchronized(videoLock) {
-                    val enc = newEncoder(codec, params.video.copy(bitrateBps = policy.currentBps))
+                    val enc =
+                        try {
+                            newEncoder(codec, params.video.copy(bitrateBps = policy.currentBps))
+                        } catch (e: Exception) {
+                            encoderError = e // counts toward the encoder retry limit (ADR-010)
+                            throw e
+                        }
                     attachSurface(enc.inputSurface, params.video.width, params.video.height)
+                    // Published only now: reconfigure() treats them as "the encoder is running".
+                    this.hello = hello
+                    this.codec = codec
+                    this.params = params
                 }
                 val status = startAudioOnce(params)
                 if (status == AudioStatus.ON) {
-                    queue.offerControl(ControlMessage.AudioSetup(params.audio))
+                    // The capture keeps the first link's format; announce that one.
+                    queue.offerControl(ControlMessage.AudioSetup(audioConfig ?: params.audio))
                     audioQueue = queue
                 }
                 streamed = true
@@ -437,7 +467,7 @@ class ProjectionHost(
                 writer?.interrupt()
                 connection?.close()
             }
-            return LinkEnd(failure, cause, peerBye, streamed, encoderError != null)
+            return LinkEnd(failure, cause, peerBye, streamed, encoderError != null, healthy)
         }
 
         // Set after the handshake; read by reconfigure (HostCtl) under videoLock.
@@ -466,6 +496,8 @@ class ProjectionHost(
             encoder = enc
             enc.start()
             encoderName = "${codec.name} · ${enc.tier.label}"
+            // A bitrate tick may have moved the policy while the encoder was being configured.
+            bitrate?.currentBps?.takeIf { it != config.bitrateBps }?.let { enc.setBitrate(it) }
             return enc
         }
 
@@ -490,7 +522,8 @@ class ProjectionHost(
             detachSurface()
             encoder?.close()
             encoder = null
-            queue.resetVideo(requestKeyframe = false) // the new encoder starts with CONFIG + IDR
+            // The new encoder starts with CONFIG + IDR; the flush is not a congestion drop.
+            queue.resetVideo(requestKeyframe = false, countDropped = false)
             generation = (generation + 1) and 0xFFFF
             queue.offerVideoControl(ControlMessage.VideoReconfig(generation, video))
             params = p.copy(video = video)
@@ -498,6 +531,9 @@ class ProjectionHost(
             try {
                 val enc = newEncoder(c, video.copy(bitrateBps = startBps))
                 attachSurface(enc.inputSurface, video.width, video.height)
+                // Belt and braces: an encoder whose first IDR is not flagged as a keyframe would
+                // otherwise leave the queue dropping frames until the next periodic IDR (10 s).
+                enc.requestKeyframe()
             } catch (e: Exception) {
                 Log.w(TAG, "encoder rebuild failed: ${e.message}")
                 encoderError = e
@@ -510,7 +546,10 @@ class ProjectionHost(
             Log.i(TAG, "bitrate ${bps / 1000} kbps ($why)")
         }
 
-        /** Once per second from the writer thread. */
+        /**
+         * Once per second from the writer thread, which only samples: `MediaCodec.setParameters`
+         * runs on HostCtl so it never delays a socket write.
+         */
         private fun tickBitrate(nowMs: Long) {
             val policy = bitrate ?: return
             val signals =
@@ -519,7 +558,7 @@ class ProjectionHost(
                     receiverDropped = receiverDropped,
                     lastRttUs = clock.lastRttUs,
                 )
-            policy.tick(nowMs, signals)?.let { applyBitrate(it, "tick $signals") }
+            policy.tick(nowMs, signals)?.let { bps -> ctl.post { applyBitrate(bps, "tick $signals") } }
         }
 
         private fun readLoop(conn: Connection, audioStatus: AudioStatus) {
@@ -542,6 +581,7 @@ class ProjectionHost(
                     MessageType.STATS -> {
                         val s = p.decodeControl() as ControlMessage.Stats
                         receiverDropped = s.droppedFrames
+                        if (s.decodedFpsX100 > 0) healthy = true
                         val enc = encoder ?: continue
                         val now = SystemClock.elapsedRealtime()
                         val secs = (now - lastAt).coerceAtLeast(1) / 1000.0
@@ -646,8 +686,9 @@ class ProjectionHost(
         const val RECEIVER_SILENCE_MS = 3 * PING_INTERVAL_MS.toInt()
         const val DIAG_EVERY_STATS = 5
 
-        /** Connect and handshake timeout when reconnecting: fail fast, retry soon. */
-        const val RETRY_TIMEOUT_MS = 1_000
+        /** Reconnecting: fail fast on connect; the handshake may wait for the receiver to free its decoder. */
+        const val RETRY_CONNECT_TIMEOUT_MS = 1_000
+        const val RETRY_HANDSHAKE_TIMEOUT_MS = 2_000
         const val RESIZE_DEBOUNCE_MS = 300L
         const val GAVE_UP_TEXT = "the receiver did not come back within 30 s"
 
