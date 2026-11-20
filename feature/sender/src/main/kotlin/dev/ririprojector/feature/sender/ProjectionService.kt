@@ -1,5 +1,6 @@
 package dev.ririprojector.feature.sender
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -7,6 +8,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.hardware.display.DisplayManager
 import android.media.projection.MediaProjection
@@ -23,6 +25,7 @@ import dev.ririprojector.net.ReceiverEndpoint
 import dev.ririprojector.protocol.ByeReason
 import dev.ririprojector.protocol.model.DisplayInfo
 import dev.ririprojector.protocol.model.StreamPreferences
+import dev.ririprojector.protocol.model.SyncMode
 import dev.ririprojector.protocol.model.VideoCodec
 
 /**
@@ -74,11 +77,20 @@ class ProjectionService : Service() {
                     Log.i(TAG, "projection stopped by the system or the user")
                     stopSession(ByeReason.PROJECTION_REVOKED, getString(R.string.sender_error_revoked))
                 }
+
+                // API 34+, single-app sharing: the shared app went to the background or came back.
+                override fun onCapturedContentVisibilityChanged(isVisible: Boolean) {
+                    Log.i(TAG, "shared content visible: $isVisible")
+                    session?.onContentVisibilityChanged(isVisible)
+                }
             },
             main,
         )
 
         val (source, dpi) = displayInfo()
+        val consentShownAtMs = intent.getLongExtra(EXTRA_CONSENT_SHOWN_AT, System.currentTimeMillis())
+        val consentResultAtMs = intent.getLongExtra(EXTRA_CONSENT_RESULT_AT, System.currentTimeMillis())
+        val appContext = applicationContext
         val s =
             SenderSession(
                 target = target,
@@ -86,6 +98,11 @@ class ProjectionService : Service() {
                 projection = mp,
                 source = source,
                 densityDpi = dpi,
+                audioPermitted =
+                    Build.VERSION.SDK_INT >= 29 &&
+                        checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED,
+                detectShare = { SharedAppDetector.detect(appContext, consentShownAtMs, consentResultAtMs) },
+                versionMismatchText = getString(R.string.sender_error_version),
                 onEnded = { main.post { shutdown() } },
             )
         session = s
@@ -161,6 +178,9 @@ class ProjectionService : Service() {
             maxHeight = intent.getIntExtra(EXTRA_MAX_HEIGHT, 1080),
             maxFps = intent.getIntExtra(EXTRA_MAX_FPS, 60),
             bitrateBps = bitrate.takeIf { it > 0 },
+            audioEnabled = intent.getBooleanExtra(EXTRA_AUDIO, true),
+            syncMode =
+                SyncMode.entries.firstOrNull { it.name == intent.getStringExtra(EXTRA_SYNC) } ?: SyncMode.LIP_SYNC,
         )
     }
 
@@ -177,6 +197,10 @@ class ProjectionService : Service() {
         private const val EXTRA_MAX_HEIGHT = "maxHeight"
         private const val EXTRA_MAX_FPS = "maxFps"
         private const val EXTRA_BITRATE = "bitrate"
+        private const val EXTRA_AUDIO = "audio"
+        private const val EXTRA_SYNC = "sync"
+        private const val EXTRA_CONSENT_RESULT_AT = "consentResultAt"
+        private const val EXTRA_CONSENT_SHOWN_AT = "consentShownAt"
 
         fun start(
             context: Context,
@@ -184,6 +208,8 @@ class ProjectionService : Service() {
             consent: Intent,
             target: ReceiverEndpoint,
             prefs: StreamPreferences,
+            consentShownAtMs: Long,
+            consentResultAtMs: Long,
         ) {
             val intent =
                 Intent(context, ProjectionService::class.java)
@@ -195,6 +221,10 @@ class ProjectionService : Service() {
                     .putExtra(EXTRA_MAX_HEIGHT, prefs.maxHeight ?: 1080)
                     .putExtra(EXTRA_MAX_FPS, prefs.maxFps ?: 60)
                     .putExtra(EXTRA_BITRATE, prefs.bitrateBps ?: 0)
+                    .putExtra(EXTRA_AUDIO, prefs.audioEnabled)
+                    .putExtra(EXTRA_SYNC, prefs.syncMode.name)
+                    .putExtra(EXTRA_CONSENT_RESULT_AT, consentResultAtMs)
+                    .putExtra(EXTRA_CONSENT_SHOWN_AT, consentShownAtMs)
             context.startForegroundService(intent)
         }
 

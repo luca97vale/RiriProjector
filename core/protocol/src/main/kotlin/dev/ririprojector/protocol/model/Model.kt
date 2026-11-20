@@ -22,6 +22,20 @@ enum class AudioCodec(val code: Int, val mime: String) {
     }
 }
 
+/** How the receiver trades latency for lip-sync (ADR-007); chosen by the sender, sent in START. */
+enum class SyncMode(val code: Int) {
+    /** Video is held until its audio plays (default: a projector is mostly for watching). */
+    LIP_SYNC(0),
+
+    /** Video renders as soon as it is decoded; audio may lag. */
+    LOW_LATENCY(1),
+    ;
+
+    companion object {
+        fun fromCode(code: Int): SyncMode? = entries.firstOrNull { it.code == code }
+    }
+}
+
 data class DisplayInfo(val width: Int, val height: Int, val refreshRateHz: Int) {
     init {
         require(width > 0 && height > 0) { "invalid display size ${width}x$height" }
@@ -79,7 +93,15 @@ data class StreamPreferences(
     val maxFps: Int? = 60,
     val bitrateBps: Int? = null,
     val preferredAudioCodec: AudioCodec = AudioCodec.PCM_S16LE,
+    /** False: mirror video only (sender-side choice; nothing about audio is sent). */
+    val audioEnabled: Boolean = true,
+    val syncMode: SyncMode = SyncMode.LIP_SYNC,
 )
 
 /** Final parameters announced in START. */
-data class StreamParams(val sessionId: Long, val video: VideoConfig, val audio: AudioConfig)
+data class StreamParams(
+    val sessionId: Long,
+    val video: VideoConfig,
+    val audio: AudioConfig,
+    val syncMode: SyncMode = SyncMode.LIP_SYNC,
+)

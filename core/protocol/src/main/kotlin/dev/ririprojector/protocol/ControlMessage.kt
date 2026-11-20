@@ -6,6 +6,7 @@ import dev.ririprojector.protocol.model.AudioCodecCapability
 import dev.ririprojector.protocol.model.AudioConfig
 import dev.ririprojector.protocol.model.DisplayInfo
 import dev.ririprojector.protocol.model.StreamParams
+import dev.ririprojector.protocol.model.SyncMode
 import dev.ririprojector.protocol.model.VideoCodec
 import dev.ririprojector.protocol.model.VideoCodecCapability
 import dev.ririprojector.protocol.model.VideoConfig
@@ -61,6 +62,8 @@ sealed interface ControlMessage {
         val decodeLatencyP95Us: Int,
         val audioUnderruns: Int,
         val avOffsetUs: Int,
+        /** Lip-sync delay the receiver applies to video (0 in LOW_LATENCY). Added in v2. */
+        val videoDelayUs: Int = 0,
     ) : ControlMessage {
         override val type get() = MessageType.STATS
     }
@@ -116,6 +119,7 @@ object ControlCodec {
                     p.video.codec.code,
                 ).u16(p.video.width).u16(p.video.height).u16(p.video.fps).i32(p.video.bitrateBps)
                 writeAudioConfig(out, p.audio)
+                out.u8(p.syncMode.code)
             }
 
             is ControlMessage.AudioSetup -> {
@@ -132,6 +136,7 @@ object ControlCodec {
             is ControlMessage.Stats ->
                 out.i32(message.decodedFpsX100).i32(message.droppedFrames).i32(message.decodeLatencyMeanUs)
                     .i32(message.decodeLatencyP95Us).i32(message.audioUnderruns).i32(message.avOffsetUs)
+                    .i32(message.videoDelayUs)
 
             is ControlMessage.BitrateHint -> out.i32(message.bitrateBps)
 
@@ -169,7 +174,9 @@ object ControlCodec {
                     val sessionId = r.i64()
                     val codec = VideoCodec.fromCode(r.u8()) ?: throw malformed("unknown video codec")
                     val video = VideoConfig(codec, r.u16(), r.u16(), r.u16(), r.i32())
-                    ControlMessage.Start(StreamParams(sessionId, video, readAudioConfig(r)))
+                    val audio = readAudioConfig(r)
+                    val sync = SyncMode.fromCode(r.u8()) ?: throw malformed("unknown sync mode")
+                    ControlMessage.Start(StreamParams(sessionId, video, audio, sync))
                 }
 
                 MessageType.AUDIO_CONFIG -> ControlMessage.AudioSetup(readAudioConfig(r), r.bytesWithLength())
@@ -180,7 +187,7 @@ object ControlCodec {
 
                 MessageType.PONG -> ControlMessage.Pong(r.i64(), r.i64())
 
-                MessageType.STATS -> ControlMessage.Stats(r.i32(), r.i32(), r.i32(), r.i32(), r.i32(), r.i32())
+                MessageType.STATS -> ControlMessage.Stats(r.i32(), r.i32(), r.i32(), r.i32(), r.i32(), r.i32(), r.i32())
 
                 MessageType.BITRATE_HINT -> ControlMessage.BitrateHint(r.i32())
 

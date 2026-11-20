@@ -6,6 +6,7 @@ import dev.ririprojector.protocol.model.AudioCodecCapability
 import dev.ririprojector.protocol.model.AudioConfig
 import dev.ririprojector.protocol.model.DisplayInfo
 import dev.ririprojector.protocol.model.StreamParams
+import dev.ririprojector.protocol.model.SyncMode
 import dev.ririprojector.protocol.model.VideoCodec
 import dev.ririprojector.protocol.model.VideoCodecCapability
 import dev.ririprojector.protocol.model.VideoConfig
@@ -40,6 +41,14 @@ class MessageRoundTripTest {
                 AudioConfig.DEFAULT_PCM,
             ),
         ),
+        ControlMessage.Start(
+            StreamParams(
+                42,
+                VideoConfig(VideoCodec.AVC, 1280, 720, 30, 4_000_000),
+                AudioConfig.DEFAULT_PCM,
+                SyncMode.LOW_LATENCY,
+            ),
+        ),
         ControlMessage.AudioSetup(AudioConfig.DEFAULT_PCM),
         ControlMessage.AudioSetup(
             AudioConfig(AudioCodec.OPUS, 48000, 2, 10_000),
@@ -49,6 +58,7 @@ class MessageRoundTripTest {
         ControlMessage.Ping(123_456_789_012L),
         ControlMessage.Pong(-5L, Long.MAX_VALUE),
         ControlMessage.Stats(5999, 3, 8000, 20000, 1, -1500),
+        ControlMessage.Stats(6000, 0, 9000, 12000, 0, 3000, videoDelayUs = 180_000),
         ControlMessage.BitrateHint(8_000_000),
         ControlMessage.Bye(ByeReason.PROJECTION_REVOKED),
     )

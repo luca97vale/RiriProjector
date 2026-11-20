@@ -22,4 +22,21 @@
     <string name="sender_notification_title">Mirroring to %1$s</string>
     <string name="sender_error_projection">Screen capture was not allowed</string>
     <string name="sender_error_revoked">screen capture was stopped</string>
+    <string name="sender_audio_on">Audio: on · underruns %1$d · A/V %2$+d ms (apps that block capture stay silent)</string>
+    <string name="sender_audio_off">Audio: off</string>
+    <string name="sender_audio_unavailable">Audio: unavailable (allow audio recording to mirror sound)</string>
+    <string name="sender_error_version">the receiver runs a different RiriProjector version: update the app on both devices</string>
+    <string name="sender_audio">Audio</string>
+    <string name="sender_on">On</string>
+    <string name="sender_off">Off</string>
+    <string name="sender_sync">Sync</string>
+    <string name="sender_sync_lip">Lip-sync</string>
+    <string name="sender_sync_latency">Low latency</string>
+    <string name="sender_audio_no_app">Audio: off (could not identify the shared app)</string>
+    <string name="sender_usage_access_title">Share one app with its sound</string>
+    <string name="sender_usage_access_hint">When you share one app, RiriProjector mirrors only that app\'s sound. To know which app you picked it needs Usage access. Without it, sound from all apps is mirrored.</string>
+    <string name="sender_usage_access_allow">Allow</string>
+    <string name="sender_usage_access_skip">Not now</string>
+    <string name="sender_video_delay">Lip-sync: video delayed %1$d ms to match the sound</string>
+    <string name="sender_content_hidden">The shared app is not on screen: the projector shows nothing until you return to it.</string>
 </resources>

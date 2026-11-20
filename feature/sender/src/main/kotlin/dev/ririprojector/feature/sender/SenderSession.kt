@@ -1,12 +1,15 @@
 package dev.ririprojector.feature.sender
 
+import android.annotation.SuppressLint
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.projection.MediaProjection
+import android.os.Build
 import android.os.Process
 import android.os.SystemClock
 import android.util.Log
 import dev.ririprojector.media.AndroidCodecs
+import dev.ririprojector.media.AudioCapture
 import dev.ririprojector.media.VideoEncoder
 import dev.ririprojector.net.ClockSync
 import dev.ririprojector.net.Connection
@@ -18,6 +21,7 @@ import dev.ririprojector.net.SenderClient
 import dev.ririprojector.protocol.ByeReason
 import dev.ririprojector.protocol.ControlMessage
 import dev.ririprojector.protocol.MessageType
+import dev.ririprojector.protocol.ProtocolException
 import dev.ririprojector.protocol.model.AudioCodec
 import dev.ririprojector.protocol.model.AudioCodecCapability
 import dev.ririprojector.protocol.model.DisplayInfo
@@ -40,6 +44,12 @@ class SenderSession(
     private val projection: MediaProjection,
     private val source: DisplayInfo,
     private val densityDpi: Int,
+    /** True when RECORD_AUDIO is granted and the platform supports playback capture (API 29+). */
+    private val audioPermitted: Boolean,
+    /** Blocking (session thread): what the user shared in the system dialog (ADR-009). */
+    private val detectShare: () -> ShareScope,
+    /** Shown when the receiver runs a different protocol version (localized by the caller). */
+    private val versionMismatchText: String,
     private val onEnded: (message: String?) -> Unit,
 ) {
     @Volatile private var ended = false
@@ -50,7 +60,13 @@ class SenderSession(
 
     @Volatile private var writerStarted = false
 
+    @Volatile private var audio: AudioCapture? = null
+
+    @Volatile private var audioFailed = false
+
     @Volatile private var endMessage: String? = null
+
+    @Volatile private var contentHidden = false
     private val queue = SendQueue(onKeyframeNeeded = { encoder?.requestKeyframe() })
     private val clock = ClockSync()
 
@@ -82,6 +98,11 @@ class SenderSession(
             isDaemon = true
             start()
         }
+    }
+
+    /** Single-app sharing: the shared app left/returned to the screen (shown with the next STATS). */
+    fun onContentVisibilityChanged(visible: Boolean) {
+        contentHidden = !visible
     }
 
     private fun run() {
@@ -125,12 +146,16 @@ class SenderSession(
                     null,
                     null,
                 )
-            SenderStatus.set(SenderState.Streaming(target, params, SenderStats(encoderName = codec.name)))
+            val audioStatus = startAudio(params)
+            SenderStatus.set(
+                SenderState.Streaming(target, params, SenderStats(encoderName = codec.name, audio = audioStatus)),
+            )
             // The receiver sends PONG and STATS every second: silence means it is gone.
             conn.setReadTimeout(RECEIVER_SILENCE_MS)
-            readLoop(conn, params, codec.name)
+            readLoop(conn, params, codec.name, audioStatus)
         } catch (e: HandshakeException) {
-            failure = e.message
+            failure =
+                if (e.cause is ProtocolException && e.bye == ByeReason.INCOMPATIBLE) versionMismatchText else e.message
         } catch (e: SocketTimeoutException) {
             if (!ended) failure = "receiver not responding"
         } catch (e: Exception) {
@@ -142,6 +167,8 @@ class SenderSession(
             writer?.join(WRITER_DRAIN_MS)
             queue.close()
             writer?.interrupt()
+            runCatching { audio?.close() }
+            audio = null
             runCatching { virtualDisplay?.release() }
             encoder?.close()
             encoder = null
@@ -151,10 +178,51 @@ class SenderSession(
         }
     }
 
-    private fun readLoop(conn: Connection, params: StreamParams, encoderName: String) {
+    /**
+     * Announces the audio format and starts playback capture (ADR-007). Audio failures never end
+     * the session: mirroring continues video-only and the UI says so.
+     */
+    @SuppressLint("MissingPermission") // checked by the caller: audioPermitted
+    private fun startAudio(params: StreamParams): AudioStatus {
+        if (!preferences.audioEnabled) return AudioStatus.OFF
+        if (!audioPermitted || Build.VERSION.SDK_INT < 29) {
+            Log.w(TAG, "audio capture unavailable (permission or API level): video only")
+            return AudioStatus.UNAVAILABLE
+        }
+        // One app shared: only that app may be heard; if it cannot be resolved, mirror video
+        // only rather than leak every app's sound (ADR-009).
+        val scope = detectShare()
+        val audioUid = (scope as? ShareScope.SingleApp)?.uid
+        if (scope is ShareScope.SingleApp && audioUid == null) {
+            Log.i(TAG, "shared app could not be resolved: video only")
+            return AudioStatus.NO_APP
+        }
+        return try {
+            val capture =
+                AudioCapture(
+                    projection = projection,
+                    config = params.audio,
+                    sink = { data, pts -> queue.offerAudio(pts, data) },
+                    onlyUid = audioUid,
+                    onError = {
+                        Log.w(TAG, "audio capture stopped: ${it.message}")
+                        audioFailed = true // the next STATS update shows audio as off
+                    },
+                )
+            audio = capture.start()
+            queue.offerControl(ControlMessage.AudioSetup(params.audio))
+            AudioStatus.ON
+        } catch (e: Exception) {
+            Log.w(TAG, "cannot start audio capture: ${e.message}")
+            AudioStatus.UNAVAILABLE
+        }
+    }
+
+    private fun readLoop(conn: Connection, params: StreamParams, encoderName: String, audioStatus: AudioStatus) {
         var lastFrames = 0L
         var lastBytes = 0L
         var lastAt = SystemClock.elapsedRealtime()
+        var statsCount = 0
         while (!ended) {
             val p = conn.reader.read() ?: return
             when (p.type) {
@@ -188,7 +256,21 @@ class SenderSession(
                             receiverDecodeP95Ms = s.decodeLatencyP95Us / 1000.0,
                             receiverDropped = s.droppedFrames,
                             encoderName = encoderName,
+                            audio = if (audioFailed) AudioStatus.UNAVAILABLE else audioStatus,
+                            receiverUnderruns = s.audioUnderruns,
+                            avOffsetMs = s.avOffsetUs / 1000,
+                            receiverVideoDelayMs = s.videoDelayUs / 1000,
+                            contentHidden = contentHidden,
                         )
+                    if (++statsCount % DIAG_EVERY_STATS == 0) {
+                        audio?.let {
+                            Log.d(
+                                TAG,
+                                "audio: capture age ${it.lastAgeUs / 1000} ms, peak ${it.takePeak()}, " +
+                                    "queue drops ${queue.droppedAudioPackets}",
+                            )
+                        }
+                    }
                     lastFrames = frames
                     lastBytes = bytes
                     lastAt = now
@@ -247,6 +329,7 @@ class SenderSession(
         const val RECEIVER_SILENCE_MS = 3 * PING_INTERVAL_MS.toInt()
         const val MIN_BITRATE_BPS = 1_000_000
         const val MAX_BITRATE_BPS = 40_000_000
+        const val DIAG_EVERY_STATS = 5
 
         fun nowUs() = SystemClock.elapsedRealtimeNanos() / 1_000
     }

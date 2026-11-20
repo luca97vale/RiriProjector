@@ -15,6 +15,11 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
+/** Told when a frame reached the display; [shownAtUs] is receiver `CLOCK_MONOTONIC` µs. */
+fun interface FrameRenderListener {
+    fun onRendered(ptsUs: Long, shownAtUs: Long)
+}
+
 /** Snapshot of decoder counters, read once per second for STATS and the overlay. */
 data class DecoderStats(
     val decodedFrames: Long,
@@ -44,6 +49,7 @@ class VideoDecoder(
     private val lowLatencySupported: Boolean,
     private val onKeyframeNeeded: () -> Unit,
     private val onFatalError: (Throwable) -> Unit = {},
+    private val onFrameRendered: FrameRenderListener? = null,
 ) : Closeable {
     private var thread: HandlerThread? = null
     private var handler: Handler? = null
@@ -81,7 +87,9 @@ class VideoDecoder(
                 lock.withLock {
                     if (mc !== codec) return
                     try {
-                        mc.releaseOutputBuffer(index, true)
+                        // Render now. A boolean release would stamp the frame with its pts, which is
+                        // on the sender's clock and meaningless to this display.
+                        mc.releaseOutputBuffer(index, System.nanoTime())
                     } catch (e: IllegalStateException) {
                         return
                     }
@@ -135,6 +143,7 @@ class VideoDecoder(
         backlog.reset()
         codec = mc
         mc.setCallback(callback, handler)
+        setRenderListener(mc)
         try {
             mc.configure(format(lowLatencyKeys = true), surface, null, 0)
         } catch (e: Exception) {
@@ -142,10 +151,25 @@ class VideoDecoder(
             Log.w(TAG, "configure with low-latency keys failed (${e.message}); retrying plain")
             mc.reset()
             mc.setCallback(callback, handler)
+            setRenderListener(mc)
             mc.configure(format(lowLatencyKeys = false), surface, null, 0)
         }
         mc.start()
         replayCsd = csdLength > 0
+    }
+
+    /**
+     * Reports when frames actually reach the display (`systemNano`, CLOCK_MONOTONIC). Frames are
+     * released with an explicit "now" render time (see onOutputBufferAvailable); a codec that
+     * does not track rendering echoes a timestamp instead, so reports far from now are ignored.
+     */
+    private fun setRenderListener(mc: MediaCodec) {
+        val listener = onFrameRendered ?: return
+        mc.setOnFrameRenderedListener({ _, ptsUs, systemNano ->
+            if (kotlin.math.abs(System.nanoTime() - systemNano) < MAX_RENDER_REPORT_AGE_NS) {
+                listener.onRendered(ptsUs, systemNano / 1000)
+            }
+        }, handler)
     }
 
     private fun format(lowLatencyKeys: Boolean): MediaFormat =
@@ -164,16 +188,17 @@ class VideoDecoder(
         }
 
     /**
-     * Feeds one access unit from [src]`[0 until length]`. Called from the network thread only.
+     * Feeds one access unit from [src]`[offset, offset + length)`. Called from one feeding thread only
+     * (the network thread, or the lip-sync delay thread).
      * Waits briefly for a free input buffer; returns false if the unit was dropped.
      */
-    fun submit(src: ByteArray, length: Int, ptsUs: Long, isConfig: Boolean, isKeyframe: Boolean): Boolean {
+    fun submit(src: ByteArray, offset: Int, length: Int, ptsUs: Long, isConfig: Boolean, isKeyframe: Boolean): Boolean {
         val receivedAtUs = nowUs()
         var requestKeyframe = false
         val queued =
             lock.withLock {
                 if (closed || codec == null) return false
-                if (isConfig) cacheCsd(src, length)
+                if (isConfig) cacheCsd(src, offset, length)
                 if (replayCsd && !isConfig && !replayCsdLocked()) {
                     requestKeyframe = true
                     return@withLock false
@@ -189,7 +214,7 @@ class VideoDecoder(
                     }
                 }
                 val flags = if (isConfig) MediaCodec.BUFFER_FLAG_CODEC_CONFIG else 0
-                if (queueLocked(src, length, ptsUs, flags)) {
+                if (queueLocked(src, offset, length, ptsUs, flags)) {
                     if (!isConfig) rememberQueued(ptsUs, receivedAtUs)
                     true
                 } else {
@@ -203,7 +228,7 @@ class VideoDecoder(
     }
 
     /** Dequeues an input buffer, copies and queues. Returns false on stall or codec failure. */
-    private fun queueLocked(src: ByteArray, length: Int, ptsUs: Long, flags: Int): Boolean {
+    private fun queueLocked(src: ByteArray, offset: Int, length: Int, ptsUs: Long, flags: Int): Boolean {
         val mc = codec ?: return false
         var nanos = TimeUnit.MILLISECONDS.toNanos(INPUT_WAIT_MS)
         while (freeCount == 0 && nanos > 0 && !closed && codec === mc) nanos = inputAvailable.awaitNanos(nanos)
@@ -222,7 +247,7 @@ class VideoDecoder(
                 return false
             }
             buffer.clear()
-            buffer.put(src, 0, length)
+            buffer.put(src, offset, length)
             mc.queueInputBuffer(index, 0, length, ptsUs, flags)
             true
         } catch (e: IllegalStateException) {
@@ -231,15 +256,15 @@ class VideoDecoder(
         }
     }
 
-    private fun cacheCsd(src: ByteArray, length: Int) {
+    private fun cacheCsd(src: ByteArray, offset: Int, length: Int) {
         if (csd.size < length) csd = ByteArray(length) // rare: once per session/resolution
-        System.arraycopy(src, 0, csd, 0, length)
+        System.arraycopy(src, offset, csd, 0, length)
         csdLength = length
         replayCsd = false // the codec gets this one directly
     }
 
     private fun replayCsdLocked(): Boolean {
-        if (!queueLocked(csd, csdLength, 0, MediaCodec.BUFFER_FLAG_CODEC_CONFIG)) return false
+        if (!queueLocked(csd, 0, csdLength, 0, MediaCodec.BUFFER_FLAG_CODEC_CONFIG)) return false
         replayCsd = false
         backlog.onAccessUnit(isConfig = true, isKeyframe = false, nowUs = nowUs())
         return true
@@ -302,6 +327,7 @@ class VideoDecoder(
         const val MAX_INPUTS = 64
         const val PTS_SLOTS = 32
         const val INPUT_WAIT_MS = 50L
+        const val MAX_RENDER_REPORT_AGE_NS = 1_000_000_000L
 
         fun nowUs() = SystemClock.elapsedRealtimeNanos() / 1_000
     }

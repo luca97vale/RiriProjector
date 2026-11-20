@@ -2,6 +2,7 @@ package dev.ririprojector.feature.sender
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
@@ -49,30 +50,52 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.ririprojector.net.ReceiverEndpoint
 import dev.ririprojector.net.nsd.NsdBrowser
 import dev.ririprojector.protocol.model.StreamPreferences
+import dev.ririprojector.protocol.model.SyncMode
 import dev.ririprojector.protocol.model.VideoCodec
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flowOf
 
 /** Tablet entry point: pick a receiver, tune the stream, start/stop mirroring. */
 class SenderActivity : ComponentActivity() {
-    private var pending: Pair<ReceiverEndpoint, StreamPreferences>? = null
+    /** A mirroring request waiting for the audio permission and the consent dialog. */
+    private data class Pending(
+        val target: ReceiverEndpoint,
+        val prefs: StreamPreferences,
+        /** Wall-clock time the consent dialog was shown: a shared app comes to the front after it. */
+        val consentShownAtMs: Long = 0,
+    )
+
+    private var pending: Pending? = null
 
     private val consent =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-            val (target, prefs) = pending ?: return@registerForActivityResult
+            val p = pending ?: return@registerForActivityResult
             pending = null
             val data = result.data
             if (result.resultCode == Activity.RESULT_OK && data != null) {
-                ProjectionService.start(this, result.resultCode, data, target, prefs)
+                ProjectionService.start(
+                    this,
+                    result.resultCode,
+                    data,
+                    p.target,
+                    p.prefs,
+                    p.consentShownAtMs,
+                    System.currentTimeMillis(),
+                )
             }
         }
 
-    private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    private val notificationPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
+    // Granted or not, continue: without it the session mirrors video only and says so.
+    private val audioPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { launchConsent() }
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         // The consent dialog may outlive this instance (rotation): keep what the result is for.
-        pending?.let { (t, p) ->
+        pending?.let { (t, p, consentShownAtMs) ->
             outState.putString(KEY_HOST, t.host)
             outState.putInt(KEY_PORT, t.port)
             outState.putString(KEY_NAME, t.name)
@@ -80,6 +103,9 @@ class SenderActivity : ComponentActivity() {
             outState.putInt(KEY_MAX_HEIGHT, p.maxHeight ?: 1080)
             outState.putInt(KEY_FPS, p.maxFps ?: 60)
             outState.putInt(KEY_BITRATE, p.bitrateBps ?: 0)
+            outState.putBoolean(KEY_AUDIO, p.audioEnabled)
+            outState.putString(KEY_SYNC, p.syncMode.name)
+            outState.putLong(KEY_CONSENT_SHOWN_AT, consentShownAtMs)
         }
     }
 
@@ -88,27 +114,23 @@ class SenderActivity : ComponentActivity() {
         val target = runCatching {
             ReceiverEndpoint(state.getString(KEY_NAME) ?: host, host, state.getInt(KEY_PORT))
         }.getOrNull()
+        val codecName = state.getString(KEY_CODEC)
         val prefs =
             StreamPreferences(
-                preferredVideoCodec = state.getString(KEY_CODEC)?.let { c ->
-                    VideoCodec.entries.firstOrNull {
-                        it.name ==
-                            c
-                    }
-                },
+                preferredVideoCodec = VideoCodec.entries.firstOrNull { it.name == codecName },
                 maxHeight = state.getInt(KEY_MAX_HEIGHT, 1080),
                 maxFps = state.getInt(KEY_FPS, 60),
                 bitrateBps = state.getInt(KEY_BITRATE, 0).takeIf { it > 0 },
+                audioEnabled = state.getBoolean(KEY_AUDIO, true),
+                syncMode = SyncMode.entries.firstOrNull { it.name == state.getString(KEY_SYNC) } ?: SyncMode.LIP_SYNC,
             )
-        if (target != null) pending = target to prefs
+        if (target != null) pending = Pending(target, prefs, state.getLong(KEY_CONSENT_SHOWN_AT))
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         restorePending(savedInstanceState)
-        if (Build.VERSION.SDK_INT >= 33 &&
-            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) {
+        if (Build.VERSION.SDK_INT >= 33 && !granted(Manifest.permission.POST_NOTIFICATIONS)) {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         val receivers = NsdBrowser(this).receivers().catch { emit(emptyList()) }
@@ -131,13 +153,53 @@ class SenderActivity : ComponentActivity() {
         }
     }
 
+    private fun granted(permission: String) = checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+
+    /** Usage access prompt (once), audio permission (when audio is on), then the consent dialog. */
     private fun requestProjection(target: ReceiverEndpoint, prefs: StreamPreferences) {
-        pending = target to prefs
+        pending = Pending(target, prefs)
+        if (prefs.audioEnabled && shouldAskUsageAccess()) askUsageAccess() else continueRequest()
+    }
+
+    private fun continueRequest() {
+        val p = pending ?: return
+        if (p.prefs.audioEnabled && Build.VERSION.SDK_INT >= 29 && !granted(Manifest.permission.RECORD_AUDIO)) {
+            audioPermission.launch(Manifest.permission.RECORD_AUDIO)
+        } else {
+            launchConsent()
+        }
+    }
+
+    /**
+     * Without Usage access a one-app share cannot be told apart from the entire screen, so every
+     * app's sound would be mirrored (ADR-009). Asked once, the first time it matters.
+     */
+    private fun shouldAskUsageAccess(): Boolean = Build.VERSION.SDK_INT >= 34 &&
+        !SharedAppDetector.hasUsageAccess(this) &&
+        !getPreferences(MODE_PRIVATE).getBoolean(KEY_USAGE_ACCESS_ASKED, false)
+
+    private fun askUsageAccess() {
+        getPreferences(MODE_PRIVATE).edit().putBoolean(KEY_USAGE_ACCESS_ASKED, true).apply()
+        AlertDialog.Builder(this)
+            .setTitle(R.string.sender_usage_access_title)
+            .setMessage(R.string.sender_usage_access_hint)
+            .setPositiveButton(R.string.sender_usage_access_allow) { _, _ ->
+                pending = null // the user taps the receiver again after granting it
+                startActivity(SharedAppDetector.usageAccessSettings())
+            }.setNegativeButton(R.string.sender_usage_access_skip) { _, _ -> continueRequest() }
+            .setOnCancelListener { pending = null }
+            .show()
+    }
+
+    private fun launchConsent() {
+        val p = (pending ?: return).copy(consentShownAtMs = System.currentTimeMillis())
+        pending = p
         val mpm = getSystemService(MediaProjectionManager::class.java)
-        // API 34+: ask for the whole display directly; mirroring a single app makes no sense here.
+        // API 34+: the system dialog offers "entire screen" or "one app"; the session finds out
+        // which one was chosen (ADR-009).
         val intent =
             if (Build.VERSION.SDK_INT >= 34) {
-                mpm.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
+                mpm.createScreenCaptureIntent(MediaProjectionConfig.createConfigForUserChoice())
             } else {
                 mpm.createScreenCaptureIntent()
             }
@@ -152,6 +214,10 @@ class SenderActivity : ComponentActivity() {
         const val KEY_MAX_HEIGHT = "pending.maxHeight"
         const val KEY_FPS = "pending.fps"
         const val KEY_BITRATE = "pending.bitrate"
+        const val KEY_AUDIO = "pending.audio"
+        const val KEY_SYNC = "pending.sync"
+        const val KEY_CONSENT_SHOWN_AT = "pending.consentShownAt"
+        const val KEY_USAGE_ACCESS_ASKED = "usageAccessAsked"
     }
 }
 
@@ -167,13 +233,17 @@ private fun SenderScreen(
     var maxHeight by rememberSaveable { mutableStateOf(1080) }
     var fps by rememberSaveable { mutableStateOf(60) }
     var bitrateMbps by rememberSaveable { mutableStateOf(0) }
+    var audio by rememberSaveable { mutableStateOf(true) }
+    var sync by rememberSaveable { mutableStateOf(SyncMode.LIP_SYNC) }
     val prefs =
-        remember(codec, maxHeight, fps, bitrateMbps) {
+        remember(codec, maxHeight, fps, bitrateMbps, audio, sync) {
             StreamPreferences(
                 preferredVideoCodec = codec?.let { VideoCodec.valueOf(it) },
                 maxHeight = maxHeight,
                 maxFps = fps,
                 bitrateBps = if (bitrateMbps > 0) bitrateMbps * 1_000_000 else null,
+                audioEnabled = audio,
+                syncMode = sync,
             )
         }
     val active = state is SenderState.Connecting || state is SenderState.Streaming
@@ -215,7 +285,9 @@ private fun SenderScreen(
                     modifier = Modifier.weight(1f),
                 )
                 val parsed = ReceiverEndpoint.parse(manual)
-                Button(enabled = parsed != null && !active, onClick = { parsed?.let { onStart(it, prefs) } }) {
+                Button(enabled = parsed != null && !active, onClick = {
+                    parsed?.let { onStart(it, prefs) }
+                }) {
                     Text(stringResource(R.string.sender_connect))
                 }
             }
@@ -240,6 +312,19 @@ private fun SenderScreen(
                 listOf(0 to stringResource(R.string.sender_auto), 8 to "8 Mbps", 16 to "16 Mbps", 30 to "30 Mbps"),
                 bitrateMbps,
             ) { bitrateMbps = it }
+            ChoiceRow(
+                stringResource(R.string.sender_audio),
+                listOf(true to stringResource(R.string.sender_on), false to stringResource(R.string.sender_off)),
+                audio,
+            ) { audio = it }
+            ChoiceRow(
+                stringResource(R.string.sender_sync),
+                listOf(
+                    SyncMode.LIP_SYNC to stringResource(R.string.sender_sync_lip),
+                    SyncMode.LOW_LATENCY to stringResource(R.string.sender_sync_latency),
+                ),
+                sync,
+            ) { sync = it }
         }
     }
 }
@@ -280,6 +365,35 @@ private fun StatusCard(state: SenderState, onStop: () -> Unit) {
                         ),
                         style = MaterialTheme.typography.bodySmall,
                     )
+                    Text(
+                        when (s.audio) {
+                            AudioStatus.ON -> stringResource(
+                                R.string.sender_audio_on,
+                                s.receiverUnderruns,
+                                s.avOffsetMs,
+                            )
+
+                            AudioStatus.OFF -> stringResource(R.string.sender_audio_off)
+
+                            AudioStatus.UNAVAILABLE -> stringResource(R.string.sender_audio_unavailable)
+
+                            AudioStatus.NO_APP -> stringResource(R.string.sender_audio_no_app)
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    if (s.receiverVideoDelayMs > 0) {
+                        Text(
+                            stringResource(R.string.sender_video_delay, s.receiverVideoDelayMs),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    if (s.contentHidden) {
+                        Text(
+                            stringResource(R.string.sender_content_hidden),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
                     Button(onClick = onStop) { Text(stringResource(R.string.sender_stop)) }
                 }
 

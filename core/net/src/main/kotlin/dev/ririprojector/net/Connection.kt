@@ -41,7 +41,12 @@ data class ReceiverEndpoint(val name: String, val host: String, val port: Int) {
 object SocketTuning {
     /** DSCP AF41 (interactive video) in the IP TOS byte. */
     const val TRAFFIC_CLASS_VIDEO = 0x88
-    const val DEFAULT_SEND_BUFFER_BYTES = 256 * 1024
+
+    /**
+     * Small on purpose (Linux doubles it): congestion must surface in `SendQueue`, where audio is
+     * prioritized and stale video dropped, not in the kernel, where audio would wait behind it.
+     */
+    const val DEFAULT_SEND_BUFFER_BYTES = 64 * 1024
 
     fun apply(socket: Socket, sendBufferBytes: Int = DEFAULT_SEND_BUFFER_BYTES) {
         socket.tcpNoDelay = true

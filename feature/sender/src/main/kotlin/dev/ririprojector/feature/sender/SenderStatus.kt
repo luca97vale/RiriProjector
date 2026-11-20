@@ -17,6 +17,14 @@ data class SenderStats(
     val receiverDecodeP95Ms: Double = 0.0,
     val receiverDropped: Int = 0,
     val encoderName: String = "",
+    val audio: AudioStatus = AudioStatus.OFF,
+    val receiverUnderruns: Int = 0,
+    /** Audio minus video at the receiver; positive = audio late. */
+    val avOffsetMs: Int = 0,
+    /** Lip-sync video delay the receiver applies (0 in low-latency mode). */
+    val receiverVideoDelayMs: Int = 0,
+    /** Single-app sharing: the shared app is not on screen, so the receiver shows nothing. */
+    val contentHidden: Boolean = false,
 )
 
 sealed interface SenderState {
@@ -37,4 +45,19 @@ object SenderStatus {
     internal fun set(value: SenderState) {
         _state.value = value
     }
+}
+
+/** What the sender does with audio in the current session. */
+enum class AudioStatus {
+    /** Captured and streamed. */
+    ON,
+
+    /** Turned off in the settings. */
+    OFF,
+
+    /** Wanted but not possible: permission denied, API < 29, or capture failed. */
+    UNAVAILABLE,
+
+    /** Sharing one app with no app chosen as the audio source: other apps must not be heard. */
+    NO_APP,
 }

@@ -137,8 +137,13 @@ class ReceiverActivity : Activity() {
                         s.decodeP95Us / 1000.0,
                         s.dropped,
                         s.resets,
+                        s.audioBufferedMs,
+                        s.audioUnderruns,
+                        s.avOffsetMs?.let { getString(R.string.receiver_av_offset, it) }
+                            ?: getString(R.string.receiver_av_unknown),
                         s.decoderName,
                         state.peer,
+                        s.videoDelayMs,
                     )
             }
 
