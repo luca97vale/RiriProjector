@@ -15,6 +15,7 @@
     <string name="sender_status_idle">Not mirroring. Pick a receiver below.</string>
     <string name="sender_status_connecting">Connecting to %1$s…</string>
     <string name="sender_status_streaming">Mirroring to %1$s</string>
+    <string name="sender_status_reconnecting">Connection to %1$s lost. Reconnecting…</string>
     <string name="sender_status_ended">Mirroring stopped.</string>
     <string name="sender_status_failed">Mirroring stopped: %1$s</string>
     <string name="sender_stats">%1$s %2$dx%3$d · %4$.0f fps · %5$.1f Mbps · RTT %6$.1f ms\nReceiver: %7$.0f fps · decode %8$.1f ms (p95 %9$.1f) · dropped: %10$d sent / %11$d received</string>
@@ -37,6 +38,7 @@
     <string name="sender_usage_access_hint">When you share one app, RiriProjector mirrors only that app\'s sound. To know which app you picked it needs Usage access. Without it, sound from all apps is mirrored.</string>
     <string name="sender_usage_access_allow">Allow</string>
     <string name="sender_usage_access_skip">Not now</string>
+    <string name="sender_latency">Latency: %1$d ms (p95 %2$d ms) from capture to the projector screen</string>
     <string name="sender_video_delay">Lip-sync: video delayed %1$d ms to match the sound</string>
     <string name="sender_content_hidden">The shared app is not on screen: the projector shows nothing until you return to it.</string>
 </resources>

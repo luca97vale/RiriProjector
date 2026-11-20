@@ -30,12 +30,12 @@ import dev.ririprojector.protocol.model.VideoCodec
 
 /**
  * Foreground service of type `mediaProjection` that owns the [MediaProjection] and the
- * [SenderSession] (Android 14+ rules: `startForeground` before `getMediaProjection`, callback
+ * [ProjectionHost] (Android 14+ rules: `startForeground` before `getMediaProjection`, callback
  * registered before the VirtualDisplay, one projection token per session).
  */
 class ProjectionService : Service() {
     private var projection: MediaProjection? = null
-    private var session: SenderSession? = null
+    private var session: ProjectionHost? = null
     private val main = Handler(Looper.getMainLooper())
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -83,20 +83,29 @@ class ProjectionService : Service() {
                     Log.i(TAG, "shared content visible: $isVisible")
                     session?.onContentVisibilityChanged(isVisible)
                 }
+
+                // API 34+: the only size source there; covers rotation and one-app window resizes.
+                override fun onCapturedContentResize(width: Int, height: Int) {
+                    session?.onSourceResized(width, height)
+                }
             },
             main,
         )
+        if (Build.VERSION.SDK_INT < 34) {
+            // Before Android 14 the VirtualDisplay mirrors the whole screen: follow its rotation.
+            getSystemService(DisplayManager::class.java).registerDisplayListener(displayListener, main)
+        }
 
         val (source, dpi) = displayInfo()
         val consentShownAtMs = intent.getLongExtra(EXTRA_CONSENT_SHOWN_AT, System.currentTimeMillis())
         val consentResultAtMs = intent.getLongExtra(EXTRA_CONSENT_RESULT_AT, System.currentTimeMillis())
         val appContext = applicationContext
         val s =
-            SenderSession(
+            ProjectionHost(
                 target = target,
                 preferences = preferencesFrom(intent),
                 projection = mp,
-                source = source,
+                initialSource = source,
                 densityDpi = dpi,
                 audioPermitted =
                     Build.VERSION.SDK_INT >= 29 &&
@@ -115,7 +124,23 @@ class ProjectionService : Service() {
         if (s == null) shutdown() else s.stop(reason, message)
     }
 
+    private val displayListener =
+        object : DisplayManager.DisplayListener {
+            override fun onDisplayChanged(displayId: Int) {
+                if (displayId != Display.DEFAULT_DISPLAY) return
+                val (info, _) = displayInfo()
+                session?.onSourceResized(info.width, info.height)
+            }
+
+            override fun onDisplayAdded(displayId: Int) = Unit
+
+            override fun onDisplayRemoved(displayId: Int) = Unit
+        }
+
     private fun shutdown() {
+        if (Build.VERSION.SDK_INT < 34) {
+            runCatching { getSystemService(DisplayManager::class.java).unregisterDisplayListener(displayListener) }
+        }
         session = null
         projection?.let { runCatching { it.stop() } }
         projection = null

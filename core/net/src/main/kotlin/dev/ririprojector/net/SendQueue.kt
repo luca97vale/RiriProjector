@@ -96,6 +96,34 @@ class SendQueue(
         notEmpty.signal()
     }
 
+    /**
+     * Control message that must stay ordered with video (VIDEO_RECONFIG): queued in the video lane,
+     * after every frame already offered, and never dropped by video overflow.
+     */
+    fun offerVideoControl(message: ControlMessage) = lock.withLock {
+        if (closed) return
+        video.addLast(
+            obtain().also {
+                it.type = message.type
+                it.flags = 0
+                it.ptsUs = 0
+                it.data = OutboundPacket.EMPTY
+                it.length = 0
+                it.control = message
+            },
+        )
+        notEmpty.signal()
+    }
+
+    /**
+     * Age of the oldest queued video frame, from its pts (sender `CLOCK_MONOTONIC` µs, the same
+     * clock as [nowUs]); 0 when no frame is queued.
+     */
+    fun oldestQueuedVideoAgeUs(nowUs: Long): Long = lock.withLock {
+        val oldest = video.firstOrNull { it.type == MessageType.FRAME } ?: return 0
+        (nowUs - oldest.ptsUs).coerceAtLeast(0)
+    }
+
     fun offerAudio(ptsUs: Long, src: ByteBuffer) = lock.withLock {
         if (closed) return
         if (audio.size >= maxAudioPackets) {
@@ -120,6 +148,8 @@ class SendQueue(
         if (closed) return false
         val size = src.remaining()
         if (codecConfig) {
+            // Some encoders flag their first IDR as config + key: it ends a keyframe wait too.
+            if (keyframe) waitingForKeyframe = false
             video.addLast(copy(MessageType.CONFIG, HeaderFlags.CODEC_CONFIG, ptsUs, src))
             videoBytes += size
             notEmpty.signal()
@@ -160,11 +190,15 @@ class SendQueue(
 
     fun recycle(packet: OutboundPacket) = lock.withLock { recycleLocked(packet) }
 
-    /** Drops pending video (e.g. after a reconnection) and waits for the next keyframe. */
-    fun resetVideo() {
+    /**
+     * Drops pending video (e.g. after a reconnection or before an encoder swap) and waits for the
+     * next keyframe. [requestKeyframe] false when a new encoder will start with one anyway.
+     */
+    fun resetVideo(requestKeyframe: Boolean = true, countDropped: Boolean = true) {
         lock.withLock {
-            dropQueuedVideo(keepConfig = false)
+            dropQueuedVideo(keepConfig = false, countDropped)
             enterWaitForKeyframe()
+            if (!requestKeyframe) keyframeRequestPending = false
         }
         notifyKeyframeIfNeeded()
     }
@@ -187,14 +221,15 @@ class SendQueue(
         if (notify) onKeyframeNeeded()
     }
 
-    private fun dropQueuedVideo(keepConfig: Boolean) {
+    private fun dropQueuedVideo(keepConfig: Boolean, countDropped: Boolean = true) {
         val it = video.iterator()
         while (it.hasNext()) {
             val p = it.next()
+            if (p.control != null) continue // ordered control (VIDEO_RECONFIG) is never dropped
             if (keepConfig && p.type == MessageType.CONFIG) continue
             it.remove()
             videoBytes -= p.length
-            if (p.type == MessageType.FRAME) droppedVideoFrames++
+            if (countDropped && p.type == MessageType.FRAME) droppedVideoFrames++
             recycleLocked(p)
         }
     }

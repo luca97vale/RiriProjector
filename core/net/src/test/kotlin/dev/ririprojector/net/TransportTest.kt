@@ -91,15 +91,38 @@ class TransportTest {
     }
 
     @Test
-    fun `second client is rejected with BYE BUSY while a session is active`() {
+    fun `another client is rejected with BYE BUSY while a session is active`() {
+        val otherAccepted = LinkedBlockingQueue<Connection>()
+        ReceiverServer(port = 0, samePeer = { _, _ -> false }) { otherAccepted.put(it) }.start().use { busy ->
+            val ep = ReceiverEndpoint("tv", "127.0.0.1", busy.boundPort)
+            SenderClient.connect(ep).use {
+                otherAccepted.poll(5, TimeUnit.SECONDS)!!
+                SenderClient.connect(ep).use { second ->
+                    second.setReadTimeout(2_000)
+                    val packet = second.reader.read()!!
+                    assertThat(packet.type).isEqualTo(MessageType.BYE)
+                    assertThat(packet.decodeControl()).isEqualTo(ControlMessage.Bye(ByeReason.BUSY))
+                    assertThat(second.reader.read()).isNull()
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `the same sender reconnecting replaces its stale session`() {
         SenderClient.connect(endpoint).use {
-            accepted.poll(5, TimeUnit.SECONDS)!!
-            SenderClient.connect(endpoint).use { second ->
-                second.setReadTimeout(2_000)
-                val packet = second.reader.read()!!
-                assertThat(packet.type).isEqualTo(MessageType.BYE)
-                assertThat(packet.decodeControl()).isEqualTo(ControlMessage.Bye(ByeReason.BUSY))
-                assertThat(second.reader.read()).isNull()
+            val first = accepted.poll(5, TimeUnit.SECONDS)!!
+            SenderClient.connect(endpoint).use {
+                val second = accepted.poll(5, TimeUnit.SECONDS)
+                assertThat(second).isNotNull()
+                assertThat(first.isClosed).isTrue()
+                // The stale session ending late must not free the new session's slot.
+                server.sessionEnded(first)
+                SenderClient.connect(endpoint).use { third ->
+                    assertThat(accepted.poll(5, TimeUnit.SECONDS)).isNotNull() // same address: preempts again
+                    assertThat(second!!.isClosed).isTrue()
+                    third.setReadTimeout(200)
+                }
             }
         }
     }

@@ -52,7 +52,7 @@ class EncoderSettingsTest {
 
     @Test
     fun `plain fallback drops every optional realtime key`() {
-        val keys = EncoderSettings.keys(config, qti, 36, lowLatencyKeys = false)
+        val keys = EncoderSettings.keys(config, qti, 36, EncoderSettings.Tier.PLAIN)
         assertThat(keys).doesNotContainKey(MediaFormat.KEY_PRIORITY)
         assertThat(keys).doesNotContainKey(MediaFormat.KEY_LOW_LATENCY)
         assertThat(keys).doesNotContainKey(MediaFormat.KEY_OPERATING_RATE)
@@ -60,5 +60,31 @@ class EncoderSettingsTest {
         // The fps cap and no-B-frames must survive the fallback.
         assertThat(keys[MediaFormat.KEY_MAX_FPS_TO_ENCODER]).isEqualTo(60f)
         assertThat(keys[MediaFormat.KEY_MAX_B_FRAMES]).isEqualTo(0)
+    }
+
+    @Test
+    fun `intra-refresh tier refreshes once per second and spaces IDRs to 10 s`() {
+        val keys = EncoderSettings.keys(config, qti, 36, EncoderSettings.Tier.INTRA_REFRESH)
+        assertThat(keys[MediaFormat.KEY_INTRA_REFRESH_PERIOD]).isEqualTo(60)
+        assertThat(keys[MediaFormat.KEY_I_FRAME_INTERVAL]).isEqualTo(10)
+        assertThat(keys[MediaFormat.KEY_PRIORITY]).isEqualTo(0)
+    }
+
+    @Test
+    fun `full tier keeps 2 s IDRs and no intra-refresh`() {
+        val keys = EncoderSettings.keys(config, qti, 36, EncoderSettings.Tier.FULL)
+        assertThat(keys).doesNotContainKey(MediaFormat.KEY_INTRA_REFRESH_PERIOD)
+        assertThat(keys[MediaFormat.KEY_I_FRAME_INTERVAL]).isEqualTo(2)
+    }
+
+    @Test
+    fun `tiers start with intra-refresh only when the encoder supports it`() {
+        assertThat(EncoderSettings.tiers(qti)).containsExactly(
+            EncoderSettings.Tier.INTRA_REFRESH,
+            EncoderSettings.Tier.FULL,
+            EncoderSettings.Tier.PLAIN,
+        ).inOrder()
+        assertThat(EncoderSettings.tiers(qti.copy(supportsIntraRefresh = false)))
+            .containsExactly(EncoderSettings.Tier.FULL, EncoderSettings.Tier.PLAIN).inOrder()
     }
 }

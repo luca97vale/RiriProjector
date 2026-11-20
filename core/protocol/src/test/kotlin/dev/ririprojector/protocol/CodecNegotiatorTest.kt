@@ -307,4 +307,46 @@ class CodecNegotiatorTest {
 
         assertThat(a).isEqualTo(AudioConfig.DEFAULT_PCM)
     }
+
+    @Test
+    fun `refit after rotation keeps codec and fps and swaps orientation`() {
+        val start = ok(CodecNegotiator.negotiate(sender(), hello())).video
+
+        val v = CodecNegotiator.refit(start, sender(source = DisplayInfo(1600, 2560, 120)), hello())!!
+
+        assertThat(v.codec).isEqualTo(start.codec)
+        assertThat(v.fps).isEqualTo(start.fps)
+        assertThat(v.width).isEqualTo(672)
+        assertThat(v.height).isEqualTo(1080)
+        assertThat(v.bitrateBps).isLessThan(start.bitrateBps)
+    }
+
+    @Test
+    fun `refit with an odd one-app size stays aligned and keeps the aspect`() {
+        val start = ok(CodecNegotiator.negotiate(sender(), hello())).video
+
+        val v = CodecNegotiator.refit(start, sender(source = DisplayInfo(1234, 987, 120)), hello())!!
+
+        assertThat(v.width % 8).isEqualTo(0)
+        assertThat(v.height % 8).isEqualTo(0)
+        assertThat(v.width.toDouble() / v.height).isWithin(0.02).of(1234.0 / 987.0)
+        assertThat(v.width).isAtMost(1234)
+    }
+
+    @Test
+    fun `refit keeps a fixed user bitrate`() {
+        val prefs = StreamPreferences(bitrateBps = 12_000_000)
+        val start = ok(CodecNegotiator.negotiate(sender(), hello(), prefs)).video
+
+        val v = CodecNegotiator.refit(start, sender(source = DisplayInfo(1600, 2560, 120)), hello(), prefs)!!
+
+        assertThat(v.bitrateBps).isEqualTo(12_000_000)
+    }
+
+    @Test
+    fun `refit is null when the source becomes too small`() {
+        val start = ok(CodecNegotiator.negotiate(sender(), hello())).video
+
+        assertThat(CodecNegotiator.refit(start, sender(source = DisplayInfo(100, 100, 60)), hello())).isNull()
+    }
 }

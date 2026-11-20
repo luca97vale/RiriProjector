@@ -42,16 +42,14 @@ class VideoEncoder(
     @Volatile var encodedBytes: Long = 0
         private set
 
+    /** The configure tier the encoder accepted (shown in sender stats); valid after [start]. */
+    var tier: EncoderSettings.Tier = EncoderSettings.Tier.PLAIN
+        private set
+
     fun start(): VideoEncoder {
         mc = MediaCodec.createByCodecName(codec.name)
         try {
-            try {
-                mc.configure(format(lowLatencyKeys = true), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-            } catch (e: Exception) {
-                Log.w(TAG, "configure with low-latency keys failed (${e.message}); retrying plain")
-                mc.reset()
-                mc.configure(format(lowLatencyKeys = false), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-            }
+            tier = configureBestTier()
             inputSurface = mc.createInputSurface()
             mc.start()
         } catch (e: Exception) {
@@ -67,14 +65,31 @@ class VideoEncoder(
             }
         Log.i(
             TAG,
-            "started ${codec.name} ${config.width}x${config.height}@${config.fps} ${config.bitrateBps / 1000} kbps",
+            "started ${codec.name} ${config.width}x${config.height}@${config.fps} " +
+                "${config.bitrateBps / 1000} kbps, ${tier.label}",
         )
         return this
     }
 
-    private fun format(lowLatencyKeys: Boolean): MediaFormat =
+    /** Some encoders reject intra-refresh or the realtime keys at configure: step down a tier. */
+    private fun configureBestTier(): EncoderSettings.Tier {
+        val tiers = EncoderSettings.tiers(codec)
+        for ((i, t) in tiers.withIndex()) {
+            try {
+                mc.configure(format(t), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                return t
+            } catch (e: Exception) {
+                if (i == tiers.lastIndex) throw e
+                Log.w(TAG, "configure (${t.label}) failed: ${e.message}; trying ${tiers[i + 1].label}")
+                mc.reset()
+            }
+        }
+        error("no tier")
+    }
+
+    private fun format(tier: EncoderSettings.Tier): MediaFormat =
         MediaFormat.createVideoFormat(config.codec.mime, config.width, config.height).also {
-            EncoderSettings.apply(it, EncoderSettings.keys(config, codec, Build.VERSION.SDK_INT, lowLatencyKeys))
+            EncoderSettings.apply(it, EncoderSettings.keys(config, codec, Build.VERSION.SDK_INT, tier))
         }
 
     private fun drainLoop() {

@@ -47,6 +47,23 @@ class AudioCapture(
     /** Diagnostics: highest absolute s16 sample since the last call (0 = silence), then resets. */
     fun takePeak(): Int = peak.also { peak = 0 }
 
+    // Diagnostics, read and reset by [takeTiming]: largest interval between two packets read, longest
+    // hand-off to the sink, and audio missing between packets (pts jumps: AudioRecord overruns).
+    @Volatile private var maxReadGapUs = 0L
+
+    @Volatile private var maxSinkUs = 0L
+
+    @Volatile private var lostUs = 0L
+
+    /** Diagnostics: "read gap max X ms, sink max Y ms, lost Z ms" since the last call, then resets. */
+    fun takeTiming(): String =
+        "read gap max ${maxReadGapUs / 1000} ms, sink max ${maxSinkUs / 1000} ms, lost ${lostUs / 1000} ms"
+            .also {
+                maxReadGapUs = 0
+                maxSinkUs = 0
+                lostUs = 0
+            }
+
     /** Diagnostics: age of the last packet (now minus its pts) when handed to the sink, in µs. */
     @Volatile var lastAgeUs: Long = 0
         private set
@@ -105,6 +122,8 @@ class AudioCapture(
         val frameBytes = config.channels * 2
         val packetFrames = packetBytes / frameBytes
         var framesRead = 0L
+        var lastReadAtUs = 0L
+        var lastPtsUs = 0L
         try {
             while (running) {
                 var filled = 0
@@ -122,10 +141,18 @@ class AudioCapture(
                     } else {
                         System.nanoTime() / 1000 - config.frameDurationUs
                     }
-                lastAgeUs = System.nanoTime() / 1000 - ptsUs
+                val readAtUs = System.nanoTime() / 1000
+                lastAgeUs = readAtUs - ptsUs
+                if (lastReadAtUs != 0L && readAtUs - lastReadAtUs > maxReadGapUs) maxReadGapUs = readAtUs - lastReadAtUs
+                lastReadAtUs = readAtUs
+                val hole = ptsUs - lastPtsUs - config.frameDurationUs
+                if (lastPtsUs != 0L && hole > HOLE_TOLERANCE_US) lostUs += hole
+                lastPtsUs = ptsUs
                 peak = maxOf(peak, peakOf(bytes, packetBytes))
                 buffer.position(0).limit(packetBytes)
                 sink.onAudio(buffer, ptsUs)
+                val sinkUs = System.nanoTime() / 1000 - readAtUs
+                if (sinkUs > maxSinkUs) maxSinkUs = sinkUs
                 capturedPackets++
             }
         } catch (e: Exception) {
@@ -161,6 +188,7 @@ class AudioCapture(
     private companion object {
         const val TAG = "Riri/AudioCapture"
         const val BUFFER_PACKETS = 4
+        const val HOLE_TOLERANCE_US = 2_000L
         const val NANOS_PER_SECOND = 1_000_000_000L
     }
 }

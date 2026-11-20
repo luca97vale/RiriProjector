@@ -88,12 +88,12 @@ The MVP is complete only at the end of M5 (audio included).
 ## M6 — Latency and robustness
 - Measurement: sender timestamps in FRAME + clock offset estimate via PING → capture→decode
   latency in overlay; glass-to-glass procedure (stopwatch on the tablet filmed together with the
-  TV at 240 fps) documented in `docs/`.
+  TV at 240 fps) documented in [docs/LATENCY.md](LATENCY.md).
 - Adaptive bitrate (pure `BitratePolicy`) based on send queue and STATS.
 - Intra-refresh where supported; tuning of `KEY_REPEAT_PREVIOUS_FRAME_AFTER`, operating rate,
   vendor keys (MediaTek on Fire TV, Exynos/Qualcomm on Samsung).
 - Rotation and resolution change (`onCapturedContentResize`) with encoder reconfiguration.
-- Automatic reconnection, Wi-Fi loss handling, receiver in background.
+- Automatic reconnection, Wi-Fi loss handling, receiver in background (ADR-010).
 
 ## M7 — Polish and release
 - Persistent settings, last receiver remembered, quick start.

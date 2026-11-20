@@ -14,6 +14,7 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.TextView
+import dev.ririprojector.protocol.ByeReason
 import dev.ririprojector.protocol.model.DisplayInfo
 import java.net.Inet4Address
 import kotlinx.coroutines.CoroutineScope
@@ -86,6 +87,12 @@ class ReceiverActivity : Activity() {
         collector = scope.launch { controller.state.collect(::render) }
     }
 
+    override fun onPause() {
+        // Back/finish: the user is done with the projector, so the tablet should stop too.
+        controller.leaveReason = if (isFinishing) ByeReason.USER_STOPPED else ByeReason.NORMAL
+        super.onPause()
+    }
+
     override fun onStop() {
         collector?.cancel()
         controller.stop()
@@ -144,6 +151,15 @@ class ReceiverActivity : Activity() {
                         s.decoderName,
                         state.peer,
                         s.videoDelayMs,
+                        s.latency?.let {
+                            getString(
+                                R.string.receiver_latency,
+                                (it.meanUs / 1000).toInt(),
+                                (it.p95Us / 1000).toInt(),
+                                (it.uncertaintyUs / 1000).toInt(),
+                            )
+                        } ?: getString(R.string.receiver_av_unknown),
+                        s.pipeline,
                     )
             }
 

@@ -25,17 +25,22 @@ if measurements show head-of-line blocking spikes on Wi-Fi.
 Socket: small `sendBufferSize` (≈ 2–4 frames at the current bitrate) so congestion is not hidden in
 the kernel; `trafficClass` with DSCP AF41 / video; `keepAlive`.
 
-## ADR-003 — Wire format (v2)
-**Accepted** (v1 in M1, v2 in M5; `:core:protocol`). v2 appends the sync mode to START and the
-video delay to STATS; versions are not interoperable, and a mismatch ends the handshake with
-`INCOMPATIBLE` and an "update both devices" message on the tablet. Control payloads: big-endian, strings = u16 length + UTF-8, lists = u8 count; media packets carry raw codec output. Unknown message types are skipped by readers; invalid field values are `MALFORMED_PAYLOAD`.
+## ADR-003 — Wire format (v3)
+**Accepted** (v1 in M1, v2 in M5, v3 in M6; `:core:protocol`). v2 appended the sync mode to START
+and the video delay to STATS. v3 makes PING/PONG NTP-style on `CLOCK_MONOTONIC` (4 timestamps; PING
+carries the sender's offset and RTT estimate), adds capture→shown latency to STATS and adds
+VIDEO_RECONFIG. Versions are not interoperable, and a mismatch ends the handshake with
+`INCOMPATIBLE` and an "update both devices" message on the tablet.
+
+Unknown values: latency fields use `-1` (`ControlMessage.UNKNOWN`), the signed A/V offset uses
+`Int.MIN_VALUE` (`UNKNOWN_SIGNED`), and `Ping.offsetUs` uses `Long.MIN_VALUE` (`NO_OFFSET`). Control payloads: big-endian, strings = u16 length + UTF-8, lists = u8 count; media packets carry raw codec output. Unknown message types are skipped by readers; invalid field values are `MALFORMED_PAYLOAD`.
 
 Fixed 16-byte header, big-endian:
 
 | Offset | Field | Type | Notes |
 |---|---|---|---|
 | 0 | magic | u16 | `0x5252` ("RR") |
-| 2 | version | u8 | `PROTOCOL_VERSION` = 2 |
+| 2 | version | u8 | `PROTOCOL_VERSION` = 3 |
 | 3 | type | u8 | see message table |
 | 4 | flags | u8 | bit0 = keyframe, bit1 = codec config |
 | 5 | reserved | u8 | 0 |
@@ -43,9 +48,12 @@ Fixed 16-byte header, big-endian:
 | 10 | ptsUs/seq | u48 | pts in µs for frames, sequence number for control messages |
 
 **Timebase.** Media pts are sender `CLOCK_MONOTONIC` microseconds (`System.nanoTime() / 1000`), the
-clock `VirtualDisplay`/Surface timestamps use for encoder output. Audio pts (M5) must use the same clock.
-PING/PONG timestamps use `SystemClock.elapsedRealtimeNanos()` and only measure RTT and offset; never mix
-the two (they differ by the total deep-sleep time since boot).
+clock `VirtualDisplay`/Surface timestamps use for encoder output. Audio pts (M5) use the same clock.
+Since v3 PING/PONG use it too, so the receiver can place a frame's pts on its own clock:
+`rtt = (t4−t1) − (t3−t2)`, `offset (receiver − sender) = ((t2−t1) + (t3−t4)) / 2`, where t1/t4 are
+the sender's send/receive times and t2/t3 the receiver's read/write times (t3 is stamped by the
+control thread right before writing, so outbox queuing does not bias the estimate). `ClockSync`
+keeps the lowest-RTT sample of the last 8; the estimate is per link (suspend shifts the clocks).
 
 Messages:
 
@@ -57,25 +65,46 @@ Messages:
 | 0x04 | FRAME | S→R | Annex-B access unit |
 | 0x05 | AUDIO_CONFIG | S→R | audio codec (PCM s16le / Opus), sample rate, channels, packet duration; Opus CSD if any |
 | 0x06 | AUDIO_FRAME | S→R | audio packet (PCM or Opus) with pts in µs on the same timebase as video |
+| 0x07 | VIDEO_RECONFIG | S→R | v3: `u16` generation + video block (codec, width, height, fps, bitrate). Sent in order with video: every unit after it is the new size, starting with CONFIG and a keyframe |
 | 0x10 | REQUEST_KEYFRAME | R→S | — |
-| 0x11 | PING / 0x12 PONG | ↔ | sender monotonic timestamp (RTT and clock offset estimate) |
-| 0x13 | STATS | R→S | decoded fps, dropped frames, mean/p95 decode latency, audio underruns, A/V offset, video delay (v2: `i32` µs) |
-| 0x14 | BITRATE_HINT | R→S | suggested bitrate (adaptation) |
+| 0x11 | PING | S→R | v3: `i64` t1, `i64` offset estimate (`NO_OFFSET` until known), `i32` best RTT µs |
+| 0x12 | PONG | R→S | v3: `i64` t1 echoed, `i64` t2 (PING read), `i64` t3 (PONG written) |
+| 0x13 | STATS | R→S | decoded fps, dropped frames, mean/p95 decode latency, audio underruns, A/V offset, video delay (v2), capture→shown mean/p95 (v3); all `i32` µs |
+| 0x14 | BITRATE_HINT | R→S | reserved, ignored; no v3 peer sends it (the sender's `BitratePolicy` decides) |
 | 0x7F | BYE | ↔ | reason code |
 
 ## ADR-004 — Encoder pipeline (sender)
-**Accepted.**
+**Accepted** (revised in M6).
 - Source: `MediaProjection.createVirtualDisplay` directly onto the encoder input `Surface`
-  (zero copies). Resolution = min(tablet display, receiver display), aligned to 16.
+  (zero copies). Resolution = the source fitted inside the receiver display and codec limits,
+  aligned to 8 (`CodecNegotiator`; `refit` recomputes it when the source size changes).
 - Codec: HEVC if both sides support it in hardware; otherwise AVC. Hardware codecs only
   (`isHardwareAccelerated`).
 - Parameters: `KEY_PRIORITY=0` (realtime), `KEY_BITRATE_MODE=CBR` (fallback VBR),
-  long `KEY_I_FRAME_INTERVAL` (e.g. 10 s) + `PARAMETER_KEY_REQUEST_SYNC_FRAME` on demand,
-  `KEY_REPEAT_PREVIOUS_FRAME_AFTER` for static screens, `KEY_MAX_B_FRAMES=0`, Main/High profile
-  without B-frames, `KEY_LATENCY=1` where supported, intra-refresh when available
-  (`FEATURE_IntraRefresh`) to avoid keyframe spikes.
-- Adaptive bitrate: `PARAMETER_KEY_VIDEO_BITRATE` changed by a pure (testable) policy that reads
-  send-queue occupancy + receiver STATS.
+  `KEY_REPEAT_PREVIOUS_FRAME_AFTER` for static screens, `KEY_MAX_B_FRAMES=0`, `KEY_LOW_LATENCY`
+  where supported, `PARAMETER_KEY_REQUEST_SYNC_FRAME` on demand.
+- **Configure tiers** (`EncoderSettings.Tier`), tried in order until `configure` succeeds:
+  1. *intra-refresh* (only with `FEATURE_IntraRefresh`): `KEY_INTRA_REFRESH_PERIOD = fps` (one
+     full refresh per second spread over every frame, no keyframe spikes) and
+     `KEY_I_FRAME_INTERVAL = 10` s as a safety net;
+  2. *realtime*: the realtime keys with a 2 s I-frame interval;
+  3. *plain*: only keys every encoder accepts.
+  The accepted tier is logged and shown in the tablet's stats; a name denylist exists for encoders
+  whose intra-refresh output shows artefacts on device.
+- **Adaptive bitrate** (`BitratePolicy`, `:core:net`, pure and clock-injected, AIMD). It lives in
+  `ProjectionHost`, so its value survives reconnections.
+  - *Decrease ×0.75*, at most once per 2 s, on:
+    - a send-queue video drop (event-driven; the new bitrate is applied **before** the recovery
+      keyframe is requested, so the IDR is already smaller);
+    - queued video older than 100 ms;
+    - the receiver's dropped-frame count rising;
+    - the last RTT above its 30 s floor + 40 ms on 2 consecutive ticks.
+  - *Increase +5 %/s* after 5 s without congestion, up to the ceiling.
+  - Ceiling = negotiated (Auto) or the user's fixed bitrate; floor = max(1 Mbps, 15 % of ceiling).
+  - Ticked once per second by the sender's writer thread; a new value is applied to the encoder
+    on the host's `HostCtl` thread (never on the writer), and re-applied to each new encoder.
+  - A size change refits the ceiling and clamps the current value; a new link resets the
+    receiver-drop baseline and RTT history.
 
 ## ADR-005 — Decoder pipeline (receiver)
 **Accepted.**
@@ -121,10 +150,27 @@ The sender uses `NsdManager.discoverServices`; fallback to manual IP:port entry
   receiver creates a `JitterBuffer` + `AudioPlayer` for that format; audio failures never end the session
   (mirroring continues video-only and the sender UI says so).
 - **Opus** is deferred to the bandwidth policy work (M6): PCM adds no codec latency.
-- **Playback (receiver)**: `AudioTrack` with `PERFORMANCE_MODE_LOW_LATENCY`, minimal buffer,
-  adaptive 20–60 ms jitter buffer; on underrun insert silence, on build-up drop samples to return
-  to target. Clock drift between the devices is absorbed by dropping or repeating single frames
-  when the smoothed level leaves target ± 10 ms (no audible jumps).
+- **Playback (receiver)**: `AudioTrack` with `PERFORMANCE_MODE_LOW_LATENCY`, minimal buffer (on
+  Fire TV it still lands on the normal HDMI mixer: the audio policy has no fast output, and the
+  path after our track adds ~220 ms we cannot reduce).
+- **Jitter buffer** *(revised in M6, after device measurements)*. Over Wi-Fi, audio arrives in
+  clumps 40–80 ms apart, so the level is a sawtooth. The first design (20–60 ms target, anything
+  above target + 20 ms discarded at once) threw each clump away and underran on the next gap
+  (~1 per second on Fire TV). `JitterBuffer` now controls the **low-water mark**:
+  - arrival gaps are measured in played time (audio pulled between two pushes); gaps over 150 ms
+    are stalls, met with an underrun rather than covered (covering them would add their length to
+    the latency for good);
+  - `target` (10–60 ms) is the margin kept below the deepest recent dip: +10 ms per underrun,
+    −5 ms after 30 s without one (stalls do not raise it); after an underrun, playback restarts at
+    target + largest recent coverable gap;
+  - every 2 s the lowest level of the last 8 s is compared with the target. The difference is
+    corrected by dropping or repeating up to 4 single frames per 10 ms pull (≤ 0.8 %, inaudible),
+    which also absorbs clock drift between the devices;
+  - a history whose low-water is more than 50 ms above target jumps back at once, and a stall's
+    backlog arriving during the restart is trimmed as it arrives.
+- The receiver holds a Wi-Fi lock (`FULL_LOW_LATENCY`, `HIGH_PERF` on API 28) while its screen is
+  up, so power save does not batch packets around beacons. It is a small gain; it costs nothing on
+  a mains-powered TV.
 - **A/V measurement**: `AvSync`, for each side, (receiver monotonic time the sample is shown/played)
   − (sender pts), smoothed; the difference is the A/V offset (positive = audio late), shown in the
   overlay and sent in STATS. The unknown clock offset between the devices cancels out. Video "shown"
@@ -188,3 +234,80 @@ consent dialog** (Android 14+: `createConfigForUserChoice`); the tablet UI has n
   warning: the projector shows nothing until the user returns to it.
 - Revisit when `MediaProjectionConfig` can request app-scoped audio (API 37
   `setAudioRequested`) on the target tablets.
+
+## ADR-010 — Reconnection and in-session reconfiguration
+**Accepted** (M6). The tablet keeps mirroring across network hiccups, receiver restarts and size
+changes without asking the user to share again.
+
+**Sender: two lifetimes.**
+- `ProjectionHost` lives as long as the `MediaProjection`. It owns:
+  - the **single** VirtualDisplay (Android 14+ allows one `createVirtualDisplay` per projection,
+    and a consent token is single-use);
+  - audio capture and the share scope (both decided once, ADR-009);
+  - the `BitratePolicy`;
+  - the current source size.
+- `StreamLink` is one TCP connection: socket, handshake, encoder, `SendQueue`, writer, reader and
+  `ClockSync`.
+- Between links the VirtualDisplay is detached with `setSurface(null)` before the encoder closes.
+  Captured audio is dropped (its sink points at the streaming link's queue, or nowhere), and
+  `AUDIO_CONFIG` is sent again on each link.
+
+**Reconnection.**
+- The existing `SessionStateMachine` drives the loop. Backoff is 250 ms, then 500 ms (capped).
+  Retries use a 1 s connect and a 2 s handshake timeout (the receiver may first have to preempt
+  its previous session).
+- It gives up when one outage lasts 30 s, counted from the first failure since the last
+  *healthy* link: one whose receiver reported decoded frames (STATS). A handshake alone does not
+  reset the outage, so a receiver that accepts and then fails cannot keep the loop alive forever.
+- A first connection that never completed its handshake is not retried: a receiver that never
+  answered is a user error. Once one handshake succeeded, later failures are retried.
+- The tablet shows "Reconnecting…" while it keeps the projection.
+- `ReconnectPolicy.classify` decides between giving up (*final*) and trying again (*retry*):
+
+| Cause | Decision |
+|---|---|
+| Local stop (user, projection revoked or stopped, including screen lock on Android 15 QPR1+) | Final (decided by the host) |
+| Receiver `BYE(USER_STOPPED)`, `BYE(INCOMPATIBLE)`, `BYE(PROJECTION_REVOKED)`, incompatible handshake | Final |
+| Encoder failure | Retry, at most 3 times per session |
+| Receiver `BYE(NORMAL / BUSY / ERROR)`, I/O error, read timeout | Retry |
+
+**Receiver.**
+- A **3 s read timeout** after the handshake: the sender PINGs every second, so 3 s of silence
+  means it is gone.
+- **Preemption** in `ReceiverServer`: a new connection from the active session's own address
+  replaces that session instead of being refused as `BUSY`. Its old link may still look alive for
+  up to 3 s. The new session first completes its handshake (so the sender's handshake timeout
+  never waits on it), then waits up to 1.5 s for the old one to release its decoder (a latch counted
+  right after the decoder closes), since a Surface takes one codec at a time.
+- Leaving the receiver (Back) sends `BYE(USER_STOPPED)`, so the tablet stops. Backgrounding it
+  sends `BYE(NORMAL)`, so the tablet keeps retrying and resumes if the TV app returns within 30 s.
+
+**Size changes (rotation, one-app window resize).**
+- *Source.* On API 34+ the only source is `MediaProjection.Callback.onCapturedContentResize`
+  (entire screen and one app). Below 34 it is a `DisplayListener` on the default display.
+- *Debounce.* Changes equal to the current size are ignored. Others are debounced 300 ms on the
+  host's `HostCtl` thread.
+- *Sender swap* (under the host's video lock, so it never interleaves with a link starting or
+  ending):
+  1. `CodecNegotiator.refit` computes the new size (same codec and fps) and the policy refits its
+     ceiling.
+  2. `setSurface(null)` → `encoder.close()` → `queue.resetVideo(requestKeyframe = false)`.
+  3. `VIDEO_RECONFIG` is queued in the **video lane**, so it is ordered after old frames and never
+     dropped.
+  4. `VirtualDisplay.resize` → new encoder at the policy's current bitrate → `setSurface(new)`.
+  5. A rotation during a handshake is applied right after it.
+- *Receiver rebuild.* On VIDEO_RECONFIG the receiver:
+  1. closes the delay line and the decoder;
+  2. creates a new decoder, plus a new delay line sized for the new bitrate;
+  3. keeps the lip-sync delay and the A/V sync state;
+  4. updates the screen's aspect ratio.
+
+  Video still in the delay line (up to D ms of the old size) is discarded.
+
+*Rejected:*
+- re-running consent on reconnect: it needs the user, and tokens are single-use;
+- a dummy 1×1 SurfaceTexture between links: a never-drained consumer stalls the producer;
+- a `ConnectivityManager.NetworkCallback` to retry as soon as Wi-Fi returns: deferred; the 500 ms
+  backoff already reconnects within ~1 s of the network coming back;
+- relying on adaptive playback for size changes: unreliable on Fire TV, and it mixes sizes in the
+  delay line.

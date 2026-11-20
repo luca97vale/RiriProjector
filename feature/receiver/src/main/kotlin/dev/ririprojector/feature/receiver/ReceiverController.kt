@@ -11,6 +11,7 @@ import android.view.Surface
 import dev.ririprojector.media.AndroidCodecs
 import dev.ririprojector.media.AudioPlayer
 import dev.ririprojector.media.AvSync
+import dev.ririprojector.media.CaptureLatency
 import dev.ririprojector.media.CodecCatalog
 import dev.ririprojector.media.JitterBuffer
 import dev.ririprojector.media.KeyframeRequestLimiter
@@ -22,6 +23,7 @@ import dev.ririprojector.net.Handshake
 import dev.ririprojector.net.HandshakeException
 import dev.ririprojector.net.ReceiverEndpoint
 import dev.ririprojector.net.ReceiverServer
+import dev.ririprojector.net.WifiLatencyLock
 import dev.ririprojector.net.nsd.NsdPublisher
 import dev.ririprojector.protocol.ByeReason
 import dev.ririprojector.protocol.ControlMessage
@@ -36,6 +38,7 @@ import dev.ririprojector.protocol.model.SyncMode
 import java.io.Closeable
 import java.io.IOException
 import java.net.BindException
+import java.net.SocketTimeoutException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -69,6 +72,10 @@ data class ReceiverStats(
     val avOffsetMs: Int? = null,
     /** Lip-sync video delay currently applied (0 in low-latency mode). */
     val videoDelayMs: Int = 0,
+    /** Capture on the tablet to shown on this screen (includes the lip-sync delay); null until known. */
+    val latency: CaptureLatency.Snapshot? = null,
+    /** Diagnostics line: capture→stage delays for audio and video plus the audio buffers. */
+    val pipeline: String = "",
 )
 
 /**
@@ -94,6 +101,7 @@ class ReceiverController(
     private val catalog: CodecCatalog by lazy { AndroidCodecs.catalog() }
     private var server: ReceiverServer? = null
     private var nsd: Closeable? = null
+    private var wifiLock: WifiLatencyLock? = null
 
     @Volatile private var session: Session? = null
 
@@ -112,6 +120,7 @@ class ReceiverController(
             server = s
             bindAttempts = 0
             nsd = NsdPublisher(context).publish(deviceName, s.boundPort)
+            wifiLock = WifiLatencyLock.acquire(context, "Riri/Receiver")
             showWaiting()
         } catch (e: BindException) {
             // Another instance (or a previous session) may still be releasing the port.
@@ -128,14 +137,22 @@ class ReceiverController(
         }
     }
 
+    /**
+     * BYE reason when this screen goes away: USER_STOPPED when the user left the receiver (the tablet
+     * stops), NORMAL when it was only backgrounded (the tablet keeps retrying for 30 s, ADR-010).
+     */
+    @Volatile var leaveReason: ByeReason = ByeReason.NORMAL
+
     fun stop() {
         main.removeCallbacks(retryStart)
         bindAttempts = 0
         runCatching { nsd?.close() }
         nsd = null
-        session?.endAndAwait(ByeReason.NORMAL)
+        session?.endAndAwait(leaveReason)
         server?.close()
         server = null
+        wifiLock?.close()
+        wifiLock = null
     }
 
     /**
@@ -147,7 +164,7 @@ class ReceiverController(
             surface = value
             if (value != null) surfaceReady.signalAll()
         }
-        if (value == null) session?.endAndAwait(ByeReason.NORMAL)
+        if (value == null) session?.endAndAwait(leaveReason)
     }
 
     private fun awaitSurface(timeoutMs: Long): Surface? = surfaceLock.withLock {
@@ -161,7 +178,8 @@ class ReceiverController(
     }
 
     private fun onConnection(connection: Connection) {
-        val s = Session(connection)
+        // A reconnecting tablet may replace its own stale session (ReceiverServer preemption).
+        val s = Session(connection, previous = session)
         session = s
         Thread({ s.run() }, "Riri/Session").apply {
             priority = Thread.MAX_PRIORITY
@@ -169,14 +187,29 @@ class ReceiverController(
         }
     }
 
-    private inner class Session(private val connection: Connection) {
+    private inner class Session(private val connection: Connection, private var previous: Session? = null) {
         private val outbox = LinkedBlockingQueue<ControlMessage>(OUTBOX_CAPACITY)
         private val keyframes = KeyframeRequestLimiter()
         private val done = CountDownLatch(1)
 
+        /** Counted down once this session's decoder no longer holds the Surface. */
+        private val videoReleased = CountDownLatch(1)
+
         @Volatile private var decoder: VideoDecoder? = null
 
         private val avSync = AvSync()
+
+        /** Capture→shown latency; fed by the codec thread, clock set by PINGs. */
+        private val captureLatency = CaptureLatency()
+
+        private var lastAudioPtsUs = 0L
+        private var audioPacketUs = 10_000L
+
+        // Diagnostics: audio missing from the stream (pts jumps), cumulative.
+        @Volatile private var audioHoleUs = 0L
+
+        /** Receiver minus sender clock from the latest PING, null while unknown (diagnostics). */
+        @Volatile private var clockOffsetUs: Long? = null
 
         /** Lip-sync only (ADR-007): video waits here for its audio. Null in low-latency mode. */
         @Volatile private var delayLine: VideoDelayLine? = null
@@ -207,49 +240,27 @@ class ReceiverController(
             Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY)
             var writer: Thread? = null
             try {
+                // Handshake first: the reconnecting sender is waiting for HELLO (ADR-010).
                 val p = Handshake.asReceiver(connection, hello())
                 params = p
                 Log.i(TAG, "session ${p.sessionId} from ${connection.remoteAddress}: ${p.video}")
                 writer = startWriter()
-                val target = awaitSurface(SURFACE_WAIT_MS)
-                if (target == null || ended) throw IOException("no surface")
-                onStreamStarted(p)
-                val best = catalog.best(p.video.codec, encoder = false) ?: throw IOException("no decoder")
-                decoderName = best.name
-                if (Build.VERSION.SDK_INT >= 30) {
-                    runCatching {
-                        target.setFrameRate(p.video.fps.toFloat(), Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE)
+                // One codec per Surface: let a preempted session release its decoder first.
+                previous?.let {
+                    if (!it.videoReleased.await(PREEMPT_WAIT_MS, TimeUnit.MILLISECONDS)) {
+                        Log.w(TAG, "previous session slow to release its decoder")
                     }
                 }
-                val dec =
-                    VideoDecoder(
-                        codecName = best.name,
-                        config = p.video,
-                        surface = target,
-                        lowLatencySupported = best.lowLatency,
-                        onKeyframeNeeded = ::requestKeyframe,
-                        onFatalError = { end(ByeReason.ERROR) },
-                        onFrameRendered = avSync::onVideoShown,
-                    ).start()
-                decoder = dec
-                if (p.syncMode == SyncMode.LIP_SYNC) {
-                    delayLine =
-                        VideoDelayLine(
-                            capacityBytes = VideoDelayLine.capacityFor(p.video.bitrateBps, MAX_VIDEO_DELAY_MS),
-                            sink = { src, off, len, pts, cfg, key -> dec.submit(src, off, len, pts, cfg, key) },
-                            onOverflow = {
-                                Log.w(TAG, "video delay line overflow: dropping to the next keyframe")
-                                requestKeyframe()
-                            },
-                            onError = {
-                                Log.w(TAG, "video delay line failed: ${it.message}")
-                                end(ByeReason.ERROR)
-                            },
-                        ).start()
-                }
+                previous = null
+                val target = awaitSurface(SURFACE_WAIT_MS)
+                // Preempted itself while waiting: leave the Surface to the newer session.
+                if (connection.isClosed) throw IOException("preempted")
+                if (target == null || ended) throw IOException("no surface")
+                videoSurface = target
+                startVideo(p)
                 Log.i(TAG, "sync mode ${p.syncMode}")
                 _state.value =
-                    ReceiverState.Streaming(p, connection.remoteAddress, ReceiverStats(decoderName = best.name))
+                    ReceiverState.Streaming(p, connection.remoteAddress, ReceiverStats(decoderName = decoderName))
                 readLoop()
             } catch (e: HandshakeException) {
                 Log.w(TAG, "handshake failed: ${e.message}")
@@ -260,29 +271,126 @@ class ReceiverController(
                 }
             } finally {
                 ended = true
+                // Video first: a session preempting this one waits for the Surface to be free.
+                delayLine?.close() // before the decoder: it is the decoder's feeding thread
+                delayLine = null
+                decoder?.close()
+                decoder = null
+                videoReleased.countDown()
                 if (writer != null) {
                     writer.join(WRITER_DRAIN_MS) // lets a queued BYE go out
                     writer.interrupt()
                 }
                 connection.close()
-                delayLine?.close() // before the decoder: it is the decoder's feeding thread
-                delayLine = null
-                decoder?.close()
-                decoder = null
                 player?.close()
                 player = null
                 jitter = null
                 server?.sessionEnded(connection)
-                if (session === this) session = null
-                showWaiting()
+                // A preempting session may already be streaming: do not overwrite its state.
+                if (session === this) {
+                    session = null
+                    showWaiting()
+                }
                 done.countDown()
             }
         }
 
+        private var videoSurface: Surface? = null
+
+        /**
+         * Overlay diagnostics, once per second. Line 1: ms after capture on the tablet when video and
+         * audio arrive here and reach the screen / the speaker (needs the PING clock offset). Line 2:
+         * the audio jitter buffer (level, low-water/target, largest arrival gap), the AudioTrack
+         * queue, audio missing at the source, and audio discarded / frames corrected by the buffer.
+         */
+        private fun pipeline(jb: JitterBuffer?): String {
+            val offset = clockOffsetUs ?: return ""
+            val s = avSync.stages()
+            fun ms(v: Long?) = v?.let { ((it - offset) / 1000).toString() } ?: "-"
+            val stages =
+                "video arrive ${ms(s.videoArrived)} shown ${ms(s.videoShown)} · " +
+                    "audio arrive ${ms(s.audioArrived)} played ${ms(s.audioPlayed)}"
+            if (jb == null) return stages
+            return "$stages\naudio buffer ${jb.bufferedMs} ms, low ${jb.lowWaterMs}/${jb.targetMs}, " +
+                "gap ${jb.peakGapMs} · track ${player?.trackQueuedMs} · missing ${audioHoleUs / 1000} · " +
+                "discarded ${jb.droppedMs} · corrected ${jb.driftFrames}"
+        }
+
+        /**
+         * Creates the decoder (and, in lip-sync, the delay line in front of it) for [p]'s video.
+         * Session thread only: at the start and on VIDEO_RECONFIG.
+         */
+        private fun startVideo(p: StreamParams) {
+            val target = videoSurface ?: throw IOException("no surface")
+            onStreamStarted(p) // the activity sizes the view to the stream's aspect ratio
+            val best = catalog.best(p.video.codec, encoder = false) ?: throw IOException("no decoder")
+            decoderName = best.name
+            if (Build.VERSION.SDK_INT >= 30) {
+                runCatching {
+                    target.setFrameRate(p.video.fps.toFloat(), Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE)
+                }
+            }
+            val dec =
+                VideoDecoder(
+                    codecName = best.name,
+                    config = p.video,
+                    surface = target,
+                    lowLatencySupported = best.lowLatency,
+                    onKeyframeNeeded = ::requestKeyframe,
+                    onFatalError = { end(ByeReason.ERROR) },
+                    onFrameRendered = { pts, shownAt ->
+                        avSync.onVideoShown(pts, shownAt)
+                        captureLatency.onShown(pts, shownAt)
+                    },
+                ).start()
+            decoder = dec
+            if (p.syncMode == SyncMode.LIP_SYNC) {
+                delayLine =
+                    VideoDelayLine(
+                        capacityBytes = VideoDelayLine.capacityFor(p.video.bitrateBps, MAX_VIDEO_DELAY_MS),
+                        sink = { src, off, len, pts, cfg, key -> dec.submit(src, off, len, pts, cfg, key) },
+                        onOverflow = {
+                            Log.w(TAG, "video delay line overflow: dropping to the next keyframe")
+                            requestKeyframe()
+                        },
+                        onError = {
+                            Log.w(TAG, "video delay line failed: ${it.message}")
+                            end(ByeReason.ERROR)
+                        },
+                    ).start()
+            }
+        }
+
+        /**
+         * The tablet rotated or the shared app resized (VIDEO_RECONFIG, in order with video): rebuild
+         * the decoder for the new size. The lip-sync delay and A/V sync state are kept; video still
+         * waiting in the delay line belongs to the old size and is discarded.
+         */
+        private fun reconfigureVideo(msg: ControlMessage.VideoReconfig) {
+            val old = params ?: return
+            val p = old.copy(video = msg.video)
+            Log.i(TAG, "video reconfig #${msg.generation}: ${old.video.width}x${old.video.height} -> ${p.video}")
+            delayLine?.close()
+            delayLine = null
+            decoder?.close()
+            decoder = null
+            params = p
+            startVideo(p)
+            _state.value =
+                ReceiverState.Streaming(p, connection.remoteAddress, ReceiverStats(decoderName = decoderName))
+        }
+
         private fun readLoop() {
             val reader = connection.reader
+            connection.setReadTimeout(READ_TIMEOUT_MS)
             while (!ended) {
-                val pk = reader.read() ?: return
+                val pk =
+                    try {
+                        reader.read() ?: return
+                    } catch (e: SocketTimeoutException) {
+                        Log.w(TAG, "sender silent for $READ_TIMEOUT_MS ms: ending the session")
+                        throw e
+                    }
                 bytesReceived += pk.payloadLength + HEADER_BYTES
                 when (pk.type) {
                     MessageType.CONFIG, MessageType.FRAME -> {
@@ -296,6 +404,8 @@ class ReceiverController(
                         }
                     }
 
+                    MessageType.VIDEO_RECONFIG -> reconfigureVideo(pk.decodeControl() as ControlMessage.VideoReconfig)
+
                     MessageType.AUDIO_CONFIG -> {
                         val setup = pk.decodeControl() as ControlMessage.AudioSetup
                         startAudio(setup.config)
@@ -303,12 +413,24 @@ class ReceiverController(
 
                     MessageType.AUDIO_FRAME -> {
                         avSync.onAudioArrived(pk.ptsOrSeq, System.nanoTime() / 1000)
+                        // Audio lost before it was sent (capture overrun): a pts jump.
+                        val expectedPts = lastAudioPtsUs + audioPacketUs
+                        if (lastAudioPtsUs != 0L && pk.ptsOrSeq - expectedPts > PTS_HOLE_TOLERANCE_US) {
+                            audioHoleUs += pk.ptsOrSeq - expectedPts
+                        }
+                        lastAudioPtsUs = pk.ptsOrSeq
                         jitter?.push(pk.payload, 0, pk.payloadLength, pk.ptsOrSeq)
                     }
 
                     MessageType.PING -> {
                         val ping = pk.decodeControl() as ControlMessage.Ping
-                        outbox.offer(ControlMessage.Pong(ping.senderTimeUs, nowUs()))
+                        clockOffsetUs = ping.offsetUs.takeIf { it != ControlMessage.NO_OFFSET }
+                        captureLatency.setClock(
+                            ping.offsetUs.takeIf { it != ControlMessage.NO_OFFSET },
+                            ping.rttUs,
+                        )
+                        val now = nowUs()
+                        outbox.offer(ControlMessage.Pong(ping.senderTimeUs, receiverRxUs = now, receiverTxUs = now))
                     }
 
                     MessageType.BYE -> return
@@ -327,6 +449,7 @@ class ReceiverController(
                 Log.w(TAG, "unsupported audio codec ${config.codec}")
                 return
             }
+            audioPacketUs = config.frameDurationUs.toLong()
             val buffer = JitterBuffer(config.sampleRateHz, config.channels)
             avSync.reset()
             delayResetPending = true
@@ -355,7 +478,9 @@ class ReceiverController(
                     val wait = (nextStatsAt - SystemClock.elapsedRealtime()).coerceAtLeast(0)
                     val msg = outbox.poll(wait, TimeUnit.MILLISECONDS)
                     if (msg != null) {
-                        connection.writer.writeControl(msg)
+                        // NTP t3: stamped right before writing, so outbox queuing is excluded.
+                        val out = if (msg is ControlMessage.Pong) msg.copy(receiverTxUs = nowUs()) else msg
+                        connection.writer.writeControl(out)
                         connection.writer.flush()
                         if (msg is ControlMessage.Bye) break
                         continue
@@ -378,7 +503,8 @@ class ReceiverController(
                     }
                     val stats =
                         ReceiverStats(
-                            fps = (d.decodedFrames - lastFrames) / secs,
+                            // A reconfig restarts the decoder count.
+                            fps = (d.decodedFrames - lastFrames).coerceAtLeast(0) / secs,
                             bitrateBps = ((bytes - lastBytes) * 8 / secs).toLong(),
                             dropped = d.droppedFrames,
                             decodeMeanUs = d.latencyMeanUs,
@@ -389,6 +515,8 @@ class ReceiverController(
                             audioUnderruns = jb?.underruns ?: 0,
                             avOffsetMs = offsetUs?.let { (it / 1000).toInt() },
                             videoDelayMs = (videoDelayUs / 1000).toInt(),
+                            latency = captureLatency.snapshot(),
+                            pipeline = pipeline(jb),
                         )
                     if (++ticks % DIAG_EVERY_TICKS == 0 && jb != null) {
                         Log.d(
@@ -411,11 +539,13 @@ class ReceiverController(
                             decodeLatencyMeanUs = d.latencyMeanUs.toInt(),
                             decodeLatencyP95Us = d.latencyP95Us.toInt(),
                             audioUnderruns = stats.audioUnderruns,
-                            avOffsetUs = (offsetUs ?: 0).coerceIn(
-                                Int.MIN_VALUE.toLong(),
-                                Int.MAX_VALUE.toLong(),
-                            ).toInt(),
+                            avOffsetUs = offsetUs?.let { clampInt(it, Int.MIN_VALUE + 1L) }
+                                ?: ControlMessage.UNKNOWN_SIGNED,
                             videoDelayUs = videoDelayUs.toInt(),
+                            captureToShownUs = stats.latency?.let { clampInt(it.meanUs, 0) }
+                                ?: ControlMessage.UNKNOWN,
+                            captureToShownP95Us = stats.latency?.let { clampInt(it.p95Us, 0) }
+                                ?: ControlMessage.UNKNOWN,
                         ),
                     )
                     connection.writer.flush()
@@ -473,6 +603,15 @@ class ReceiverController(
         const val DIAG_EVERY_TICKS = 5
         const val MAX_VIDEO_DELAY_MS = 300
 
-        fun nowUs() = SystemClock.elapsedRealtimeNanos() / 1_000
+        /** The sender PINGs every second: 3 s of silence means it is gone (ADR-010). */
+        const val READ_TIMEOUT_MS = 3_000
+        const val PTS_HOLE_TOLERANCE_US = 2_000L
+        const val PREEMPT_WAIT_MS = 1_500L
+
+        /** Keeps [min] off the wire's sentinel values. */
+        fun clampInt(value: Long, min: Long): Int = value.coerceIn(min, Int.MAX_VALUE.toLong()).toInt()
+
+        /** `CLOCK_MONOTONIC` µs: the clock of video pts and of PING/PONG (protocol v3). */
+        fun nowUs() = System.nanoTime() / 1_000
     }
 }

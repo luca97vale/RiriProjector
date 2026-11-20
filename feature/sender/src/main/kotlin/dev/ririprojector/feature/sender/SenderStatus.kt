@@ -23,6 +23,9 @@ data class SenderStats(
     val avOffsetMs: Int = 0,
     /** Lip-sync video delay the receiver applies (0 in low-latency mode). */
     val receiverVideoDelayMs: Int = 0,
+    /** Capture here to shown on the receiver, mean and p95; null until the receiver knows it. */
+    val latencyMs: Int? = null,
+    val latencyP95Ms: Int? = null,
     /** Single-app sharing: the shared app is not on screen, so the receiver shows nothing. */
     val contentHidden: Boolean = false,
 )
@@ -33,6 +36,9 @@ sealed interface SenderState {
     data class Connecting(val target: ReceiverEndpoint) : SenderState
 
     data class Streaming(val target: ReceiverEndpoint, val params: StreamParams, val stats: SenderStats) : SenderState
+
+    /** The link dropped; the projection is kept and a new connection is being tried (ADR-010). */
+    data class Reconnecting(val target: ReceiverEndpoint, val attempt: Int) : SenderState
 
     data class Ended(val message: String?) : SenderState
 }

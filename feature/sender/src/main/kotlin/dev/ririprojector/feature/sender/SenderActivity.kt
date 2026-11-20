@@ -138,7 +138,8 @@ class SenderActivity : ComponentActivity() {
             MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     val state by SenderStatus.state.collectAsStateWithLifecycle()
-                    val active = state is SenderState.Connecting || state is SenderState.Streaming
+                    val active =
+                        state !is SenderState.Idle && state !is SenderState.Ended
                     // No mDNS browsing while mirroring (airtime) or while in the background.
                     val found by remember(active) { if (active) flowOf(emptyList()) else receivers }
                         .collectAsStateWithLifecycle(initialValue = emptyList())
@@ -246,7 +247,8 @@ private fun SenderScreen(
                 syncMode = sync,
             )
         }
-    val active = state is SenderState.Connecting || state is SenderState.Streaming
+    val active =
+        state !is SenderState.Idle && state !is SenderState.Ended
 
     Column(
         // targetSdk 35+ is edge-to-edge: keep content clear of the status and navigation bars.
@@ -336,6 +338,11 @@ private fun StatusCard(state: SenderState, onStop: () -> Unit) {
             when (state) {
                 SenderState.Idle -> Text(stringResource(R.string.sender_status_idle))
 
+                is SenderState.Reconnecting -> {
+                    Text(stringResource(R.string.sender_status_reconnecting, state.target.name))
+                    OutlinedButton(onClick = onStop) { Text(stringResource(R.string.sender_stop)) }
+                }
+
                 is SenderState.Connecting -> {
                     Text(stringResource(R.string.sender_status_connecting, state.target.name))
                     OutlinedButton(onClick = onStop) { Text(stringResource(R.string.sender_stop)) }
@@ -381,6 +388,12 @@ private fun StatusCard(state: SenderState, onStop: () -> Unit) {
                         },
                         style = MaterialTheme.typography.bodySmall,
                     )
+                    if (s.latencyMs != null) {
+                        Text(
+                            stringResource(R.string.sender_latency, s.latencyMs, s.latencyP95Ms ?: s.latencyMs),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                     if (s.receiverVideoDelayMs > 0) {
                         Text(
                             stringResource(R.string.sender_video_delay, s.receiverVideoDelayMs),
