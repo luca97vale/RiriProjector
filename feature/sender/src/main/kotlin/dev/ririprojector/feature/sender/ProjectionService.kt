@@ -30,12 +30,12 @@ import dev.ririprojector.protocol.model.VideoCodec
 
 /**
  * Foreground service of type `mediaProjection` that owns the [MediaProjection] and the
- * [SenderSession] (Android 14+ rules: `startForeground` before `getMediaProjection`, callback
+ * [ProjectionHost] (Android 14+ rules: `startForeground` before `getMediaProjection`, callback
  * registered before the VirtualDisplay, one projection token per session).
  */
 class ProjectionService : Service() {
     private var projection: MediaProjection? = null
-    private var session: SenderSession? = null
+    private var session: ProjectionHost? = null
     private val main = Handler(Looper.getMainLooper())
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -92,7 +92,7 @@ class ProjectionService : Service() {
         val consentResultAtMs = intent.getLongExtra(EXTRA_CONSENT_RESULT_AT, System.currentTimeMillis())
         val appContext = applicationContext
         val s =
-            SenderSession(
+            ProjectionHost(
                 target = target,
                 preferences = preferencesFrom(intent),
                 projection = mp,
