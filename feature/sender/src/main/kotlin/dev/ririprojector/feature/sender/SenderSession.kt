@@ -11,6 +11,7 @@ import android.util.Log
 import dev.ririprojector.media.AndroidCodecs
 import dev.ririprojector.media.AudioCapture
 import dev.ririprojector.media.VideoEncoder
+import dev.ririprojector.net.BitratePolicy
 import dev.ririprojector.net.ClockSync
 import dev.ririprojector.net.Connection
 import dev.ririprojector.net.Handshake
@@ -67,8 +68,39 @@ class SenderSession(
     @Volatile private var endMessage: String? = null
 
     @Volatile private var contentHidden = false
-    private val queue = SendQueue(onKeyframeNeeded = { encoder?.requestKeyframe() })
+
+    /** Created after the handshake (its ceiling is the negotiated bitrate). */
+    @Volatile private var bitrate: BitratePolicy? = null
+
+    /** Cumulative receiver drops from the latest STATS, sampled by the bitrate tick. */
+    @Volatile private var receiverDropped = 0
+
+    private val queue =
+        SendQueue(
+            onKeyframeNeeded = {
+                // Lower the bitrate first, so the recovery keyframe is already smaller.
+                bitrate?.onVideoDrop(SystemClock.elapsedRealtime())?.let { applyBitrate(it, "send queue drop") }
+                encoder?.requestKeyframe()
+            },
+        )
     private val clock = ClockSync()
+
+    private fun applyBitrate(bps: Int, why: String) {
+        encoder?.setBitrate(bps)
+        Log.i(TAG, "bitrate ${bps / 1000} kbps ($why)")
+    }
+
+    /** Once per second from the writer thread. */
+    private fun tickBitrate(nowMs: Long) {
+        val policy = bitrate ?: return
+        val signals =
+            BitratePolicy.Signals(
+                oldestQueuedVideoAgeUs = queue.oldestQueuedVideoAgeUs(nowUs()),
+                receiverDropped = receiverDropped,
+                lastRttUs = clock.lastRttUs,
+            )
+        policy.tick(nowMs, signals)?.let { applyBitrate(it, "tick $signals") }
+    }
 
     fun start() {
         Thread({ run() }, "Riri/SenderSession").apply {
@@ -125,6 +157,7 @@ class SenderSession(
             val (hello, params) = Handshake.asSender(conn, caps, preferences, Random.nextLong() and Long.MAX_VALUE)
             Log.i(TAG, "streaming to ${hello.deviceName} (${target.host}): ${params.video}")
             val codec = catalog.best(params.video.codec, encoder = true) ?: throw IOException("no encoder")
+            bitrate = BitratePolicy(ceilingBps = params.video.bitrateBps, nowMs = SystemClock.elapsedRealtime())
             val enc =
                 VideoEncoder(
                     codec = codec,
@@ -228,10 +261,7 @@ class SenderSession(
             when (p.type) {
                 MessageType.REQUEST_KEYFRAME -> encoder?.requestKeyframe()
 
-                MessageType.BITRATE_HINT -> {
-                    val hint = p.decodeControl() as ControlMessage.BitrateHint
-                    encoder?.setBitrate(hint.bitrateBps.coerceIn(MIN_BITRATE_BPS, MAX_BITRATE_BPS))
-                }
+                // BITRATE_HINT is ignored since M6: the sender's BitratePolicy decides (ADR-004).
 
                 MessageType.PONG -> {
                     val pong = p.decodeControl() as ControlMessage.Pong
@@ -240,6 +270,7 @@ class SenderSession(
 
                 MessageType.STATS -> {
                     val s = p.decodeControl() as ControlMessage.Stats
+                    receiverDropped = s.droppedFrames
                     val enc = encoder ?: continue
                     val now = SystemClock.elapsedRealtime()
                     val secs = (now - lastAt).coerceAtLeast(1) / 1000.0
@@ -302,6 +333,7 @@ class SenderSession(
                         ),
                     )
                     nextPingAt = now + PING_INTERVAL_MS
+                    tickBitrate(now)
                 }
                 val packet = queue.take(PING_INTERVAL_MS) ?: if (ended) break else continue
                 try {
@@ -335,8 +367,6 @@ class SenderSession(
         const val WRITER_DRAIN_MS = 300L
         const val BYE_GRACE_MS = 300L
         const val RECEIVER_SILENCE_MS = 3 * PING_INTERVAL_MS.toInt()
-        const val MIN_BITRATE_BPS = 1_000_000
-        const val MAX_BITRATE_BPS = 40_000_000
         const val DIAG_EVERY_STATS = 5
 
         /** `CLOCK_MONOTONIC` µs: the clock of video pts and of PING/PONG (protocol v3). */
