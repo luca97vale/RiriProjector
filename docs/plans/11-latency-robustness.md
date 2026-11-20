@@ -166,7 +166,8 @@ malformed tests for each.
 ## Deviations (recorded after implementation and review)
 - The bitrate tick runs on the sender's writer thread (once per second, next to PING), not on a
   separate timer; the resulting bitrate is applied on the host's `HostCtl` thread.
-- The first link is never retried: a receiver that never answered is a user error.
+- A first link that never completed its handshake is not retried (a receiver that never answered
+  is a user error); once one did, every later failure is retried within the outage window.
 - Encoder swaps, link start and link end are serialized by a `videoLock` in `ProjectionHost`
   instead of being confined to `HostCtl`, because the link's own thread starts the first encoder.
 - The receiver stamps PING `t2` when the message is decoded from the stream (not at socket read);
@@ -179,3 +180,6 @@ malformed tests for each.
 
 Follow-ups (not in this milestone): cancel an in-flight `connect` on stop; wake the old receiver
 writer immediately on preemption; an instrumented preemption test on device.
+- Deferred from the second review: a config+key IDR is still sent as CONFIG only, so the receiver
+  waits for the requested keyframe (sender requests one after each reconfigure; that doubles the
+  rotation IDR); the preemption latch covers one step back only (A→B→C with B failing early).

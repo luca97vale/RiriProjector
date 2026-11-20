@@ -237,6 +237,8 @@ class ReceiverController(
                 }
                 previous = null
                 val target = awaitSurface(SURFACE_WAIT_MS)
+                // Preempted itself while waiting: leave the Surface to the newer session.
+                if (connection.isClosed) throw IOException("preempted")
                 if (target == null || ended) throw IOException("no surface")
                 videoSurface = target
                 startVideo(p)

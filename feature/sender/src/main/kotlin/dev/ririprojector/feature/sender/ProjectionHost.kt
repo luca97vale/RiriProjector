@@ -205,7 +205,7 @@ internal class ProjectionHost(
         val machine = SessionStateMachine()
         machine.on(SessionEvent.Start(SystemClock.elapsedRealtime()))
         SenderStatus.set(SenderState.Connecting(target)) // later links keep showing "Reconnecting"
-        var everStreamed = false
+        var everStarted = false
         var encoderFailures = 0
         try {
             while (!stopRequested) {
@@ -213,15 +213,16 @@ internal class ProjectionHost(
                 link = l
                 if (stopRequested) break // stop() raced with the link creation
                 val end =
-                    if (everStreamed) {
-                        // The handshake timeout covers the receiver waiting for a preempted session.
+                    if (everStarted) {
                         l.run(RETRY_CONNECT_TIMEOUT_MS, RETRY_HANDSHAKE_TIMEOUT_MS)
                     } else {
                         l.run(SenderClient.DEFAULT_CONNECT_TIMEOUT_MS, Handshake.DEFAULT_TIMEOUT_MS)
                     }
                 link = null
+                // A link that got through the handshake is worth retrying even if it dropped before
+                // the first decoded frame; only a healthy one restarts the 30 s outage window.
+                if (end.streamed) everStarted = true
                 if (end.healthy) {
-                    everStreamed = true
                     machine.on(SessionEvent.Connected)
                     machine.on(SessionEvent.HandshakeCompleted)
                 }
@@ -229,7 +230,7 @@ internal class ProjectionHost(
                 if (end.encoderFailed) encoderFailures++
                 val incompatible = (end.cause as? HandshakeException)?.bye == ByeReason.INCOMPATIBLE
                 val decision = ReconnectPolicy.classify(end.peerBye, incompatible, end.encoderFailed, encoderFailures)
-                val fatal = !everStreamed || decision == ReconnectPolicy.Decision.FINAL
+                val fatal = !everStarted || decision == ReconnectPolicy.Decision.FINAL
                 val state = machine.on(SessionEvent.Failed(SystemClock.elapsedRealtime(), fatal)).state
                 if (state !is SessionState.Reconnecting) {
                     failure = end.failure
@@ -686,7 +687,10 @@ internal class ProjectionHost(
         const val RECEIVER_SILENCE_MS = 3 * PING_INTERVAL_MS.toInt()
         const val DIAG_EVERY_STATS = 5
 
-        /** Reconnecting: fail fast on connect; the handshake may wait for the receiver to free its decoder. */
+        /**
+         * Reconnecting: fail fast on connect. The receiver now handshakes before waiting for a preempted
+         * session's decoder, so that wait counts against [RECEIVER_SILENCE_MS], not this timeout.
+         */
         const val RETRY_CONNECT_TIMEOUT_MS = 1_000
         const val RETRY_HANDSHAKE_TIMEOUT_MS = 2_000
         const val RESIZE_DEBOUNCE_MS = 300L

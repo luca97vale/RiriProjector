@@ -14,7 +14,7 @@ RiriProjector reports two latencies. The glass-to-glass one is measured by hand.
 - The 4-timestamp PING/PONG exchange estimates the clock offset between the devices (ADR-003). The
   TV computes `shown − (pts + offset)` for every frame and reports the mean and p95 over the last
   ~120 frames (about 2 s at 60 fps; longer on a static screen, where frames are repeated less
-  often). Small clock-offset refinements keep the window; a jump over 2 ms restarts it.
+  often). Clock-offset refinements keep the window; a new link restarts it.
 - The error is at most ±RTT/2 (shown as ±Z).
 - In lip-sync mode the number includes the video delay D that keeps video aligned with sound. Both
   the overlay and the tablet show D separately.

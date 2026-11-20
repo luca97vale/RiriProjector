@@ -8,8 +8,8 @@ package dev.ririprojector.media
  *
  * Samples are stored without the offset (`shownAt − pts`) and the current offset is subtracted in
  * [snapshot] (mean and p95 are shift-invariant), so the small offset updates `ClockSync` makes
- * whenever it finds a lower-RTT sample keep the window; only a jump over [MAX_OFFSET_JUMP_US]
- * (e.g. the clocks really moved) clears it.
+ * whenever it finds a lower-RTT sample (often rtt/2, several ms on Wi-Fi) keep the window; it is
+ * cleared only when the estimate appears or goes away (a new link), or on [reset].
  *
  * Thread-safe: frames arrive on the codec thread, PINGs on the network thread, snapshots on the
  * control thread. Allocation-free.
@@ -25,7 +25,7 @@ class CaptureLatency(capacity: Int = 120) {
     @Synchronized
     fun setClock(offsetUs: Long?, rttUs: Int) {
         val old = this.offsetUs
-        if (offsetUs == null || old == null || kotlin.math.abs(offsetUs - old) > MAX_OFFSET_JUMP_US) raw.clear()
+        if (offsetUs == null || old == null) raw.clear()
         this.offsetUs = offsetUs
         this.rttUs = rttUs.coerceAtLeast(0)
     }
@@ -59,6 +59,5 @@ class CaptureLatency(capacity: Int = 120) {
 
     private companion object {
         const val MAX_PLAUSIBLE_US = 10_000_000L
-        const val MAX_OFFSET_JUMP_US = 2_000L
     }
 }

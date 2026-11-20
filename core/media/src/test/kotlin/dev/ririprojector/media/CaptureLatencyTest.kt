@@ -34,16 +34,18 @@ class CaptureLatencyTest {
     }
 
     @Test
-    fun `an offset jump discards samples taken with the old one`() {
+    fun `losing the clock estimate discards the window, refinements do not`() {
         val c = CaptureLatency()
         c.setClock(0, 1_000)
         c.onShown(0, 500_000)
+        c.setClock(null, 0) // new link: the old peer's samples are meaningless
+        assertThat(c.snapshot()).isNull()
         c.setClock(100_000, 1_000)
         c.onShown(0, 140_000)
         assertThat(c.snapshot()!!.meanUs).isEqualTo(40_000)
 
-        c.setClock(100_000, 3_000) // same offset, new rtt: samples kept
-        assertThat(c.snapshot()!!.meanUs).isEqualTo(40_000)
+        c.setClock(108_000, 16_000) // an 8 ms refinement on a noisy link: samples kept, shifted
+        assertThat(c.snapshot()!!.meanUs).isEqualTo(32_000)
 
         c.reset()
         assertThat(c.snapshot()).isNull()

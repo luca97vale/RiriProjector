@@ -242,7 +242,8 @@ changes without asking the user to share again.
 - It gives up when one outage lasts 30 s, counted from the first failure since the last
   *healthy* link: one whose receiver reported decoded frames (STATS). A handshake alone does not
   reset the outage, so a receiver that accepts and then fails cannot keep the loop alive forever.
-- The very first connection is not retried: a receiver that never answered is a user error.
+- A first connection that never completed its handshake is not retried: a receiver that never
+  answered is a user error. Once one handshake succeeded, later failures are retried.
 - The tablet shows "Reconnecting…" while it keeps the projection.
 - `ReconnectPolicy.classify` decides between giving up (*final*) and trying again (*retry*):
 
