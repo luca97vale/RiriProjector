@@ -28,6 +28,7 @@ import dev.ririprojector.net.SenderClient
 import dev.ririprojector.net.SessionEvent
 import dev.ririprojector.net.SessionState
 import dev.ririprojector.net.SessionStateMachine
+import dev.ririprojector.net.p2p.P2pPolicy
 import dev.ririprojector.protocol.ByeReason
 import dev.ririprojector.protocol.CodecNegotiator
 import dev.ririprojector.protocol.ControlMessage
@@ -92,6 +93,8 @@ internal class ProjectionHost(
     /** Shown when the receiver runs a different protocol version (localized by the caller). */
     private val versionMismatchText: String,
     private val onEnded: (message: String?) -> Unit,
+    /** How long one outage may last before giving up: 30 s over the router, 1.5 s over Wi-Fi Direct. */
+    private val outageLimitMs: Long = P2pPolicy.ROUTER_OUTAGE_LIMIT_MS,
 ) {
     @Volatile private var stopRequested = false
 
@@ -202,7 +205,7 @@ internal class ProjectionHost(
     private fun run() {
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY)
         var failure: String? = null
-        val machine = SessionStateMachine()
+        val machine = SessionStateMachine(giveUpAfterMs = outageLimitMs)
         machine.on(SessionEvent.Start(SystemClock.elapsedRealtime()))
         SenderStatus.set(SenderState.Connecting(target)) // later links keep showing "Reconnecting"
         var everStarted = false

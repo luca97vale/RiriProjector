@@ -276,7 +276,7 @@ targets in the same room. Open items for implementation:
    manifest; tests.
 3. [x] `feat(net)`: `P2pReceiverHost`, `P2pBrowser`, `P2pJoiner`/`P2pLink` for the chosen topology.
 4. [x] `feat(receiver)`: host ownership, waiting-screen text, link kind in the overlay.
-5. `feat(sender)`: button, discovery list, permission flow, `ProjectionService` scope, joining state
+5. [x] `feat(sender)`: button, discovery list, permission flow, `ProjectionService` scope, joining state
    and ownership, link loss, phase timestamps, status card.
 6. `docs`: ADR-011, cross-reference from ADR-006, device measurements, issue clarification;
    `coverMs` tuning only if the run needs it.

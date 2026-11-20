@@ -8,6 +8,7 @@ import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -49,6 +50,9 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.ririprojector.net.ReceiverEndpoint
 import dev.ririprojector.net.nsd.NsdBrowser
+import dev.ririprojector.net.p2p.P2pReceiver
+import dev.ririprojector.net.p2p.P2pReceiverBrowser
+import dev.ririprojector.net.p2p.WifiDirectSupport
 import dev.ririprojector.protocol.model.StreamPreferences
 import dev.ririprojector.protocol.model.SyncMode
 import dev.ririprojector.protocol.model.VideoCodec
@@ -63,6 +67,8 @@ class SenderActivity : ComponentActivity() {
         val prefs: StreamPreferences,
         /** Wall-clock time the consent dialog was shown: a shared app comes to the front after it. */
         val consentShownAtMs: Long = 0,
+        /** Wi-Fi Direct session: the receiver's P2P device address (ADR-011). */
+        val directAddress: String? = null,
     )
 
     private var pending: Pending? = null
@@ -81,12 +87,30 @@ class SenderActivity : ComponentActivity() {
                     p.prefs,
                     p.consentShownAtMs,
                     System.currentTimeMillis(),
+                    p.directAddress,
                 )
             }
         }
 
     private val notificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
+    /** The Wi-Fi Direct receiver list is open (discovery runs while it is, ADR-011). */
+    private var directSearch by mutableStateOf(false)
+
+    private val nearbyPermission =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+            if (result.values.all { it }) {
+                directSearch = true
+            } else {
+                Toast.makeText(this, R.string.sender_direct_permission, Toast.LENGTH_LONG).show()
+            }
+        }
+
+    private fun searchDirect() {
+        val missing = WifiDirectSupport.missingPermissions(this)
+        if (missing.isEmpty()) directSearch = true else nearbyPermission.launch(missing.toTypedArray())
+    }
 
     // Granted or not, continue: without it the session mirrors video only and says so.
     private val audioPermission =
@@ -95,7 +119,8 @@ class SenderActivity : ComponentActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         // The consent dialog may outlive this instance (rotation): keep what the result is for.
-        pending?.let { (t, p, consentShownAtMs) ->
+        pending?.let { p0 ->
+            val (t, p, consentShownAtMs) = p0
             outState.putString(KEY_HOST, t.host)
             outState.putInt(KEY_PORT, t.port)
             outState.putString(KEY_NAME, t.name)
@@ -106,6 +131,7 @@ class SenderActivity : ComponentActivity() {
             outState.putBoolean(KEY_AUDIO, p.audioEnabled)
             outState.putString(KEY_SYNC, p.syncMode.name)
             outState.putLong(KEY_CONSENT_SHOWN_AT, consentShownAtMs)
+            outState.putString(KEY_DIRECT, p0.directAddress)
         }
     }
 
@@ -124,7 +150,9 @@ class SenderActivity : ComponentActivity() {
                 audioEnabled = state.getBoolean(KEY_AUDIO, true),
                 syncMode = SyncMode.entries.firstOrNull { it.name == state.getString(KEY_SYNC) } ?: SyncMode.LIP_SYNC,
             )
-        if (target != null) pending = Pending(target, prefs, state.getLong(KEY_CONSENT_SHOWN_AT))
+        if (target != null) {
+            pending = Pending(target, prefs, state.getLong(KEY_CONSENT_SHOWN_AT), state.getString(KEY_DIRECT))
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -143,11 +171,39 @@ class SenderActivity : ComponentActivity() {
                     // No mDNS browsing while mirroring (airtime) or while in the background.
                     val found by remember(active) { if (active) flowOf(emptyList()) else receivers }
                         .collectAsStateWithLifecycle(initialValue = emptyList())
+                    // Wi-Fi Direct discovery scans off channel: only while its list is shown.
+                    val searching = directSearch && !active
+                    val directFound by remember(searching) {
+                        if (searching) {
+                            P2pReceiverBrowser(this).receivers().catch {
+                                emit(emptyList())
+                            }
+                        } else {
+                            flowOf(emptyList())
+                        }
+                    }.collectAsStateWithLifecycle(initialValue = emptyList())
+                    val direct by SenderStatus.direct.collectAsStateWithLifecycle()
                     SenderScreen(
                         receivers = found,
                         state = state,
-                        onStart = ::requestProjection,
+                        onStart = { target, prefs -> requestProjection(target, prefs) },
                         onStop = { ProjectionService.stop(this) },
+                        direct =
+                            DirectUi(
+                                available = WifiDirectSupport.usableAsSender(this),
+                                searching = searching,
+                                receivers = directFound,
+                                link = direct,
+                                onSearch = ::searchDirect,
+                                onStart = { r, prefs ->
+                                    directSearch = false // stop scanning before the group forms
+                                    requestProjection(
+                                        ReceiverEndpoint(r.name, ProjectionService.DIRECT_HOST, r.port),
+                                        prefs,
+                                        r,
+                                    )
+                                },
+                            ),
                     )
                 }
             }
@@ -157,8 +213,8 @@ class SenderActivity : ComponentActivity() {
     private fun granted(permission: String) = checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
 
     /** Usage access prompt (once), audio permission (when audio is on), then the consent dialog. */
-    private fun requestProjection(target: ReceiverEndpoint, prefs: StreamPreferences) {
-        pending = Pending(target, prefs)
+    private fun requestProjection(target: ReceiverEndpoint, prefs: StreamPreferences, direct: P2pReceiver? = null) {
+        pending = Pending(target, prefs, directAddress = direct?.deviceAddress)
         if (prefs.audioEnabled && shouldAskUsageAccess()) askUsageAccess() else continueRequest()
     }
 
@@ -218,9 +274,21 @@ class SenderActivity : ComponentActivity() {
         const val KEY_AUDIO = "pending.audio"
         const val KEY_SYNC = "pending.sync"
         const val KEY_CONSENT_SHOWN_AT = "pending.consentShownAt"
+        const val KEY_DIRECT = "pending.direct"
         const val KEY_USAGE_ACCESS_ASKED = "usageAccessAsked"
     }
 }
+
+/** The Wi-Fi Direct section of the screen (ADR-011). */
+private class DirectUi(
+    /** API 35+ with Wi-Fi Direct hardware; otherwise the section is hidden. */
+    val available: Boolean,
+    val searching: Boolean,
+    val receivers: List<P2pReceiver>,
+    val link: DirectLink?,
+    val onSearch: () -> Unit,
+    val onStart: (P2pReceiver, StreamPreferences) -> Unit,
+)
 
 @Composable
 private fun SenderScreen(
@@ -228,6 +296,7 @@ private fun SenderScreen(
     state: SenderState,
     onStart: (ReceiverEndpoint, StreamPreferences) -> Unit,
     onStop: () -> Unit,
+    direct: DirectUi,
 ) {
     var manual by rememberSaveable { mutableStateOf("") }
     var codec by rememberSaveable { mutableStateOf<String?>(null) }
@@ -260,7 +329,7 @@ private fun SenderScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Text(stringResource(R.string.sender_title), style = MaterialTheme.typography.headlineMedium)
-            StatusCard(state, onStop)
+            StatusCard(state, onStop, direct.link)
 
             Text(stringResource(R.string.sender_receivers), style = MaterialTheme.typography.titleMedium)
             if (receivers.isEmpty()) {
@@ -291,6 +360,39 @@ private fun SenderScreen(
                     parsed?.let { onStart(it, prefs) }
                 }) {
                     Text(stringResource(R.string.sender_connect))
+                }
+            }
+
+            if (direct.available) {
+                HorizontalDivider()
+                Text(stringResource(R.string.sender_direct_title), style = MaterialTheme.typography.titleMedium)
+                Text(stringResource(R.string.sender_direct_hint), style = MaterialTheme.typography.bodySmall)
+                if (!direct.searching) {
+                    Button(enabled = !active, onClick = direct.onSearch) {
+                        Text(stringResource(R.string.sender_direct_search))
+                    }
+                } else {
+                    if (direct.receivers.isEmpty()) {
+                        Text(
+                            stringResource(R.string.sender_direct_searching),
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                    direct.receivers.forEach { r ->
+                        Card(
+                            modifier = Modifier.fillMaxWidth().clickable(enabled = !active) {
+                                direct.onStart(r, prefs)
+                            },
+                        ) {
+                            Column(Modifier.padding(16.dp)) {
+                                Text(r.name, style = MaterialTheme.typography.titleMedium)
+                                Text(
+                                    stringResource(R.string.sender_direct_title),
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                        }
+                    }
                 }
             }
 
@@ -332,7 +434,7 @@ private fun SenderScreen(
 }
 
 @Composable
-private fun StatusCard(state: SenderState, onStop: () -> Unit) {
+private fun StatusCard(state: SenderState, onStop: () -> Unit, direct: DirectLink?) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             when (state) {
@@ -355,6 +457,7 @@ private fun StatusCard(state: SenderState, onStop: () -> Unit) {
                         stringResource(R.string.sender_status_streaming, state.target.name),
                         style = MaterialTheme.typography.titleMedium,
                     )
+                    direct?.let { Text(stringResource(R.string.sender_direct_link, it.frequencyMhz)) }
                     Text(
                         stringResource(
                             R.string.sender_stats,
