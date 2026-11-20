@@ -270,9 +270,9 @@ targets in the same room. Open items for implementation:
   the 10-minute acceptance run decides.
 
 ## Implementation steps
-1. `chore(spike)`: a debug-only harness, kept out of the release flow. Run A1/A2/B′, record the
+1. [x] `chore(spike)`: a debug-only harness, kept out of the release flow. Run A1/A2/B′, record the
    results here and pick the topology (and decide whether the TV needs a toggle).
-2. `feat(net)`: `P2pServiceRecord`, failure mapping, `linkKindOf`, outage limit per link kind,
+2. [x] `feat(net)`: `P2pServiceRecord`, failure mapping, `linkKindOf`, outage limit per link kind,
    manifest; tests.
 3. `feat(net)`: `P2pReceiverHost`, `P2pBrowser`, `P2pJoiner`/`P2pLink` for the chosen topology.
 4. `feat(receiver)`: host ownership, waiting-screen text, link kind in the overlay.
