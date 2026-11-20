@@ -37,6 +37,9 @@ sealed interface SenderState {
 
     data class Streaming(val target: ReceiverEndpoint, val params: StreamParams, val stats: SenderStats) : SenderState
 
+    /** The link dropped; the projection is kept and a new connection is being tried (ADR-010). */
+    data class Reconnecting(val target: ReceiverEndpoint, val attempt: Int) : SenderState
+
     data class Ended(val message: String?) : SenderState
 }
 

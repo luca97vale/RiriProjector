@@ -44,15 +44,21 @@ sealed interface SessionAction {
 data class Transition(val state: SessionState, val actions: List<SessionAction> = emptyList())
 
 /**
- * Pure transition function. Reconnection backoff 250/500/1000/2000 ms (capped) keeps a single
- * retry well within the 3 s reconnection target; gives up after [maxAttempts] consecutive failures.
+ * Pure transition function. Reconnection backoff 250 ms, then 500 ms (capped), so a lost receiver
+ * that comes back is found within 3 s (ADR-010). Gives up when an outage lasts [giveUpAfterMs]
+ * (measured from the first failure since the last successful handshake), or after [maxAttempts]
+ * consecutive failures.
  */
 class SessionStateMachine(
-    private val maxAttempts: Int = 10,
-    private val backoffMs: LongArray = longArrayOf(250, 500, 1_000, 2_000),
+    private val maxAttempts: Int = Int.MAX_VALUE,
+    private val backoffMs: LongArray = longArrayOf(250, 500),
+    private val giveUpAfterMs: Long = 30_000,
 ) {
     var state: SessionState = SessionState.Idle
         private set
+
+    /** First failure of the current outage; null while streaming. */
+    private var outageStartMs: Long? = null
 
     fun backoffFor(attempt: Int): Long = backoffMs[(attempt - 1).coerceIn(0, backoffMs.size - 1)]
 
@@ -75,8 +81,10 @@ class SessionStateMachine(
 
         s is SessionState.Connecting && e is SessionEvent.Connected -> Transition(SessionState.Handshaking(s.attempt))
 
-        s is SessionState.Handshaking && e is SessionEvent.HandshakeCompleted ->
+        s is SessionState.Handshaking && e is SessionEvent.HandshakeCompleted -> {
+            outageStartMs = null
             Transition(SessionState.Streaming, listOf(SessionAction.RequestKeyframe))
+        }
 
         e is SessionEvent.Failed && s.isActive() -> fail(s, e)
 
@@ -100,7 +108,8 @@ class SessionStateMachine(
                 is SessionState.Handshaking -> s.attempt + 1
                 else -> 1
             }
-        if (nextAttempt > maxAttempts) {
+        val outageStart = outageStartMs ?: e.nowMs.also { outageStartMs = it }
+        if (nextAttempt > maxAttempts || e.nowMs - outageStart >= giveUpAfterMs) {
             return Transition(SessionState.Closed(CloseReason.GAVE_UP), listOf(SessionAction.CloseConnection))
         }
         return Transition(

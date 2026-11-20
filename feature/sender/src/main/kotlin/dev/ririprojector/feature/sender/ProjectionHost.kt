@@ -14,12 +14,17 @@ import dev.ririprojector.media.AudioCapture
 import dev.ririprojector.media.VideoEncoder
 import dev.ririprojector.net.BitratePolicy
 import dev.ririprojector.net.ClockSync
+import dev.ririprojector.net.CloseReason
 import dev.ririprojector.net.Connection
 import dev.ririprojector.net.Handshake
 import dev.ririprojector.net.HandshakeException
 import dev.ririprojector.net.ReceiverEndpoint
+import dev.ririprojector.net.ReconnectPolicy
 import dev.ririprojector.net.SendQueue
 import dev.ririprojector.net.SenderClient
+import dev.ririprojector.net.SessionEvent
+import dev.ririprojector.net.SessionState
+import dev.ririprojector.net.SessionStateMachine
 import dev.ririprojector.protocol.ByeReason
 import dev.ririprojector.protocol.ControlMessage
 import dev.ririprojector.protocol.MessageType
@@ -119,6 +124,24 @@ class ProjectionHost(
         endMessage = message
         stopRequested = true
         link?.stop(reason)
+        synchronized(wake) { wake.notifyAll() } // ends a reconnect backoff early
+    }
+
+    private val wake = Object()
+
+    /** Host thread: sleeps until [atMs] (elapsedRealtime) or a stop. */
+    private fun waitUntil(atMs: Long) {
+        synchronized(wake) {
+            while (!stopRequested) {
+                val left = atMs - SystemClock.elapsedRealtime()
+                if (left <= 0) return
+                try {
+                    wake.wait(left)
+                } catch (_: InterruptedException) {
+                    return
+                }
+            }
+        }
     }
 
     /** Single-app sharing: the shared app left/returned to the screen (shown with the next STATS). */
@@ -126,14 +149,47 @@ class ProjectionHost(
         contentHidden = !visible
     }
 
+    /**
+     * Runs links until the user stops, a final cause ends the session or an outage lasts 30 s
+     * (ADR-010). The first link must succeed: a receiver that never answered is not retried.
+     */
     private fun run() {
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY)
         var failure: String? = null
+        val machine = SessionStateMachine()
+        machine.on(SessionEvent.Start(SystemClock.elapsedRealtime()))
+        SenderStatus.set(SenderState.Connecting(target)) // later links keep showing "Reconnecting"
+        var everStreamed = false
+        var encoderFailures = 0
         try {
-            val l = StreamLink()
-            link = l
-            if (stopRequested) return // stop() raced with the link creation
-            failure = l.run(SenderClient.DEFAULT_CONNECT_TIMEOUT_MS, Handshake.DEFAULT_TIMEOUT_MS).failure
+            while (!stopRequested) {
+                val l = StreamLink()
+                link = l
+                if (stopRequested) break // stop() raced with the link creation
+                val timeoutMs = if (everStreamed) RETRY_TIMEOUT_MS else SenderClient.DEFAULT_CONNECT_TIMEOUT_MS
+                val end = l.run(timeoutMs, if (everStreamed) RETRY_TIMEOUT_MS else Handshake.DEFAULT_TIMEOUT_MS)
+                link = null
+                if (end.streamed) {
+                    everStreamed = true
+                    machine.on(SessionEvent.Connected)
+                    machine.on(SessionEvent.HandshakeCompleted)
+                }
+                if (stopRequested) break
+                if (end.encoderFailed) encoderFailures++
+                val incompatible = (end.cause as? HandshakeException)?.bye == ByeReason.INCOMPATIBLE
+                val decision = ReconnectPolicy.classify(end.peerBye, incompatible, end.encoderFailed, encoderFailures)
+                val fatal = !everStreamed || decision == ReconnectPolicy.Decision.FINAL
+                val state = machine.on(SessionEvent.Failed(SystemClock.elapsedRealtime(), fatal)).state
+                if (state !is SessionState.Reconnecting) {
+                    failure = end.failure
+                    if (state == SessionState.Closed(CloseReason.GAVE_UP)) failure = failure ?: GAVE_UP_TEXT
+                    break
+                }
+                Log.i(TAG, "link lost (${end.failure ?: end.peerBye}): reconnecting, attempt ${state.attempt}")
+                SenderStatus.set(SenderState.Reconnecting(target, state.attempt))
+                waitUntil(state.retryAtMs)
+                machine.on(SessionEvent.Tick(SystemClock.elapsedRealtime()))
+            }
         } catch (e: Exception) {
             failure = e.message ?: e.javaClass.simpleName
         } finally {
@@ -281,7 +337,6 @@ class ProjectionHost(
             var failure: String? = null
             var cause: Throwable? = null
             var streamed = false
-            SenderStatus.set(SenderState.Connecting(target))
             try {
                 val conn = SenderClient.connect(target, connectTimeoutMs)
                 connection = conn
@@ -496,6 +551,10 @@ class ProjectionHost(
         const val BYE_GRACE_MS = 300L
         const val RECEIVER_SILENCE_MS = 3 * PING_INTERVAL_MS.toInt()
         const val DIAG_EVERY_STATS = 5
+
+        /** Connect and handshake timeout when reconnecting: fail fast, retry soon. */
+        const val RETRY_TIMEOUT_MS = 1_000
+        const val GAVE_UP_TEXT = "the receiver did not come back within 30 s"
 
         /** `CLOCK_MONOTONIC` µs: the clock of video pts and of PING/PONG (protocol v3). */
         fun nowUs() = System.nanoTime() / 1_000

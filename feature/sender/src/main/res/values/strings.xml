@@ -15,6 +15,7 @@
     <string name="sender_status_idle">Not mirroring. Pick a receiver below.</string>
     <string name="sender_status_connecting">Connecting to %1$s…</string>
     <string name="sender_status_streaming">Mirroring to %1$s</string>
+    <string name="sender_status_reconnecting">Connection to %1$s lost. Reconnecting…</string>
     <string name="sender_status_ended">Mirroring stopped.</string>
     <string name="sender_status_failed">Mirroring stopped: %1$s</string>
     <string name="sender_stats">%1$s %2$dx%3$d · %4$.0f fps · %5$.1f Mbps · RTT %6$.1f ms\nReceiver: %7$.0f fps · decode %8$.1f ms (p95 %9$.1f) · dropped: %10$d sent / %11$d received</string>

@@ -132,12 +132,18 @@ class ReceiverController(
         }
     }
 
+    /**
+     * BYE reason when this screen goes away: USER_STOPPED when the user left the receiver (the tablet
+     * stops), NORMAL when it was only backgrounded (the tablet keeps retrying for 30 s, ADR-010).
+     */
+    @Volatile var leaveReason: ByeReason = ByeReason.NORMAL
+
     fun stop() {
         main.removeCallbacks(retryStart)
         bindAttempts = 0
         runCatching { nsd?.close() }
         nsd = null
-        session?.endAndAwait(ByeReason.NORMAL)
+        session?.endAndAwait(leaveReason)
         server?.close()
         server = null
     }
@@ -151,7 +157,7 @@ class ReceiverController(
             surface = value
             if (value != null) surfaceReady.signalAll()
         }
-        if (value == null) session?.endAndAwait(ByeReason.NORMAL)
+        if (value == null) session?.endAndAwait(leaveReason)
     }
 
     private fun awaitSurface(timeoutMs: Long): Surface? = surfaceLock.withLock {
@@ -165,7 +171,8 @@ class ReceiverController(
     }
 
     private fun onConnection(connection: Connection) {
-        val s = Session(connection)
+        // A reconnecting tablet may replace its own stale session (ReceiverServer preemption).
+        val s = Session(connection, previous = session)
         session = s
         Thread({ s.run() }, "Riri/Session").apply {
             priority = Thread.MAX_PRIORITY
@@ -173,7 +180,7 @@ class ReceiverController(
         }
     }
 
-    private inner class Session(private val connection: Connection) {
+    private inner class Session(private val connection: Connection, private var previous: Session? = null) {
         private val outbox = LinkedBlockingQueue<ControlMessage>(OUTBOX_CAPACITY)
         private val keyframes = KeyframeRequestLimiter()
         private val done = CountDownLatch(1)
@@ -214,6 +221,17 @@ class ReceiverController(
             Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY)
             var writer: Thread? = null
             try {
+                // One codec per Surface: let a preempted session release its decoder first.
+                previous?.let {
+                    if (!it.done.await(
+                            PREEMPT_WAIT_MS,
+                            TimeUnit.MILLISECONDS,
+                        )
+                    ) {
+                        Log.w(TAG, "previous session slow to end")
+                    }
+                }
+                previous = null
                 val p = Handshake.asReceiver(connection, hello())
                 params = p
                 Log.i(TAG, "session ${p.sessionId} from ${connection.remoteAddress}: ${p.video}")
@@ -502,6 +520,7 @@ class ReceiverController(
 
         /** The sender PINGs every second: 3 s of silence means it is gone (ADR-010). */
         const val READ_TIMEOUT_MS = 3_000
+        const val PREEMPT_WAIT_MS = 1_500L
 
         /** Keeps [min] off the wire's sentinel values. */
         fun clampInt(value: Long, min: Long): Int = value.coerceIn(min, Int.MAX_VALUE.toLong()).toInt()

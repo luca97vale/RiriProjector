@@ -279,13 +279,37 @@ class SessionStateMachineTest {
     }
 
     @Test
-    fun `backoff grows and caps at 2 s`() {
+    fun `backoff is 250 ms then capped at 500 ms`() {
         val sm = SessionStateMachine()
-        assertThat(
-            (1..6).map {
-                sm.backoffFor(it)
-            },
-        ).containsExactly(250L, 500L, 1_000L, 2_000L, 2_000L, 2_000L).inOrder()
+        assertThat((1..4).map { sm.backoffFor(it) }).containsExactly(250L, 500L, 500L, 500L).inOrder()
+    }
+
+    @Test
+    fun `an outage longer than 30 s gives up`() {
+        val sm = streaming()
+        var now = 10_000L
+        var s = sm.on(SessionEvent.Failed(now)).state
+        while (s is SessionState.Reconnecting) {
+            now = s.retryAtMs
+            sm.on(SessionEvent.Tick(now))
+            s = sm.on(SessionEvent.Failed(now)).state
+        }
+        assertThat(s).isEqualTo(SessionState.Closed(CloseReason.GAVE_UP))
+        assertThat(now - 10_000).isAtLeast(30_000)
+        assertThat(now - 10_000).isLessThan(30_600)
+    }
+
+    @Test
+    fun `a successful handshake restarts the outage clock`() {
+        val sm = streaming()
+        val r = sm.on(SessionEvent.Failed(0)).state as SessionState.Reconnecting
+        sm.on(SessionEvent.Tick(r.retryAtMs))
+        sm.on(SessionEvent.Connected)
+        sm.on(SessionEvent.HandshakeCompleted)
+        // 29 s after the first failure but just after a new outage started: keep trying.
+        assertThat(sm.on(SessionEvent.Failed(29_000)).state).isInstanceOf(SessionState.Reconnecting::class.java)
+        assertThat(sm.on(SessionEvent.Tick(29_250)).state).isEqualTo(SessionState.Connecting(1))
+        assertThat(sm.on(SessionEvent.Failed(40_000)).state).isInstanceOf(SessionState.Reconnecting::class.java)
     }
 
     @Test

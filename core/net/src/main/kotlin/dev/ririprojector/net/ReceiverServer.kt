@@ -12,7 +12,8 @@ import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Accepts sender connections on a dedicated thread, one active session at a time (ADR-002).
- * While a session is active, extra clients receive `BYE(BUSY)` and are closed.
+ * While a session is active, extra clients receive `BYE(BUSY)` and are closed, except the active
+ * sender itself reconnecting, which replaces its session (preemption, ADR-010).
  *
  * [onConnection] runs on the accept thread's handoff and must return quickly: it should start the
  * session on its own thread and call [sessionEnded] when that connection is finished.
@@ -20,6 +21,11 @@ import java.util.concurrent.atomic.AtomicReference
 class ReceiverServer(
     private val port: Int = ReceiverEndpoint.DEFAULT_PORT,
     private val sendBufferBytes: Int = SocketTuning.DEFAULT_SEND_BUFFER_BYTES,
+    /** Whether a new client is the active session's own sender reconnecting (default: same IP). */
+    private val samePeer: (active: Connection, new: Connection) -> Boolean = { a, b ->
+        a.remoteAddress ==
+            b.remoteAddress
+    },
     private val onConnection: (Connection) -> Unit,
 ) : Closeable {
     private val serverSocket = ServerSocket()
@@ -67,10 +73,20 @@ class ReceiverServer(
             try {
                 SocketTuning.apply(socket, sendBufferBytes)
                 connection = Connection(socket)
-                if (active.compareAndSet(null, connection)) {
-                    onConnection(connection)
-                } else {
-                    rejectBusy(connection)
+                val current = active.get()
+                when {
+                    current == null && active.compareAndSet(null, connection) -> onConnection(connection)
+
+                    // The same tablet reconnecting (its old link may look alive here for up to 3 s):
+                    // it replaces its own session instead of being refused as BUSY (ADR-010).
+                    current != null && samePeer(current, connection) &&
+                        active.compareAndSet(current, connection) -> {
+                        Log.i(TAG, "${connection.remoteAddress} reconnected: replacing its previous session")
+                        current.close()
+                        onConnection(connection)
+                    }
+
+                    else -> rejectBusy(connection)
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "connection setup failed: ${e.message}")
