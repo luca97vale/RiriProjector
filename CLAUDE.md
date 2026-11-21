@@ -1,4 +1,4 @@
-| Device | `/device-deploy` | Build, install on receiver/sender devices, filtered logcat || Full-screen activity (D-pad and touch) with `SurfaceView``mediaProjection` foreground service, phone/scripts/deploy.sh receiver|sender|both # build + install via adb (see /device-deploy) UI (Compose) || Launch activity, mode selection (auto-receiver on TV-like devices, remembered manual choice everywhere), wiring, single manifest |# RiriProjector — guide for Claude Code
+# RiriProjector — guide for Claude Code
 
 A single Android app (Kotlin) that mirrors the screen **and audio** of any **Android phone or tablet** (sender) to any
 **Android TV, set-top box, projector, phone or tablet** (receiver) over the LAN, with lower latency
