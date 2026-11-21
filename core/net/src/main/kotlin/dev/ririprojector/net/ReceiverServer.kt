@@ -77,7 +77,7 @@ class ReceiverServer(
                 when {
                     current == null && active.compareAndSet(null, connection) -> onConnection(connection)
 
-                    // The same tablet reconnecting (its old link may look alive here for up to 3 s):
+                    // The same sender reconnecting (its old link may look alive here for up to 3 s):
                     // it replaces its own session instead of being refused as BUSY (ADR-010).
                     current != null && samePeer(current, connection) &&
                         active.compareAndSet(current, connection) -> {

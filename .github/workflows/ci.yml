@@ -71,6 +71,11 @@ jobs:
         if: steps.gradle.outputs.present == 'true'
         run: ./gradlew assembleDebug
 
+      # Unsigned: catches R8 and lintVitalRelease failures on the PR instead of at tag time.
+      - name: Assemble release APK (unsigned)
+        if: steps.gradle.outputs.present == 'true'
+        run: ./gradlew assembleRelease
+
       - name: Upload APK
         if: steps.gradle.outputs.present == 'true'
         uses: actions/upload-artifact@v7

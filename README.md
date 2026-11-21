@@ -1,22 +1,183 @@
 # RiriProjector
 
-Low-latency screen mirroring, **video and audio**, from a Galaxy Tab to Fire TV Sticks / Android
-projectors on the LAN, as an alternative to Miracast. A single app: **sender** on the tablet
-(MediaProjection → hardware HEVC/H.264 + audio capture → TCP) and **receiver** on the TV
-(NSD discovery, low-latency hardware decoder, synchronized audio).
+Low-latency screen mirroring, **video and audio**, between Android devices on the LAN, as an
+alternative to Miracast. A single app with two roles:
 
+- **Sender**: any Android phone or tablet (MediaProjection → hardware HEVC/H.264 + audio capture → TCP).
+- **Receiver**: any Android TV, set-top box, projector, phone or tablet (NSD discovery, low-latency
+  hardware decoder, synchronized audio).
+
+## Device support
+
+| Role | Requirement | Notes |
+|---|---|---|
+| Sender | Android 9 (API 28)+ for video | Audio capture needs Android 10 (API 29)+; sharing a single app needs Android 14 (API 34)+ |
+| Receiver | Android 9 (API 28)+ | The `KEY_LOW_LATENCY` decoder mode needs Android 11 (API 30)+; below that, vendor keys are tried |
+
+TV-like devices (Android TV / Google TV, Fire TV, leanback projectors) start as receivers; other
+devices start as senders. Any device can switch role with *Use this device as a receiver/sender*, and
+the app remembers the choice. The codec is negotiated from what both devices support (HEVC, otherwise
+H.264).
+
+Reference test devices so far: Galaxy Tab S9 (sender), Fire TV Stick (Fire OS 7) and Pixel 10
+(receivers). Other devices are expected to work within the API levels above but have not been
+verified yet; please report results with the bug template.
+
+- [Using RiriProjector](#using-ririprojector) — install and first use
+- [Development](#development) — building from source
+- [Releasing](#releasing) — signed APKs on GitHub releases
+
+---
+
+## Using RiriProjector
+
+### What you need
+- Two Android devices meeting the [device support](#device-support) table: a sender (phone or
+  tablet) and a receiver (TV, projector, set-top box, or another phone/tablet).
+- Both on the **same Wi-Fi network**, ideally 5 GHz, with the router not blocking device-to-device
+  traffic (guest networks and "AP isolation" usually do).
+
+The same APK runs on both: it opens as a receiver on a TV and as a sender on a phone or tablet. The newest
+version is always at
+`https://github.com/luca97vale/RiriProjector/releases/latest/download/ririprojector.apk`
+(release notes and older versions on the
+[releases page](https://github.com/luca97vale/RiriProjector/releases)).
+
+### Install on a Fire TV (sideloading)
+Fire TV only installs apps from the Amazon Appstore unless you allow it for a specific app.
+
+1. **Enable Developer Options** (newer Fire OS versions hide it): *Settings › My Fire TV › About*,
+   select your device name **7 times** until "You are now a developer" appears.
+2. Install **Downloader** (by AFTVnews) from the Appstore: search for "Downloader".
+3. *Settings › My Fire TV › Developer Options › Install unknown apps* and turn it **on for
+   Downloader** (on older Fire OS this is a single "Apps from Unknown Sources" switch).
+4. Open Downloader, type the direct APK link above
+   (`https://github.com/luca97vale/RiriProjector/releases/latest/download/ririprojector.apk`),
+   let it download, then select **Install**. Delete the APK afterwards when asked.
+5. RiriProjector appears under *Your Apps & Channels*. Open it: it shows the TV name and its
+   `IP:port`, waiting for a tablet.
+
+**Alternative, with a computer and adb** (see Amazon's
+[Connect to Fire TV through ADB](https://developer.amazon.com/docs/fire-tv/connecting-adb-to-device.html)):
+turn on *Developer Options › ADB debugging*, find the IP under *Settings › My Fire TV › About ›
+Network*, then:
+
+```powershell
+adb connect 192.168.1.50:5555
+```
+```powershell
+adb install -r ririprojector-1.0.0.apk
+```
+
+Accept the "Allow USB debugging?" prompt on the TV the first time.
+
+### Install on an Android TV / Google TV
+1. *Settings › System › About*, select **Android TV OS build** 7 times to enable Developer options.
+2. Install **Downloader** (by AFTVnews) from the Play Store, or use any file manager or browser
+   that can open APKs.
+3. *Settings › Apps › Security & restrictions › Unknown sources* (the menu name varies by vendor)
+   and allow that app.
+4. In Downloader, type the direct APK link above, download and **Install**.
+
+The `adb connect` / `adb install -r` alternative above works the same way once *USB debugging* (or
+*Network debugging*) is on in Developer options.
+
+### Install on a phone or tablet
+Open the release page on the device, download the `.apk` and open it. Android asks you to allow
+installs from your browser (or file manager) once: allow it, then install. A phone or tablet used as
+the receiver switches role with *Use this device as a receiver*.
+
+### First use
+1. Open RiriProjector on the receiver (it waits for a connection).
+2. Open it on the sender. The receiver appears under **Receivers** within a few seconds; if not (some
+   routers filter discovery), type the `IP` or `IP:port` shown on the receiver and tap **Connect**.
+3. Pick the stream settings if you want (codec, resolution, frame rate, bitrate, audio, sync), then
+   tap the receiver.
+4. Allow the microphone permission (needed to capture app audio; nothing is recorded from the
+   microphone) and choose **Entire screen** or **A single app** in the system dialog.
+5. Tap **Stop** on the sender, or press Back on the receiver (TV remote), to end mirroring.
+
+The sender remembers your settings and the last receiver: next time, tap the receiver marked
+**Last used**, or the **Last receiver** card if the receiver is not discovered.
+
+### Known limitations
+- Protected content (Netflix, Prime Video and other DRM or `FLAG_SECURE` apps) is shown as black:
+  Android does not allow capturing it.
+- Apps that opt out of audio capture are mirrored without sound; the sender says so.
+- Android asks for screen-sharing consent at every new session; this is a system requirement.
+- To share one app's sound only, grant *Usage access* when the sender asks once; without it, every
+  app's sound is mirrored.
+- **Updates** install over the previous version only if signed with the same release key and with a
+  higher version number. The development build (`dev.ririprojector.debug`) is a separate app and can
+  stay installed side by side.
+
+---
+
+## Development
 - Architecture and decisions: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - Roadmap: [docs/PLAN.md](docs/PLAN.md)
 - Development process (SDLC with Claude Code): [docs/SDLC.md](docs/SDLC.md)
 - Instructions for Claude Code: [CLAUDE.md](CLAUDE.md)
 
-## Development requirements
+### Requirements
 - JDK 25 LTS, Android SDK (platform-tools for `adb`)
 - Node.js ≥ 18 (Claude Code hooks), authenticated `gh`
-- Fire TV with *ADB debugging* enabled; tablet with USB/wireless debugging
+- Receiver and sender with USB or network *ADB debugging* enabled
 
-## Quick start
+### Quick start
 ```bash
-export FIRETV_HOST=192.168.1.50   # Fire TV IP address
+export RECEIVER_HOST=192.168.1.50   # receiver IP for adb over the network (or RECEIVER_SERIAL for USB)
+# export SENDER_SERIAL=...          # optional: adb serial of the sender if several devices are attached
 scripts/deploy.sh both --logs
 ```
+
+`./gradlew assembleRelease` without signing settings builds an unsigned release APK (as CI does).
+
+---
+
+## Releasing
+Releases are built by [`.github/workflows/release.yml`](.github/workflows/release.yml) when a
+`vMAJOR.MINOR.PATCH` tag is pushed. It signs the APK with the release key and attaches
+`ririprojector-<version>.apk`, a stable-named `ririprojector.apk` and the R8 `…-mapping.txt` to a
+GitHub release. The keystore and its
+passwords never enter the repository.
+
+### One-time setup
+1. **Create the release keystore** somewhere outside the repository, and keep a backup (a password
+   manager or an encrypted drive). Losing it means users must uninstall to get updates.
+   ```bash
+   keytool -genkeypair -v -keystore ~/keys/riri-release.jks -keyalg RSA -keysize 4096 \
+     -validity 10000 -alias riri
+   ```
+2. **Create the `release` environment** (*Settings › Environments › New environment*, name
+   `release`) and add yourself as a **required reviewer**. This is required, not optional: a tag
+   push runs the workflow file of the tagged commit, so anyone who can push a tag could otherwise
+   run a modified workflow with the signing key. The reviewer approval is what protects it.
+   Optionally add a tag ruleset limiting who can create `v*` tags.
+3. **Add the secrets to that environment only** (not as repository secrets):
+
+   | Secret | Value |
+   |---|---|
+   | `RELEASE_KEYSTORE_BASE64` | output of `base64 -w0 ~/keys/riri-release.jks` |
+   | `RIRI_KEYSTORE_PASSWORD` | keystore password |
+   | `RIRI_KEY_ALIAS` | `riri` (the `-alias` above) |
+   | `RIRI_KEY_PASSWORD` | same as the keystore password (`keytool` creates PKCS12 keystores, which use one password) |
+
+### Cutting a release
+1. Merge everything to `main` (the workflow refuses tags on other commits, as a guard against
+   mistakes).
+2. Tag and push: `git tag v1.0.0 && git push origin v1.0.0`, then approve the deployment in the
+   workflow run. The version code is `major*10000 + minor*100 + patch`, so minor and patch must
+   stay ≤ 99.
+3. When the workflow is green, install the APK from the release on a sender and a receiver and check a
+   mirroring session with audio before announcing it (release builds are shrunk by R8).
+
+### Signing locally (optional)
+Set the same four values as environment variables, then run
+`./gradlew --no-configuration-cache assembleRelease` (the configuration cache, on by default in
+this project, would otherwise store the passwords in an encrypted entry under `.gradle/`):
+`RIRI_KEYSTORE_FILE` (absolute path), `RIRI_KEYSTORE_PASSWORD`, `RIRI_KEY_ALIAS`,
+`RIRI_KEY_PASSWORD`. Alternatively put `riri.keystore.file`, `riri.keystore.password`,
+`riri.key.alias`, `riri.key.password` in your user-level `~/.gradle/gradle.properties` (outside the
+repo, but plaintext). Set all four or none: a partial setup fails every build, debug included, on
+purpose, so a stray `RIRI_KEY_ALIAS` in your shell explains a failing `assembleDebug`.
