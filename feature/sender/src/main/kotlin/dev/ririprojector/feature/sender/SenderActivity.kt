@@ -321,7 +321,7 @@ private fun SenderScreen(
                 }
             }
             // Hidden while mirroring: discovery is paused, so the streaming receiver would show here.
-            if (!active) LastReceiverCard(quickStart, enabled = true) { onStart(it, prefs) }
+            if (!active) LastReceiverCard(quickStart) { onStart(it, prefs) }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
                     value = manual,

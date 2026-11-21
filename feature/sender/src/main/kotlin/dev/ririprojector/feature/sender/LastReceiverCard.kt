@@ -18,10 +18,10 @@ import dev.ririprojector.net.ReceiverEndpoint
  * the receiver not running yet). An advertised one is marked in the list instead (ADR-012).
  */
 @Composable
-internal fun LastReceiverCard(quickStart: QuickStart?, enabled: Boolean, onStart: (ReceiverEndpoint) -> Unit) {
+internal fun LastReceiverCard(quickStart: QuickStart?, onStart: (ReceiverEndpoint) -> Unit) {
     if (quickStart == null || quickStart.advertised) return
     val r = quickStart.endpoint
-    Card(modifier = Modifier.fillMaxWidth().clickable(enabled = enabled) { onStart(r) }) {
+    Card(modifier = Modifier.fillMaxWidth().clickable { onStart(r) }) {
         Column(Modifier.padding(16.dp)) {
             Text(stringResource(R.string.sender_last_receiver), style = MaterialTheme.typography.labelMedium)
             Text(r.name, style = MaterialTheme.typography.titleMedium)

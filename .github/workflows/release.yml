@@ -88,6 +88,7 @@ jobs:
           echo "RIRI_KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
 
       # --no-configuration-cache: never serialize the signing passwords into a cache entry.
+      # --no-daemon: no Gradle process holding the passwords outlives this step.
       - name: Unit test and build signed APK
         env:
           RIRI_KEYSTORE_PASSWORD: ${{ secrets.RIRI_KEYSTORE_PASSWORD }}
@@ -96,7 +97,7 @@ jobs:
           VERSION_NAME: ${{ steps.version.outputs.name }}
           VERSION_CODE: ${{ steps.version.outputs.code }}
         run: >-
-          ./gradlew --no-configuration-cache testDebugUnitTest assembleRelease
+          ./gradlew --no-configuration-cache --no-daemon testDebugUnitTest assembleRelease
           -Priri.versionName="$VERSION_NAME" -Priri.versionCode="$VERSION_CODE"
 
       - name: Remove keystore
@@ -111,7 +112,9 @@ jobs:
           if [ ! -f "$apk" ]; then
             echo "::error::$apk not found (unsigned build?)"; ls -l app/build/outputs/apk/release/ || true; exit 1
           fi
-          bt="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | grep -v -- '-rc' | sort -V | tail -1)"
+          stable=$(ls "$ANDROID_HOME/build-tools" | { grep -v -- '-rc' || true; } | sort -V | tail -1)
+          if [ -z "$stable" ]; then echo "::error::no stable build-tools in $ANDROID_HOME/build-tools"; exit 1; fi
+          bt="$ANDROID_HOME/build-tools/$stable"
           "$bt/apksigner" verify --min-sdk-version 28 --print-certs "$apk"
           mkdir -p dist
           cp "$apk" "dist/ririprojector-$VERSION_NAME.apk"
