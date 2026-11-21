@@ -10,9 +10,7 @@ import android.net.wifi.p2p.WifiP2pGroup
 import android.net.wifi.p2p.WifiP2pInfo
 import android.net.wifi.p2p.WifiP2pManager
 import android.net.wifi.p2p.nsd.WifiP2pDnsSdServiceInfo
-import android.net.wifi.p2p.nsd.WifiP2pDnsSdServiceRequest
 import android.os.SystemClock
-import android.util.Log
 import dev.ririprojector.net.ReceiverEndpoint
 import java.io.Closeable
 import java.util.concurrent.atomic.AtomicBoolean
@@ -34,49 +32,66 @@ import kotlinx.coroutines.withTimeout
 data class P2pReceiver(val name: String, val deviceAddress: String, val port: Int)
 
 /**
- * Sender side, discovery (ADR-011): lists receivers announcing [P2pReceiverRecord] over P2P DNS-SD.
- * Collect only while the list is on screen; cancelling stops the discovery (it scans off channel).
- * Needs `NEARBY_WIFI_DEVICES` (API 33+).
+ * Sender side, discovery (ADR-011): lists nearby Wi-Fi Direct devices found by plain peer
+ * discovery. The tablet's P2P DNS-SD queries get no answer from a Fire TV that is not a group owner
+ * (seen on Fire OS 7), while peer discovery finds it within seconds; whether the picked device runs
+ * the receiver shows when it takes the offer. Collect only while the list is on screen; cancelling
+ * stops the discovery (it scans off channel). Needs `NEARBY_WIFI_DEVICES` (API 33+).
  */
 class P2pReceiverBrowser(private val context: Context) {
     @SuppressLint("MissingPermission") // the caller requests NEARBY_WIFI_DEVICES first
     fun receivers(): Flow<List<P2pReceiver>> = callbackFlow {
+        P2pLog.init(context)
         val ch = P2pChannel.open(context) { close(P2pFailure.LinkLost("browse")) }
         if (ch == null) {
             close(P2pFailure.Unsupported("browse"))
             return@callbackFlow
         }
-        val found = LinkedHashMap<String, P2pReceiver>()
-        ch.manager.setDnsSdResponseListeners(
-            ch.channel,
-            { _, _, _ -> },
-            { _, txt, device ->
-                val r = P2pTxt.decode(txt) as? P2pReceiverRecord ?: return@setDnsSdResponseListeners
-                val address = device.deviceAddress.lowercase()
-                if (found[address]?.name != r.name || found[address]?.port != r.port) {
-                    found[address] = P2pReceiver(r.name, address, r.port)
-                    trySend(found.values.toList())
+        var peers = emptyList<P2pReceiver>()
+        var last: List<P2pReceiver>? = null
+
+        fun publish() {
+            if (peers != last) {
+                P2pLog.i("browse: peers ${peers.map { it.name }}")
+                last = peers
+                trySend(peers)
+            }
+        }
+        val receiver =
+            context.registerP2p(WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION) {
+                ch.quietly { m, c ->
+                    m.requestPeers(c) { list ->
+                        peers =
+                            list?.deviceList.orEmpty()
+                                .filter { it.deviceName.isNotBlank() }
+                                .map {
+                                    P2pReceiver(
+                                        it.deviceName,
+                                        it.deviceAddress.lowercase(),
+                                        ReceiverEndpoint.DEFAULT_PORT,
+                                    )
+                                }
+                                .sortedBy { it.name }
+                        publish()
+                    }
                 }
-            },
-        )
-        trySend(emptyList())
+            }
+        publish()
         launch {
             try {
-                ch.await("addServiceRequest") { m, c, l ->
-                    m.addServiceRequest(c, WifiP2pDnsSdServiceRequest.newInstance(P2pTxt.SERVICE_TYPE), l)
-                }
                 while (true) {
                     // A discovery round ends by itself; re-arm it while the list is collected.
-                    ch.await("discoverServices") { m, c, l -> m.discoverServices(c, l) }
+                    ch.await("discoverPeers") { m, c, l -> m.discoverPeers(c, l) }
                     delay(REARM_MS)
                 }
             } catch (e: P2pFailure) {
+                P2pLog.w("browse: ${e.message}")
                 close(e)
             }
         }
         awaitClose {
             ch.quietly { m, c -> m.stopPeerDiscovery(c, null) }
-            ch.quietly { m, c -> m.clearServiceRequests(c, null) }
+            context.unregisterQuietly(receiver)
             ch.close()
         }
     }
@@ -118,10 +133,11 @@ class P2pGroupOwner(private val context: Context) {
         val lost = MutableStateFlow(false)
         val group = MutableStateFlow<WifiP2pGroup?>(null)
         var established = false
+        P2pLog.init(context)
         val ch = P2pChannel.open(context) { lost.value = true } ?: throw P2pFailure.Unsupported("group")
         var receiver: BroadcastReceiver? = null
         val t0 = SystemClock.elapsedRealtime()
-        fun phase(name: String) = Log.i(TAG, "group: $name after ${SystemClock.elapsedRealtime() - t0} ms")
+        fun phase(name: String) = P2pLog.i("group: $name after ${SystemClock.elapsedRealtime() - t0} ms")
 
         fun release() {
             ch.quietly { m, c -> m.clearLocalServices(c, null) }
@@ -207,7 +223,7 @@ class P2pGroupOwner(private val context: Context) {
 
     companion object {
         /** Receiver discovery of the offer (~4 s), its join (~6 s) and DHCP, with margin. */
-        const val DEFAULT_TIMEOUT_MS = 25_000L
+        const val DEFAULT_TIMEOUT_MS = 30_000L
         private const val POLL_MS = 250L
         private const val LISTEN_REARM_MS = 10_000L
     }

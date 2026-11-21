@@ -44,7 +44,7 @@
     <string name="sender_direct_title">Wi-Fi Direct</string>
     <string name="sender_direct_hint">Link the tablet straight to the projector, without the router: steadier sound and lower latency. Keep the tablet in the same room. While mirroring, a Fire TV leaves its router network.</string>
     <string name="sender_direct_search">Connect via Wi-Fi Direct</string>
-    <string name="sender_direct_searching">Looking for receivers over Wi-Fi Direct… Open RiriProjector on the projector.</string>
+    <string name="sender_direct_searching">Looking for nearby Wi-Fi Direct devices… Open RiriProjector on the projector, then pick it below.</string>
     <string name="sender_direct_permission">Allow nearby devices to use Wi-Fi Direct.</string>
     <string name="sender_direct_link">Wi-Fi Direct · %1$d MHz</string>
     <string name="sender_error_p2p_lost">lost %1$s over Wi-Fi Direct</string>

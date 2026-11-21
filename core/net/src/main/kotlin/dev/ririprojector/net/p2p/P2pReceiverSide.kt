@@ -17,7 +17,6 @@ import android.net.wifi.p2p.nsd.WifiP2pDnsSdServiceRequest
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.util.Log
 import java.io.Closeable
 import java.net.Inet4Address
 import java.net.NetworkInterface
@@ -57,7 +56,8 @@ class P2pReceiverAgent(
     @SuppressLint("MissingPermission") // API 29+ callers hold the location / nearby permission
     fun start(): Boolean {
         if (ch != null) return true
-        val c = P2pChannel.open(context) { Log.w(TAG, "agent: P2P channel lost") } ?: return false
+        P2pLog.init(context)
+        val c = P2pChannel.open(context) { P2pLog.w("agent: P2P channel lost") } ?: return false
         ch = c
         receiver =
             context.registerP2p(WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION) { intent ->
@@ -74,10 +74,11 @@ class P2pReceiverAgent(
             c.channel,
             { _, _, _ -> },
             { _, txt, _ ->
+                P2pLog.i("agent: record ${P2pTxt.decode(txt)} idle=$idle own=$ownAddress")
                 val offer = P2pTxt.decode(txt) as? P2pOfferRecord ?: return@setDnsSdResponseListeners
                 if (idle && offer.to == ownAddress && offer.ssid != lastOfferSsid) {
                     lastOfferSsid = offer.ssid
-                    Log.i(TAG, "agent: offer from ${offer.name}")
+                    P2pLog.i("agent: offer from ${offer.name}")
                     onOffer(offer)
                 }
             },
@@ -89,17 +90,21 @@ class P2pReceiverAgent(
                 P2pTxt.encode(P2pReceiverRecord(name, port)),
             )
         c.manager.addLocalService(c.channel, service, logging("addLocalService"))
+        // All services, as the spike verified: a request by type only asks for the PTR record, so the
+        // TXT record that carries the offer never arrives.
         c.manager.addServiceRequest(
             c.channel,
-            WifiP2pDnsSdServiceRequest.newInstance(P2pTxt.SERVICE_TYPE),
+            WifiP2pDnsSdServiceRequest.newInstance(),
             logging("addServiceRequest"),
         )
+        P2pLog.i("agent: started as $name on port $port")
         return true
     }
 
     /** Discovery on (no session) or off (a session streams, in either mode). */
     fun setIdle(value: Boolean) {
         if (idle == value) return
+        P2pLog.i("agent: idle=$value")
         idle = value
         main.removeCallbacks(rearm)
         if (value) discover() else ch?.quietly { m, c -> m.stopPeerDiscovery(c, null) }
@@ -110,6 +115,10 @@ class P2pReceiverAgent(
         lastOfferSsid = null
     }
 
+    /**
+     * Service discovery fetches the sender's offer; its find also keeps this device visible to the
+     * sender's peer discovery, which is how the tablet lists receivers.
+     */
     @SuppressLint("MissingPermission")
     private fun discover() {
         val c = ch ?: return
@@ -132,10 +141,12 @@ class P2pReceiverAgent(
     }
 
     private fun logging(what: String) = object : WifiP2pManager.ActionListener {
-        override fun onSuccess() = Unit
+        override fun onSuccess() {
+            P2pLog.i("agent: $what ok")
+        }
 
         override fun onFailure(reason: Int) {
-            Log.w(TAG, "agent: $what failed ($reason)")
+            P2pLog.w("agent: $what failed ($reason)")
         }
     }
 
@@ -211,7 +222,7 @@ object P2pStationJoiner {
             main.removeCallbacks(watch)
             runCatching { wifi.removeNetwork(id) }
             runCatching { wifi.reconnect() }
-            Log.i(TAG, "station: left ${offer.ssid}, back to the usual network")
+            P2pLog.i("station: left ${offer.ssid}, back to the usual network")
         }
 
         try {
@@ -230,7 +241,7 @@ object P2pStationJoiner {
             }
             val dhcp = wifi.dhcpInfo
             val gateway = P2pPolicy.ipv4(if (dhcp.gateway != 0) dhcp.gateway else dhcp.serverAddress)
-            Log.i(TAG, "station: joined ${offer.ssid}, group owner $gateway")
+            P2pLog.i("station: joined ${offer.ssid}, group owner $gateway")
             main.postDelayed(watch, WATCH_MS)
             return P2pStation(gateway, lost, ::release)
         } catch (e: TimeoutCancellationException) {
@@ -284,7 +295,7 @@ object P2pStationJoiner {
                     delay(POLL_MS)
                 }
                 established = true
-                Log.i(TAG, "client: joined ${offer.ssid}, group owner $owner")
+                P2pLog.i("client: joined ${offer.ssid}, group owner $owner")
                 P2pStation(owner, lost, ::release)
             }
         } catch (e: TimeoutCancellationException) {
