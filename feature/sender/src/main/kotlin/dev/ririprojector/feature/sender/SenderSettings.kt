@@ -109,20 +109,25 @@ object SenderSettingsCodec {
         KEY_LAST_PORT to r.port.toString(),
     )
 
-    /** Only endpoints a later session can reach over TCP are remembered. */
-    fun isRememberable(endpoint: ReceiverEndpoint): Boolean =
-        endpoint.host != WIFI_DIRECT_HOST && ReceiverEndpoint.parse("${endpoint.host}:${endpoint.port}") != null
+    /**
+     * Only endpoints a later session can reach over TCP are remembered, and only if `host:port`
+     * (the manual field pre-fill) parses back to the same endpoint: this rejects IPv6 literals,
+     * which the manual field cannot express.
+     */
+    fun isRememberable(endpoint: ReceiverEndpoint): Boolean = endpoint.host != WIFI_DIRECT_HOST &&
+        ReceiverEndpoint.parse("${endpoint.host}:${endpoint.port}")
+            ?.let { it.host == endpoint.host && it.port == endpoint.port } == true
 
     /**
-     * Matches [last] against the live NSD list: by service name first (a Fire TV's DHCP lease may
-     * have changed its IP), then by host and port (manual entries). Without a match the stored
-     * endpoint is used as is.
+     * Matches [last] against the live NSD list: an exact host and port first (receiver names are
+     * device names and may repeat), then the name (a Fire TV's DHCP lease may have changed its IP).
+     * Without a match the stored endpoint is used as is.
      */
     fun resolveQuickStart(last: ReceiverEndpoint?, nsd: List<ReceiverEndpoint>): QuickStart? {
         last ?: return null
         val match =
-            nsd.firstOrNull { it.name == last.name }
-                ?: nsd.firstOrNull { it.host == last.host && it.port == last.port }
+            nsd.firstOrNull { it.host == last.host && it.port == last.port }
+                ?: nsd.firstOrNull { it.name == last.name }
         return if (match != null) QuickStart(match, advertised = true) else QuickStart(last, advertised = false)
     }
 }

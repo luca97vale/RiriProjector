@@ -231,11 +231,17 @@ class SenderSettingsCodecTest {
     }
 
     @Test
-    fun `resolveQuickStart prefers the name match over the host match`() {
-        val sameHost = ReceiverEndpoint("Other name", tv.host, tv.port)
+    fun `resolveQuickStart prefers the exact host match over a name match`() {
+        // Two Fire TVs with the same default device name: the one at the stored address wins.
         val sameName = ReceiverEndpoint(tv.name, "192.168.1.77", 47_800)
-        val q = SenderSettingsCodec.resolveQuickStart(tv, listOf(sameHost, sameName))
-        assertThat(q).isEqualTo(QuickStart(sameName, advertised = true))
+        val exact = ReceiverEndpoint(tv.name, tv.host, tv.port)
+        val q = SenderSettingsCodec.resolveQuickStart(tv, listOf(sameName, exact))
+        assertThat(q).isEqualTo(QuickStart(exact, advertised = true))
+    }
+
+    @Test
+    fun `isRememberable rejects IPv6 literals the manual field cannot round trip`() {
+        assertThat(SenderSettingsCodec.isRememberable(ReceiverEndpoint("TV", "fe80::1", 47_800))).isFalse()
     }
 
     @Test
