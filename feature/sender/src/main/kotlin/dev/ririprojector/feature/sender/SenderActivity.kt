@@ -3,6 +3,7 @@ package dev.ririprojector.feature.sender
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
@@ -15,6 +16,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -33,6 +36,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
@@ -55,7 +59,7 @@ import dev.ririprojector.protocol.model.VideoCodec
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flowOf
 
-/** Tablet entry point: pick a receiver, tune the stream, start/stop mirroring. */
+/** Sender entry point (any phone or tablet): pick a receiver, tune the stream, start/stop mirroring. */
 class SenderActivity : ComponentActivity() {
     /** A mirroring request waiting for the audio permission and the consent dialog. */
     private data class Pending(
@@ -148,10 +152,17 @@ class SenderActivity : ComponentActivity() {
                         state = state,
                         onStart = ::requestProjection,
                         onStop = { ProjectionService.stop(this) },
+                        onUseAsReceiver = ::useAsReceiver,
                     )
                 }
             }
         }
+    }
+
+    /** Hands over to the app trampoline, which remembers the choice and opens the receiver. */
+    private fun useAsReceiver() {
+        startActivity(Intent(ACTION_USE_AS_RECEIVER).setPackage(packageName))
+        finish()
     }
 
     private fun granted(permission: String) = checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
@@ -207,18 +218,21 @@ class SenderActivity : ComponentActivity() {
         consent.launch(intent)
     }
 
-    private companion object {
-        const val KEY_HOST = "pending.host"
-        const val KEY_PORT = "pending.port"
-        const val KEY_NAME = "pending.name"
-        const val KEY_CODEC = "pending.codec"
-        const val KEY_MAX_HEIGHT = "pending.maxHeight"
-        const val KEY_FPS = "pending.fps"
-        const val KEY_BITRATE = "pending.bitrate"
-        const val KEY_AUDIO = "pending.audio"
-        const val KEY_SYNC = "pending.sync"
-        const val KEY_CONSENT_SHOWN_AT = "pending.consentShownAt"
-        const val KEY_USAGE_ACCESS_ASKED = "usageAccessAsked"
+    companion object {
+        /** Switch this device to receiver mode and remember it (handled by the app's launcher activity). */
+        const val ACTION_USE_AS_RECEIVER = "dev.ririprojector.action.USE_AS_RECEIVER"
+
+        private const val KEY_HOST = "pending.host"
+        private const val KEY_PORT = "pending.port"
+        private const val KEY_NAME = "pending.name"
+        private const val KEY_CODEC = "pending.codec"
+        private const val KEY_MAX_HEIGHT = "pending.maxHeight"
+        private const val KEY_FPS = "pending.fps"
+        private const val KEY_BITRATE = "pending.bitrate"
+        private const val KEY_AUDIO = "pending.audio"
+        private const val KEY_SYNC = "pending.sync"
+        private const val KEY_CONSENT_SHOWN_AT = "pending.consentShownAt"
+        private const val KEY_USAGE_ACCESS_ASKED = "usageAccessAsked"
     }
 }
 
@@ -228,6 +242,7 @@ private fun SenderScreen(
     state: SenderState,
     onStart: (ReceiverEndpoint, StreamPreferences) -> Unit,
     onStop: () -> Unit,
+    onUseAsReceiver: () -> Unit,
 ) {
     var manual by rememberSaveable { mutableStateOf("") }
     var codec by rememberSaveable { mutableStateOf<String?>(null) }
@@ -327,6 +342,12 @@ private fun SenderScreen(
                 ),
                 sync,
             ) { sync = it }
+
+            HorizontalDivider()
+            // Manual role choice on any device (ADR-001); off while a session is running.
+            TextButton(enabled = !active, onClick = onUseAsReceiver) {
+                Text(stringResource(R.string.sender_use_as_receiver))
+            }
         }
     }
 }
@@ -420,11 +441,13 @@ private fun StatusCard(state: SenderState, onStop: () -> Unit) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun <T> ChoiceRow(label: String, options: List<Pair<T, String>>, selected: T, onSelect: (T) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(label, style = MaterialTheme.typography.labelLarge)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        // Wraps on narrow phones instead of pushing chips off screen.
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             options.forEach { (value, text) ->
                 FilterChip(selected = value == selected, onClick = { onSelect(value) }, label = { Text(text) })
             }

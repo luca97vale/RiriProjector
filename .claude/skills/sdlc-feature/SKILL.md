@@ -19,7 +19,7 @@ Run the phases in order following the corresponding skills (read their `SKILL.md
 3. **Implementation** — follow `sdlc-impl`.
 4. **Tests** — follow `sdlc-test` (`test-writer` agent).
 5. **Review** — follow `sdlc-review` (`media-net-reviewer` agent).
-6. **Device** — if the feature is observable on a device, propose `/firetv-deploy both` and ask the
+6. **Device** — if the feature is observable on a device, propose `/device-deploy both` and ask the
    user to report what they see (or the overlay metrics).
 7. **PR** — follow `sdlc-pr`. ⏸ Gate: confirmation to push and create the PR.
 

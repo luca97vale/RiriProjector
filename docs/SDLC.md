@@ -30,7 +30,7 @@
 - Changes to the media/network hot path require a before/after measurement (stats overlay or
   logcat `Riri/Stats`) reported in the PR.
 - Every PR touching codecs, sockets, audio or MediaProjection must be tried on real devices
-  (`/firetv-deploy both`) and the "On-device tests" checklist in the template must be filled in.
+  (`/device-deploy both`) and the "On-device tests" checklist in the template must be filled in.
 
 ## GitHub labels
 

@@ -25,7 +25,7 @@
     <string name="sender_error_revoked">screen capture was stopped</string>
     <string name="sender_audio_on">Audio: on · underruns %1$d · A/V %2$+d ms (apps that block capture stay silent)</string>
     <string name="sender_audio_off">Audio: off</string>
-    <string name="sender_audio_unavailable">Audio: unavailable (allow audio recording to mirror sound)</string>
+    <string name="sender_audio_unavailable">Audio: unavailable (needs Android 10 or later and permission to record audio)</string>
     <string name="sender_error_version">the receiver runs a different RiriProjector version: update the app on both devices</string>
     <string name="sender_audio">Audio</string>
     <string name="sender_on">On</string>
@@ -38,7 +38,8 @@
     <string name="sender_usage_access_hint">When you share one app, RiriProjector mirrors only that app\'s sound. To know which app you picked it needs Usage access. Without it, sound from all apps is mirrored.</string>
     <string name="sender_usage_access_allow">Allow</string>
     <string name="sender_usage_access_skip">Not now</string>
-    <string name="sender_latency">Latency: %1$d ms (p95 %2$d ms) from capture to the projector screen</string>
+    <string name="sender_latency">Latency: %1$d ms (p95 %2$d ms) from capture to the receiver screen</string>
     <string name="sender_video_delay">Lip-sync: video delayed %1$d ms to match the sound</string>
-    <string name="sender_content_hidden">The shared app is not on screen: the projector shows nothing until you return to it.</string>
+    <string name="sender_content_hidden">The shared app is not on screen: the receiver shows nothing until you return to it.</string>
+    <string name="sender_use_as_receiver">Use this device as a receiver</string>
 </resources>

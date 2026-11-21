@@ -14,7 +14,7 @@
     <!-- Receiver: keep the TV awake while mirroring -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
-    <!-- Same APK runs on tablets and on Fire TV / Android TV projectors (ADR-001) -->
+    <!-- Same APK on phones, tablets, Android TV / Fire TV devices and projectors (ADR-001) -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
@@ -41,5 +41,18 @@
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- "Use this device as a receiver/sender" from the two screens (ADR-001). The choice is
+             remembered, so only this app may send it: a non-exported alias of the trampoline. -->
+        <activity-alias
+            android:name=".SwitchModeActivity"
+            android:exported="false"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="dev.ririprojector.action.USE_AS_RECEIVER" />
+                <action android:name="dev.ririprojector.action.USE_AS_SENDER" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity-alias>
     </application>
 </manifest>

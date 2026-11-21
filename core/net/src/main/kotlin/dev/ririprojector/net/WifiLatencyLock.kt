@@ -13,8 +13,8 @@ import java.io.Closeable
  * audio then underruns no matter how the jitter buffer is tuned.
  *
  * API 29+: `WIFI_MODE_FULL_LOW_LATENCY` (honoured while the app is in the foreground with the
- * screen on, e.g. the receiver); below: `WIFI_MODE_FULL_HIGH_PERF` (Fire OS 7). Best effort: a
- * device that refuses the lock just streams as before. Close to release.
+ * screen on, e.g. the receiver); below (API 28, e.g. Fire OS 7): `WIFI_MODE_FULL_HIGH_PERF`.
+ * Best effort: a device that refuses the lock just streams as before. Close to release.
  */
 class WifiLatencyLock private constructor(private val lock: WifiManager.WifiLock?) : Closeable {
     override fun close() {

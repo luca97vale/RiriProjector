@@ -116,7 +116,7 @@ class CodecNegotiatorTest {
     }
 
     @Test
-    fun `portrait tablet on a landscape TV is fitted as-is inside the TV display`() {
+    fun `portrait sender on a landscape receiver is fitted as-is inside its display`() {
         val s = sender(source = DisplayInfo(1600, 2560, 60))
 
         val v = ok(CodecNegotiator.negotiate(s, hello())).video
