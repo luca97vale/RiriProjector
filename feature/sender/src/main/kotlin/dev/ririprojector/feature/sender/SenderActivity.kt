@@ -145,11 +145,15 @@ class SenderActivity : ComponentActivity() {
         val receivers = NsdBrowser(this).receivers().catch { emit(emptyList()) }
         val settings = SenderSettingsRepository(SharedPreferencesStore.create(this))
         val initialSettings = settings.load()
+        var lastReceiver by mutableStateOf(initialSettings.lastReceiver)
         // Remember a receiver once a session reached Streaming with it; once per target (ADR-012).
         lifecycleScope.launch {
             SenderStatus.state.mapNotNull { (it as? SenderState.Streaming)?.target }
                 .distinctUntilChanged()
-                .collect(settings::saveLastReceiver)
+                .collect { target ->
+                    settings.saveLastReceiver(target)
+                    if (SenderSettingsCodec.isRememberable(target)) lastReceiver = target
+                }
         }
         setContent {
             MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
@@ -166,7 +170,7 @@ class SenderActivity : ComponentActivity() {
                         onStart = ::requestProjection,
                         onStop = { ProjectionService.stop(this) },
                         onUseAsReceiver = ::useAsReceiver,
-                        settings = initialSettings,
+                        settings = initialSettings.copy(lastReceiver = lastReceiver),
                         onSettingsChange = settings::savePrefs,
                     )
                 }
@@ -311,14 +315,8 @@ private fun SenderScreen(
                     Column(Modifier.padding(16.dp)) {
                         Text(r.name, style = MaterialTheme.typography.titleMedium)
                         Text("${r.host}:${r.port}", style = MaterialTheme.typography.bodySmall)
-                        if (r ==
-                            lastUsed
-                        ) {
-                            Text(
-                                stringResource(R.string.sender_last_used),
-                                style = MaterialTheme.typography.labelSmall,
-                            )
-                        }
+                        val lastUsedLabel = stringResource(R.string.sender_last_used)
+                        if (r == lastUsed) Text(lastUsedLabel, style = MaterialTheme.typography.labelSmall)
                     }
                 }
             }
