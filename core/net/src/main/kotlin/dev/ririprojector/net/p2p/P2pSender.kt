@@ -11,10 +11,16 @@ import android.net.wifi.p2p.WifiP2pInfo
 import android.net.wifi.p2p.WifiP2pManager
 import android.net.wifi.p2p.nsd.WifiP2pDnsSdServiceInfo
 import android.os.SystemClock
+import dev.ririprojector.net.Handshake
+import dev.ririprojector.net.HandshakeException
 import dev.ririprojector.net.ReceiverEndpoint
+import dev.ririprojector.net.SenderClient
+import dev.ririprojector.protocol.ControlMessage
 import java.io.Closeable
+import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
@@ -29,8 +35,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 
-/** A receiver found over Wi-Fi Direct: [deviceAddress] is its P2P device address. */
-data class P2pReceiver(val name: String, val deviceAddress: String, val port: Int)
+/**
+ * A receiver found over Wi-Fi Direct: [deviceAddress] is its P2P device address. [lanHost] is its address on the router when the sender also found it
+ * there (same name over NSD): the offer then goes over the router too (ADR-011 fast path).
+ */
+data class P2pReceiver(val name: String, val deviceAddress: String, val port: Int, val lanHost: String? = null)
 
 /**
  * Sender side, discovery (ADR-011): lists nearby Wi-Fi Direct devices found by plain peer
@@ -213,6 +222,33 @@ class P2pGroupOwner(private val context: Context) {
                 }
                 val formed = group.filter { it != null }.first()!!
                 phase("formed on ${formed.frequency} MHz")
+                // Fast path: over the router the offer arrives in tens of ms, while P2P discovery takes 4–24 s
+                // on a Fire TV. After formation, so the receiver finds the network on its first scan.
+                val lanOffer =
+                    target.lanHost?.let { host ->
+                        launch(Dispatchers.IO) {
+                            val endpoint = ReceiverEndpoint(target.name, host, target.port)
+                            // The receiver's 2.4 GHz router link stalls now and then: a few short attempts.
+                            for (attempt in 1..LAN_ATTEMPTS) {
+                                try {
+                                    SenderClient.connect(endpoint, LAN_CONNECT_MS).use {
+                                        Handshake.offerP2p(
+                                            it,
+                                            ControlMessage.P2pOffer(ssid, psk, senderName),
+                                            LAN_HANDSHAKE_MS,
+                                        )
+                                    }
+                                    phase("offer sent over the router to $host")
+                                    break
+                                } catch (e: IOException) {
+                                    // BUSY (already streaming) or another version: retrying cannot help.
+                                    val final = (e as? HandshakeException)?.bye != null || attempt == LAN_ATTEMPTS
+                                    P2pLog.w("group: router offer to $host failed (${e.message}), attempt $attempt")
+                                    if (final) break
+                                }
+                            }
+                        }
+                    }
                 // Listen state, so the receiver's service discovery reaches the offer.
                 // Restarted only when it stops (the browser's global stopPeerDiscovery, another app, the
                 // framework's own time limit): every restart begins with a channel scan, during which
@@ -231,6 +267,7 @@ class P2pGroupOwner(private val context: Context) {
                     clientIp = ch.groupInfo()?.clientList?.firstNotNullOfOrNull { it.ipAddress?.hostAddress }
                 }
                 listening.cancel()
+                lanOffer?.cancel() // bounded by its socket timeouts either way
                 phase("receiver joined at $clientIp")
                 // Stop scanning and announcing: both cost airtime while streaming.
                 ch.quietly { m, c -> m.stopPeerDiscovery(c, null) }
@@ -262,5 +299,8 @@ class P2pGroupOwner(private val context: Context) {
         private const val POLL_MS = 250L
         private const val LISTEN_REARM_MS = 60_000L
         private const val DISCOVERY_STARTED_WAIT_MS = 2_000L
+        private const val LAN_CONNECT_MS = 1_500
+        private const val LAN_HANDSHAKE_MS = 2_000
+        private const val LAN_ATTEMPTS = 3
     }
 }

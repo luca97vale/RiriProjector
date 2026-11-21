@@ -209,10 +209,12 @@ class SenderActivity : ComponentActivity() {
                                 onSearch = ::searchDirect,
                                 onStart = { r, prefs ->
                                     directSearch = false // stop scanning before the group forms
+                                    // Also on the router list: the offer can go there too (ADR-011 fast path).
+                                    val lan = found.singleOrNull { it.name == r.name }?.host
                                     requestProjection(
                                         ReceiverEndpoint(r.name, ProjectionService.DIRECT_HOST, r.port),
                                         prefs,
-                                        r,
+                                        r.copy(lanHost = lan),
                                     )
                                 },
                             ),

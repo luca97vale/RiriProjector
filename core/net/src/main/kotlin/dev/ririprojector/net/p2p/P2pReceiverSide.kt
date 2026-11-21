@@ -126,6 +126,11 @@ class P2pReceiverAgent(
         if (value) discover() else ch?.quietly { m, c -> m.stopPeerDiscovery(c, null) }
     }
 
+    /** The offer for [ssid] already arrived another way (over the router): ignore its P2P copy. */
+    fun markOffered(ssid: String) {
+        lastOfferSsid = ssid
+    }
+
     /** Accept the same offer again (its join failed and the sender may still be waiting). */
     fun forgetOffer() {
         lastOfferSsid = null

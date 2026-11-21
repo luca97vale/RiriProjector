@@ -26,6 +26,7 @@ import dev.ririprojector.net.ReceiverServer
 import dev.ririprojector.net.WifiLatencyLock
 import dev.ririprojector.net.nsd.NsdPublisher
 import dev.ririprojector.net.p2p.P2pOfferRecord
+import dev.ririprojector.net.p2p.P2pPolicy
 import dev.ririprojector.net.p2p.P2pReceiverAgent
 import dev.ririprojector.net.p2p.P2pStation
 import dev.ririprojector.net.p2p.P2pStationJoiner
@@ -249,6 +250,22 @@ class ReceiverController(
         job.invokeOnCompletion { main.post { if (joinJob === job) joinJob = null } }
     }
 
+    /**
+     * Main thread: a sender offered its group over the router (ADR-011 fast path). Only our own group
+     * names are accepted, so a stray LAN client cannot pull the receiver off the router to any network.
+     */
+    private fun onLanOffer(offer: ControlMessage.P2pOffer) {
+        val a = agent
+        if (a == null || !P2pPolicy.isOwnSsid(offer.ssid) || offer.passphrase.length !in 8..63) {
+            // No Wi-Fi Direct here (the sender's group times out and it says so), or not one of ours.
+            Log.w(TAG, "ignored a Wi-Fi Direct offer over the router")
+            onSessionsIdle()
+            return
+        }
+        a.markOffered(offer.ssid) // the same offer may still arrive over P2P discovery
+        onOffer(P2pOfferRecord(offer.senderName, offer.ssid, offer.passphrase, to = ""))
+    }
+
     /** Main thread: no session streams any more; leave a joined group and listen for offers. */
     private fun onSessionsIdle() {
         leaveStation()
@@ -362,12 +379,24 @@ class ReceiverController(
 
         @Volatile private var bytesReceived = 0L
 
+        /** A Wi-Fi Direct offer received instead of START: no stream on this connection. */
+        private var lanOffer: ControlMessage.P2pOffer? = null
+
         fun run() {
             Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY)
             var writer: Thread? = null
             try {
                 // Handshake first: the reconnecting sender is waiting for HELLO (ADR-010).
-                val p = Handshake.asReceiver(connection, hello())
+                val p =
+                    when (val opening = Handshake.receive(connection, hello())) {
+                        is Handshake.Opening.Stream -> opening.params
+
+                        is Handshake.Opening.Offer -> {
+                            lanOffer = opening.offer
+                            Log.i(TAG, "Wi-Fi Direct offer over the router from ${connection.remoteAddress}")
+                            return // finally hands it to onLanOffer
+                        }
+                    }
                 params = p
                 Log.i(TAG, "session ${p.sessionId} from ${connection.remoteAddress}: ${p.video}")
                 writer = startWriter()
@@ -421,8 +450,13 @@ class ReceiverController(
                 if (session === this) {
                     session = null
                     showWaiting()
-                    // Over Wi-Fi Direct the sender gives up for good (ADR-011): leave its group.
-                    main.post { if (session == null) onSessionsIdle() }
+                    val offer = lanOffer
+                    main.post {
+                        if (session != null) return@post
+                        // Over Wi-Fi Direct the sender gives up for good (ADR-011): leave its group. An offer
+                        // connection streamed nothing: join the group it offered instead.
+                        if (offer != null) onLanOffer(offer) else onSessionsIdle()
+                    }
                 }
                 done.countDown()
             }

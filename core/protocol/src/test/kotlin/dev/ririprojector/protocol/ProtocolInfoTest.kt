@@ -10,6 +10,12 @@ class ProtocolInfoTest {
     }
 
     @Test
+    fun `P2P offer never prints its passphrase`() {
+        val offer = ControlMessage.P2pOffer("DIRECT-aB-Riri", "abcdefghijkmnpqr", "tab")
+        assertThat(offer.toString()).doesNotContain("abcdefghijkmnpqr")
+    }
+
+    @Test
     fun `service type is a valid DNS-SD TCP service`() {
         assertThat(ProtocolInfo.SERVICE_TYPE).matches("_[a-z0-9-]{1,15}\\._tcp")
     }

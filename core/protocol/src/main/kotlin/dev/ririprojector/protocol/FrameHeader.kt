@@ -9,6 +9,7 @@ enum class MessageType(val code: Int, val isMedia: Boolean = false) {
     AUDIO_CONFIG(0x05),
     AUDIO_FRAME(0x06, isMedia = true),
     VIDEO_RECONFIG(0x07),
+    P2P_OFFER(0x08),
     REQUEST_KEYFRAME(0x10),
     PING(0x11),
     PONG(0x12),

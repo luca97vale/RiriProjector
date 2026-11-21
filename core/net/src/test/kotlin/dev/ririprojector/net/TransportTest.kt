@@ -61,6 +61,31 @@ class TransportTest {
     }
 
     @Test
+    fun `P2P offer replaces START and reaches the receiver`() {
+        val offer = ControlMessage.P2pOffer("DIRECT-aB-Riri", "abcdefghijkmnpqr", "tab")
+        val receiverSide = CompletableFuture.supplyAsync {
+            val conn = accepted.poll(5, TimeUnit.SECONDS)!!
+            Handshake.receive(conn, hello)
+        }
+        SenderClient.connect(endpoint).use { conn ->
+            assertThat(Handshake.offerP2p(conn, offer)).isEqualTo(hello)
+        }
+        assertThat(receiverSide.get(5, TimeUnit.SECONDS)).isEqualTo(Handshake.Opening.Offer(offer))
+    }
+
+    @Test
+    fun `a stream-only receiver rejects a P2P offer`() {
+        val receiverSide = CompletableFuture.supplyAsync {
+            val conn = accepted.poll(5, TimeUnit.SECONDS)!!
+            runCatching { Handshake.asReceiver(conn, hello) }.exceptionOrNull()
+        }
+        SenderClient.connect(endpoint).use { conn ->
+            Handshake.offerP2p(conn, ControlMessage.P2pOffer("DIRECT-aB-Riri", "abcdefghijkmnpqr", "tab"))
+        }
+        assertThat(receiverSide.get(5, TimeUnit.SECONDS)).isInstanceOf(HandshakeException::class.java)
+    }
+
+    @Test
     fun `incompatible receiver gets BYE and sender fails`() {
         val noVideo = hello.copy(videoDecoders = emptyList())
         val receiverSide = CompletableFuture.supplyAsync {

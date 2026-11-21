@@ -89,6 +89,16 @@ sealed interface ControlMessage {
         override val type get() = MessageType.VIDEO_RECONFIG
     }
 
+    /**
+     * S→R in place of START (v4, ADR-011): the sender's Wi-Fi Direct group, sent over the router so the
+     * receiver can join at once instead of waiting for P2P service discovery. The connection then closes.
+     */
+    data class P2pOffer(val ssid: String, val passphrase: String, val senderName: String) : ControlMessage {
+        override val type get() = MessageType.P2P_OFFER
+
+        override fun toString(): String = "P2pOffer(ssid=$ssid, passphrase=***, senderName=$senderName)"
+    }
+
     data class BitrateHint(val bitrateBps: Int) : ControlMessage {
         override val type get() = MessageType.BITRATE_HINT
     }
@@ -172,6 +182,8 @@ object ControlCodec {
                 writeVideoConfig(out, message.video)
             }
 
+            is ControlMessage.P2pOffer -> out.string(message.ssid).string(message.passphrase).string(message.senderName)
+
             is ControlMessage.BitrateHint -> out.i32(message.bitrateBps)
 
             is ControlMessage.Bye -> out.u8(message.reason.code)
@@ -234,6 +246,8 @@ object ControlCodec {
                     )
 
                 MessageType.VIDEO_RECONFIG -> ControlMessage.VideoReconfig(r.u16(), readVideoConfig(r))
+
+                MessageType.P2P_OFFER -> ControlMessage.P2pOffer(r.string(), r.string(), r.string())
 
                 MessageType.BITRATE_HINT -> ControlMessage.BitrateHint(r.i32())
 

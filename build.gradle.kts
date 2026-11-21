@@ -14,12 +14,19 @@ spotless {
             "ktlint_function_naming_ignore_when_annotated_with" to "Composable",
         )
     kotlin {
-        target("**/*.kt")
+        // Module folders only: `.claude/worktrees` holds other checkouts with their own builds.
+        target("app/**/*.kt", "core/**/*.kt", "feature/**/*.kt", "build-logic/**/*.kt")
         targetExclude("**/build/**")
         ktlint(ktlintVersion).editorConfigOverride(ktlintRules)
     }
     kotlinGradle {
-        target("**/*.gradle.kts")
+        target(
+            "*.gradle.kts",
+            "app/**/*.gradle.kts",
+            "core/**/*.gradle.kts",
+            "feature/**/*.gradle.kts",
+            "build-logic/**/*.gradle.kts",
+        )
         targetExclude("**/build/**")
         ktlint(ktlintVersion).editorConfigOverride(ktlintRules)
     }
