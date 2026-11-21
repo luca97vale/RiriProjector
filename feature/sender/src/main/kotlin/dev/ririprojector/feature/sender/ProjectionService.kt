@@ -17,7 +17,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import android.provider.Settings
+import android.os.SystemClock
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Display
@@ -29,7 +29,6 @@ import dev.ririprojector.net.p2p.P2pGroupOwner
 import dev.ririprojector.net.p2p.P2pLink
 import dev.ririprojector.net.p2p.P2pPolicy
 import dev.ririprojector.net.p2p.P2pReceiver
-import dev.ririprojector.net.p2p.P2pTxt
 import dev.ririprojector.net.p2p.WifiDirectSupport
 import dev.ririprojector.protocol.ByeReason
 import dev.ririprojector.protocol.model.DisplayInfo
@@ -125,7 +124,7 @@ class ProjectionService : Service() {
         val appContext = applicationContext
         val preferences = preferencesFrom(intent)
 
-        fun startHost(endpoint: ReceiverEndpoint, outageLimitMs: Long) {
+        fun startHost(endpoint: ReceiverEndpoint, outageLimitMs: Long, firstConnectWindowMs: Long = 0) {
             val s =
                 ProjectionHost(
                     target = endpoint,
@@ -140,6 +139,7 @@ class ProjectionService : Service() {
                     versionMismatchText = getString(R.string.sender_error_version),
                     onEnded = { main.post { shutdown() } },
                     outageLimitMs = outageLimitMs,
+                    firstConnectWindowMs = firstConnectWindowMs,
                 )
             session = s
             s.start()
@@ -148,7 +148,7 @@ class ProjectionService : Service() {
         val directAddress = intent.getStringExtra(EXTRA_DIRECT_ADDRESS)
         if (directAddress != null && Build.VERSION.SDK_INT >= WifiDirectSupport.MIN_SENDER_SDK) {
             startDirect(P2pReceiver(target.name, directAddress, target.port)) {
-                startHost(it, P2pPolicy.OUTAGE_LIMIT_MS)
+                startHost(it, P2pPolicy.OUTAGE_LIMIT_MS, P2pPolicy.FIRST_CONNECT_WINDOW_MS)
             }
         } else {
             startHost(target, P2pPolicy.ROUTER_OUTAGE_LIMIT_MS)
@@ -166,8 +166,25 @@ class ProjectionService : Service() {
         joinJob =
             scope.launch {
                 try {
-                    val link = P2pGroupOwner(this@ProjectionService).open(receiver, senderName())
+                    // Usually already running since the pick (overlapping consent); fall back to a fresh
+                    // attempt if there is none or it failed (e.g. timed out while consent was open).
+                    val claimedAt = SystemClock.elapsedRealtime()
+                    val early = EarlyDirectLink.claim(receiver.deviceAddress)
+                    val link =
+                        try {
+                            early?.awaitOrRelease()
+                        } catch (e: P2pFailure) {
+                            Log.w(TAG, "early Wi-Fi Direct attempt failed (${e.message}), retrying")
+                            null
+                        }
+                            ?: P2pGroupOwner(
+                                this@ProjectionService,
+                            ).open(receiver, EarlyDirectLink.senderName(this@ProjectionService))
                     p2pLink = link
+                    Log.i(
+                        TAG,
+                        "Wi-Fi Direct link ready ${SystemClock.elapsedRealtime() - claimedAt} ms after consent (early: ${early != null})",
+                    )
                     SenderStatus.setDirect(DirectLink(link.frequencyMhz))
                     startHost(link.endpoint)
                     link.lost.first()
@@ -192,11 +209,6 @@ class ProjectionService : Service() {
         is SecurityException -> getString(R.string.sender_error_p2p_permission)
         else -> getString(R.string.sender_error_p2p_failed, e.message ?: e.javaClass.simpleName)
     }
-
-    private fun senderName(): String = (
-        Settings.Global.getString(contentResolver, Settings.Global.DEVICE_NAME)?.takeIf { it.isNotBlank() }
-            ?: Build.MODEL
-        ).let(P2pTxt::fitName)
 
     private fun stopSession(reason: ByeReason, message: String? = null) {
         val s = session

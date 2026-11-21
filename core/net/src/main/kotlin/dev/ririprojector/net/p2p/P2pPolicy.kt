@@ -52,6 +52,12 @@ object P2pPolicy {
     const val ROUTER_OUTAGE_LIMIT_MS = 30_000L
 
     /**
+     * The receiver shows up in the group before its DHCP lease and routes are ready: the first connect
+     * may time out (seen twice in 4 runs), so it is retried for this long.
+     */
+    const val FIRST_CONNECT_WINDOW_MS = 10_000L
+
+    /**
      * The tablet has no dual-band concurrency (spike #21): a group on another channel than its
      * station link makes the radio switch channels and blocks writes for hundreds of ms.
      */

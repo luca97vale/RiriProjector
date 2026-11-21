@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** A receiver found over Wi-Fi Direct: [deviceAddress] is its P2P device address. */
 data class P2pReceiver(val name: String, val deviceAddress: String, val port: Int)
@@ -132,6 +133,7 @@ class P2pGroupOwner(private val context: Context) {
     suspend fun open(target: P2pReceiver, senderName: String, timeoutMs: Long = DEFAULT_TIMEOUT_MS): P2pLink {
         val lost = MutableStateFlow(false)
         val group = MutableStateFlow<WifiP2pGroup?>(null)
+        val discovering = MutableStateFlow(false)
         var created = false
         val ssid = P2pPolicy.newSsid()
         val psk = P2pPolicy.newPassphrase()
@@ -153,7 +155,16 @@ class P2pGroupOwner(private val context: Context) {
 
         try {
             receiver =
-                context.registerP2p(WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION) { intent ->
+                context.registerP2p(
+                    WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION,
+                    WifiP2pManager.WIFI_P2P_DISCOVERY_CHANGED_ACTION,
+                ) { intent ->
+                    if (intent.action == WifiP2pManager.WIFI_P2P_DISCOVERY_CHANGED_ACTION) {
+                        discovering.value =
+                            intent.getIntExtra(WifiP2pManager.EXTRA_DISCOVERY_STATE, 0) ==
+                            WifiP2pManager.WIFI_P2P_DISCOVERY_STARTED
+                        return@registerP2p
+                    }
                     val info = intent.parcelable<WifiP2pInfo>(WifiP2pManager.EXTRA_WIFI_P2P_INFO)
                     val g = intent.parcelable<WifiP2pGroup>(WifiP2pManager.EXTRA_WIFI_P2P_GROUP)
                     // Ours only: the first (sticky) broadcast may describe an older group.
@@ -179,6 +190,16 @@ class P2pGroupOwner(private val context: Context) {
                         }
                     }.build()
                 val channel = P2pPolicy.channelFor(stationFrequency())
+                // Published before the group exists (its name and passphrase are already chosen): the TV's
+                // discovery can fetch it while the group forms, and the join waits for the network.
+                val offer = P2pOfferRecord(senderName, ssid, psk, target.deviceAddress)
+                val service =
+                    WifiP2pDnsSdServiceInfo.newInstance(
+                        P2pTxt.OFFER_INSTANCE,
+                        P2pTxt.SERVICE_TYPE,
+                        P2pTxt.encode(offer),
+                    )
+                ch.await("addLocalService") { m, c, l -> m.addLocalService(c, service, l) }
                 // Set before the call: a stop while it is in flight must still remove the group it forms
                 // (no foreign group exists, checked above).
                 created = true
@@ -192,21 +213,16 @@ class P2pGroupOwner(private val context: Context) {
                 }
                 val formed = group.filter { it != null }.first()!!
                 phase("formed on ${formed.frequency} MHz")
-
-                val offer = P2pOfferRecord(senderName, ssid, psk, target.deviceAddress)
-                val service =
-                    WifiP2pDnsSdServiceInfo.newInstance(
-                        P2pTxt.OFFER_INSTANCE,
-                        P2pTxt.SERVICE_TYPE,
-                        P2pTxt.encode(offer),
-                    )
-                ch.await("addLocalService") { m, c, l -> m.addLocalService(c, service, l) }
                 // Listen state, so the receiver's service discovery reaches the offer.
+                // Restarted only when it stops (the browser's global stopPeerDiscovery, another app, the
+                // framework's own time limit): every restart begins with a channel scan, during which
+                // the receiver's queries cannot reach this device.
                 val listening =
                     launch {
                         while (true) {
                             runCatching { ch.await("discoverPeers") { m, c, l -> m.discoverPeers(c, l) } }
-                            delay(LISTEN_REARM_MS)
+                            withTimeoutOrNull(DISCOVERY_STARTED_WAIT_MS) { discovering.first { it } }
+                            withTimeoutOrNull(LISTEN_REARM_MS) { discovering.first { !it } }
                         }
                     }
                 var clientIp: String? = null
@@ -244,6 +260,7 @@ class P2pGroupOwner(private val context: Context) {
         /** Receiver discovery of the offer (~4 s), its join (~6 s) and DHCP, with margin. */
         const val DEFAULT_TIMEOUT_MS = 30_000L
         private const val POLL_MS = 250L
-        private const val LISTEN_REARM_MS = 10_000L
+        private const val LISTEN_REARM_MS = 60_000L
+        private const val DISCOVERY_STARTED_WAIT_MS = 2_000L
     }
 }

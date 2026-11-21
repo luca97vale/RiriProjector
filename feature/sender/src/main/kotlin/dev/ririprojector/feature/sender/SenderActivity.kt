@@ -90,6 +90,8 @@ class SenderActivity : ComponentActivity() {
                     System.currentTimeMillis(),
                     p.directAddress,
                 )
+            } else if (p.directAddress != null) {
+                EarlyDirectLink.cancel() // consent declined: drop the group started at the pick
             }
         }
 
@@ -225,6 +227,10 @@ class SenderActivity : ComponentActivity() {
     /** Usage access prompt (once), audio permission (when audio is on), then the consent dialog. */
     private fun requestProjection(target: ReceiverEndpoint, prefs: StreamPreferences, direct: P2pReceiver? = null) {
         pending = Pending(target, prefs, directAddress = direct?.deviceAddress)
+        // Let the TV find the offer while the consent dialog is up (ADR-011).
+        if (direct != null && Build.VERSION.SDK_INT >= WifiDirectSupport.MIN_SENDER_SDK) {
+            EarlyDirectLink.start(this, direct)
+        }
         if (prefs.audioEnabled && shouldAskUsageAccess()) askUsageAccess() else continueRequest()
     }
 

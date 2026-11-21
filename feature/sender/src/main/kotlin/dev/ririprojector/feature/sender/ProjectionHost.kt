@@ -95,6 +95,12 @@ internal class ProjectionHost(
     private val onEnded: (message: String?) -> Unit,
     /** How long one outage may last before giving up: 30 s over the router, 1.5 s over Wi-Fi Direct. */
     private val outageLimitMs: Long = P2pPolicy.ROUTER_OUTAGE_LIMIT_MS,
+    /**
+     * How long the first link keeps retrying a failed connect. Zero over the router (a receiver that
+     * does not answer is reported at once); over Wi-Fi Direct the receiver appears in the group before
+     * its own network is up, and the first connect can time out.
+     */
+    private val firstConnectWindowMs: Long = 0,
 ) {
     /** [target] with the name the receiver gave in its HELLO, once a link has one. */
     @Volatile private var shownTarget: ReceiverEndpoint = target
@@ -222,7 +228,11 @@ internal class ProjectionHost(
                     if (everStarted) {
                         l.run(RETRY_CONNECT_TIMEOUT_MS, RETRY_HANDSHAKE_TIMEOUT_MS)
                     } else {
-                        l.run(SenderClient.DEFAULT_CONNECT_TIMEOUT_MS, Handshake.DEFAULT_TIMEOUT_MS)
+                        l.run(
+                            SenderClient.DEFAULT_CONNECT_TIMEOUT_MS,
+                            Handshake.DEFAULT_TIMEOUT_MS,
+                            firstConnectWindowMs,
+                        )
                     }
                 link = null
                 // A link that got through the handshake is worth retrying even if it dropped before
@@ -404,18 +414,34 @@ internal class ProjectionHost(
             }
         }
 
-        fun run(connectTimeoutMs: Int, handshakeTimeoutMs: Int): LinkEnd {
+        /** Host thread: connects, retrying failed attempts until [windowMs] has passed or the link ended. */
+        private fun connectWithin(timeoutMs: Int, windowMs: Long): Connection {
+            val deadline = SystemClock.elapsedRealtime() + windowMs
+            while (true) {
+                try {
+                    return SenderClient.connect(target, timeoutMs)
+                } catch (e: IOException) {
+                    if (ended || SystemClock.elapsedRealtime() + CONNECT_RETRY_PAUSE_MS >= deadline) throw e
+                    Log.i(TAG, "connect failed (${e.message}): retrying")
+                    Thread.sleep(CONNECT_RETRY_PAUSE_MS)
+                }
+            }
+        }
+
+        fun run(connectTimeoutMs: Int, handshakeTimeoutMs: Int, connectWindowMs: Long = 0): LinkEnd {
             var writer: Thread? = null
             var failure: String? = null
             var cause: Throwable? = null
             var streamed = false
             try {
-                val conn = SenderClient.connect(target, connectTimeoutMs)
+                val linkStartAt = SystemClock.elapsedRealtime()
+                val conn = connectWithin(connectTimeoutMs, connectWindowMs)
                 connection = conn
                 if (ended) return LinkEnd(null)
                 val negotiatedSource = currentSource
                 val (hello, params) =
                     Handshake.asSender(conn, capabilities(negotiatedSource), preferences, sessionId, handshakeTimeoutMs)
+                Log.i(TAG, "connected and handshaken in ${SystemClock.elapsedRealtime() - linkStartAt} ms")
                 Log.i(TAG, "streaming to ${hello.deviceName} (${target.host}): ${params.video}")
                 // Show who actually answered: over Wi-Fi Direct the tablet streams to whichever device
                 // joined its group, so a wrong receiver must be visible (ADR-011).
@@ -722,6 +748,7 @@ internal class ProjectionHost(
          * session's decoder, so that wait counts against [RECEIVER_SILENCE_MS], not this timeout.
          */
         const val RETRY_CONNECT_TIMEOUT_MS = 1_000
+        const val CONNECT_RETRY_PAUSE_MS = 300L
         const val RETRY_HANDSHAKE_TIMEOUT_MS = 2_000
         const val RESIZE_DEBOUNCE_MS = 300L
         const val GAVE_UP_TEXT = "the receiver did not come back within 30 s"
