@@ -339,7 +339,7 @@ changes without asking the user to share again.
   Known gap, accepted to keep `ProjectionService` out of it: if the activity is destroyed in the
   background and a session starts and ends before it returns, nothing is saved.
 - **Quick start** matches the stored receiver against the live NSD list by exact host and port
-  first (receiver names are device names and may repeat), then by name (a Fire TV's DHCP lease may
+  first (receiver names are device names and may repeat), then by name (a receiver's DHCP lease may
   change its IP); without a match the stored address is offered as a "Last receiver" card, hidden
   while mirroring. IPv6 literals are not remembered: the manual `host:port` field cannot express them.
 

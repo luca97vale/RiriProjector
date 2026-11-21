@@ -32,19 +32,18 @@ verified yet; please report results with the bug template.
 ## Using RiriProjector
 
 ### What you need
-- **Receiver:** a Fire TV Stick (Fire OS 7 or later) or an Android TV / projector with Android 9+.
-- **Sender:** an Android 9+ tablet or phone (built and tested on a Galaxy Tab S9). Audio mirroring
-  needs Android 10+; picking a single app to share needs Android 14+.
+- Two Android devices meeting the [device support](#device-support) table: a sender (phone or
+  tablet) and a receiver (TV, projector, set-top box, or another phone/tablet).
 - Both on the **same Wi-Fi network**, ideally 5 GHz, with the router not blocking device-to-device
   traffic (guest networks and "AP isolation" usually do).
 
-The same APK runs on both: it opens as a receiver on a TV and as a sender on a tablet. The newest
+The same APK runs on both: it opens as a receiver on a TV and as a sender on a phone or tablet. The newest
 version is always at
 `https://github.com/luca97vale/RiriProjector/releases/latest/download/ririprojector.apk`
 (release notes and older versions on the
 [releases page](https://github.com/luca97vale/RiriProjector/releases)).
 
-### Install on the Fire TV (sideloading)
+### Install on a Fire TV (sideloading)
 Fire TV only installs apps from the Amazon Appstore unless you allow it for a specific app.
 
 1. **Enable Developer Options** (newer Fire OS versions hide it): *Settings › My Fire TV › About*,
@@ -72,29 +71,41 @@ adb install -r ririprojector-1.0.0.apk
 
 Accept the "Allow USB debugging?" prompt on the TV the first time.
 
-### Install on the tablet
-Open the release page on the tablet, download the `.apk` and open it. Android asks you to allow
-installs from your browser (or file manager) once: allow it, then install.
+### Install on an Android TV / Google TV
+1. *Settings › System › About*, select **Android TV OS build** 7 times to enable Developer options.
+2. Install **Downloader** (by AFTVnews) from the Play Store, or use any file manager or browser
+   that can open APKs.
+3. *Settings › Apps › Security & restrictions › Unknown sources* (the menu name varies by vendor)
+   and allow that app.
+4. In Downloader, type the direct APK link above, download and **Install**.
+
+The `adb connect` / `adb install -r` alternative above works the same way once *USB debugging* (or
+*Network debugging*) is on in Developer options.
+
+### Install on a phone or tablet
+Open the release page on the device, download the `.apk` and open it. Android asks you to allow
+installs from your browser (or file manager) once: allow it, then install. A phone or tablet used as
+the receiver switches role with *Use this device as a receiver*.
 
 ### First use
-1. Open RiriProjector on the TV (it waits for a connection).
-2. Open it on the tablet. The TV appears under **Receivers** within a few seconds; if not (some
-   routers filter discovery), type the `IP` or `IP:port` shown on the TV and tap **Connect**.
+1. Open RiriProjector on the receiver (it waits for a connection).
+2. Open it on the sender. The receiver appears under **Receivers** within a few seconds; if not (some
+   routers filter discovery), type the `IP` or `IP:port` shown on the receiver and tap **Connect**.
 3. Pick the stream settings if you want (codec, resolution, frame rate, bitrate, audio, sync), then
    tap the receiver.
 4. Allow the microphone permission (needed to capture app audio; nothing is recorded from the
    microphone) and choose **Entire screen** or **A single app** in the system dialog.
-5. Tap **Stop** on the tablet, or press Back on the TV remote, to end mirroring.
+5. Tap **Stop** on the sender, or press Back on the receiver (TV remote), to end mirroring.
 
-The tablet remembers your settings and the last receiver: next time, tap the receiver marked
-**Last used**, or the **Last receiver** card if the TV is not discovered.
+The sender remembers your settings and the last receiver: next time, tap the receiver marked
+**Last used**, or the **Last receiver** card if the receiver is not discovered.
 
 ### Known limitations
 - Protected content (Netflix, Prime Video and other DRM or `FLAG_SECURE` apps) is shown as black:
   Android does not allow capturing it.
-- Apps that opt out of audio capture are mirrored without sound; the tablet says so.
+- Apps that opt out of audio capture are mirrored without sound; the sender says so.
 - Android asks for screen-sharing consent at every new session; this is a system requirement.
-- To share one app's sound only, grant *Usage access* when the tablet asks once; without it, every
+- To share one app's sound only, grant *Usage access* when the sender asks once; without it, every
   app's sound is mirrored.
 - **Updates** install over the previous version only if signed with the same release key and with a
   higher version number. The development build (`dev.ririprojector.debug`) is a separate app and can
@@ -127,7 +138,8 @@ scripts/deploy.sh both --logs
 ## Releasing
 Releases are built by [`.github/workflows/release.yml`](.github/workflows/release.yml) when a
 `vMAJOR.MINOR.PATCH` tag is pushed. It signs the APK with the release key and attaches
-`ririprojector-<version>.apk` and its R8 `…-mapping.txt` to a GitHub release. The keystore and its
+`ririprojector-<version>.apk`, a stable-named `ririprojector.apk` and the R8 `…-mapping.txt` to a
+GitHub release. The keystore and its
 passwords never enter the repository.
 
 ### One-time setup
@@ -157,7 +169,7 @@ passwords never enter the repository.
 2. Tag and push: `git tag v1.0.0 && git push origin v1.0.0`, then approve the deployment in the
    workflow run. The version code is `major*10000 + minor*100 + patch`, so minor and patch must
    stay ≤ 99.
-3. When the workflow is green, install the APK from the release on **both** devices and check a
+3. When the workflow is green, install the APK from the release on a sender and a receiver and check a
    mirroring session with audio before announcing it (release builds are shrunk by R8).
 
 ### Signing locally (optional)
