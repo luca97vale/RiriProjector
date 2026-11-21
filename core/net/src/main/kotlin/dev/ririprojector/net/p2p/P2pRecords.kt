@@ -91,10 +91,11 @@ object P2pTxt {
         }
     }
 
-    private fun validName(name: String) = name.isNotBlank() && name.toByteArray().size <= MAX_NAME_BYTES
+    private fun validName(name: String) = name.isNotBlank() && name.toByteArray(Charsets.UTF_8).size <= MAX_NAME_BYTES
 
     /** Wi-Fi Direct group names must start with "DIRECT-xy" (`WifiP2pConfig.Builder`). */
-    private fun validSsid(ssid: String) = ssid.startsWith("DIRECT-") && ssid.toByteArray().size in 9..MAX_SSID_BYTES
+    private fun validSsid(ssid: String) =
+        ssid.startsWith("DIRECT-") && ssid.toByteArray(Charsets.UTF_8).size in 9..MAX_SSID_BYTES
 
     /** WPA2 passphrase: 8–63 printable ASCII characters. */
     private fun validPsk(psk: String) = psk.length in 8..63 && psk.all { it.code in 0x20..0x7e }
