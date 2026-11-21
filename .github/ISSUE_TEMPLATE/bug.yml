@@ -28,13 +28,13 @@ body:
   - type: input
     id: sender
     attributes:
-      label: Sender (tablet model / Android version / One UI)
+      label: Sender (device model / Android version or API level / vendor OS if any)
     validations:
       required: true
   - type: input
     id: receiver
     attributes:
-      label: Receiver (Fire TV or projector model / Fire OS)
+      label: Receiver (device model / Android version or API level / vendor OS if any)
     validations:
       required: true
   - type: input

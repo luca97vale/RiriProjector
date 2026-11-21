@@ -5,6 +5,8 @@
     <string name="sender_receivers">Receivers</string>
     <string name="sender_manual_hint">IP address (or IP:port)</string>
     <string name="sender_connect">Connect</string>
+    <string name="sender_last_receiver">Last receiver</string>
+    <string name="sender_last_used">Last used</string>
     <string name="sender_settings">Stream settings</string>
     <string name="sender_codec">Codec</string>
     <string name="sender_resolution">Max resolution</string>
@@ -25,7 +27,7 @@
     <string name="sender_error_revoked">screen capture was stopped</string>
     <string name="sender_audio_on">Audio: on · underruns %1$d · A/V %2$+d ms (apps that block capture stay silent)</string>
     <string name="sender_audio_off">Audio: off</string>
-    <string name="sender_audio_unavailable">Audio: unavailable (allow audio recording to mirror sound)</string>
+    <string name="sender_audio_unavailable">Audio: unavailable (needs Android 10 or later and permission to record audio)</string>
     <string name="sender_error_version">the receiver runs a different RiriProjector version: update the app on both devices</string>
     <string name="sender_audio">Audio</string>
     <string name="sender_on">On</string>
@@ -38,19 +40,20 @@
     <string name="sender_usage_access_hint">When you share one app, RiriProjector mirrors only that app\'s sound. To know which app you picked it needs Usage access. Without it, sound from all apps is mirrored.</string>
     <string name="sender_usage_access_allow">Allow</string>
     <string name="sender_usage_access_skip">Not now</string>
-    <string name="sender_latency">Latency: %1$d ms (p95 %2$d ms) from capture to the projector screen</string>
+    <string name="sender_latency">Latency: %1$d ms (p95 %2$d ms) from capture to the receiver screen</string>
     <string name="sender_video_delay">Lip-sync: video delayed %1$d ms to match the sound</string>
-    <string name="sender_content_hidden">The shared app is not on screen: the projector shows nothing until you return to it.</string>
+    <string name="sender_content_hidden">The shared app is not on screen: the receiver shows nothing until you return to it.</string>
+    <string name="sender_use_as_receiver">Use this device as a receiver</string>
     <string name="sender_direct_title">Wi-Fi Direct</string>
-    <string name="sender_direct_hint">Link the tablet straight to the projector, without the router: steadier sound and lower latency. Keep the tablet in the same room. While mirroring, a Fire TV leaves its router network.</string>
+    <string name="sender_direct_hint">Link this device straight to the receiver, without the router: steadier sound and lower latency. Keep both in the same room. While mirroring, a receiver on Android 9 leaves its router network.</string>
     <string name="sender_direct_search">Connect via Wi-Fi Direct</string>
-    <string name="sender_direct_searching">Looking for nearby Wi-Fi Direct devices… Open RiriProjector on the projector, then pick it below.</string>
+    <string name="sender_direct_searching">Looking for nearby Wi-Fi Direct devices… Open RiriProjector on the receiver, then pick it below.</string>
     <string name="sender_direct_permission">Allow nearby devices to use Wi-Fi Direct.</string>
     <string name="sender_direct_link">Wi-Fi Direct · %1$d MHz</string>
     <string name="sender_error_p2p_lost">lost %1$s over Wi-Fi Direct</string>
     <string name="sender_error_p2p_unsupported">this device cannot use Wi-Fi Direct (is Wi-Fi on?)</string>
     <string name="sender_error_p2p_busy">another app is using Wi-Fi Direct; close it and try again</string>
-    <string name="sender_error_p2p_timeout">%1$s did not join over Wi-Fi Direct: keep its RiriProjector screen open and the tablet close to it</string>
+    <string name="sender_error_p2p_timeout">%1$s did not join over Wi-Fi Direct: keep its RiriProjector screen open and this device close to it</string>
     <string name="sender_error_p2p_permission">Wi-Fi Direct needs the nearby devices permission</string>
     <string name="sender_error_p2p_failed">Wi-Fi Direct failed: %1$s</string>
 </resources>

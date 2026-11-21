@@ -1,6 +1,7 @@
 package dev.ririprojector.feature.receiver
 
 import android.app.Activity
+import android.content.Intent
 import android.graphics.Color
 import android.net.ConnectivityManager
 import android.os.Build
@@ -12,6 +13,7 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
 import android.view.WindowManager
+import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.TextView
 import dev.ririprojector.net.p2p.WifiDirectSupport
@@ -24,7 +26,10 @@ import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
-/** Fire TV entry point: full-screen decoder surface, waiting screen and a stats overlay. */
+/**
+ * Receiver entry point (any TV, set-top box, projector, phone or tablet): full-screen decoder
+ * surface, waiting screen and a stats overlay.
+ */
 class ReceiverActivity : Activity() {
     private val scope: CoroutineScope = MainScope()
     private var collector: Job? = null
@@ -32,6 +37,7 @@ class ReceiverActivity : Activity() {
     private lateinit var container: AspectFrameLayout
     private lateinit var status: TextView
     private lateinit var statsOverlay: TextView
+    private lateinit var useAsSender: Button
     private var overlayVisible = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -46,7 +52,8 @@ class ReceiverActivity : Activity() {
                 setTextColor(Color.WHITE)
                 // Opaque: a SurfaceView keeps showing its last frame after the session ends.
                 setBackgroundColor(Color.BLACK)
-                textSize = 26f
+                // TV-sized text on large screens, smaller on phones.
+                textSize = if (resources.configuration.smallestScreenWidthDp >= 600) 26f else 18f
                 gravity = Gravity.CENTER
             }
         statsOverlay =
@@ -58,14 +65,36 @@ class ReceiverActivity : Activity() {
                 setPadding(24, 16, 24, 16)
                 visibility = View.GONE
             }
+        // Manual role choice on any device (ADR-001); shown only while no stream is on screen.
+        useAsSender =
+            Button(this).apply {
+                setText(R.string.receiver_use_as_sender)
+                setOnClickListener {
+                    startActivity(Intent(ACTION_USE_AS_SENDER).setPackage(packageName))
+                    finish()
+                }
+            }
         val root =
             FrameLayout(this).apply {
                 setBackgroundColor(Color.BLACK)
                 addView(container, FrameLayout.LayoutParams(MATCH, MATCH, Gravity.CENTER))
                 addView(status, FrameLayout.LayoutParams(MATCH, MATCH))
                 addView(statsOverlay, FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.START))
+                addView(
+                    useAsSender,
+                    FrameLayout.LayoutParams(WRAP, WRAP, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+                        bottomMargin = (32 * resources.displayMetrics.density).toInt()
+                    },
+                )
+                // Touch receivers (phones, tablets) have no D-pad: a tap toggles the overlay. The
+                // screen itself holds the initial focus, so OK on a remote keeps toggling the
+                // overlay; the role button needs a deliberate D-pad move first.
+                setOnClickListener { toggleOverlay() }
+                isFocusable = true
+                defaultFocusHighlightEnabled = false
             }
         setContentView(root)
+        root.requestFocus()
 
         controller = ReceiverController(applicationContext, deviceName(), displayInfo(), ::localIpv4)
         controller.onStreamStarted = { params ->
@@ -103,7 +132,7 @@ class ReceiverActivity : Activity() {
     }
 
     override fun onPause() {
-        // Back/finish: the user is done with the projector, so the tablet should stop too.
+        // Back/finish: the user is done with the receiver, so the sender should stop too.
         controller.leaveReason = if (isFinishing) ByeReason.USER_STOPPED else ByeReason.NORMAL
         super.onPause()
     }
@@ -121,18 +150,23 @@ class ReceiverActivity : Activity() {
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean = when (keyCode) {
         KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_INFO -> {
-            overlayVisible = !overlayVisible
-            statsOverlay.visibility = if (overlayVisible) View.VISIBLE else View.GONE
+            toggleOverlay()
             true
         }
 
         else -> super.onKeyDown(keyCode, event)
     }
 
+    private fun toggleOverlay() {
+        overlayVisible = !overlayVisible
+        statsOverlay.visibility = if (overlayVisible) View.VISIBLE else View.GONE
+    }
+
     private fun render(state: ReceiverState) {
         when (state) {
             is ReceiverState.Waiting -> {
                 status.visibility = View.VISIBLE
+                useAsSender.visibility = View.VISIBLE
                 val waiting =
                     if (state.address != null) {
                         getString(R.string.receiver_waiting_at, state.name, state.address, state.port)
@@ -146,6 +180,7 @@ class ReceiverActivity : Activity() {
 
             is ReceiverState.Streaming -> {
                 status.visibility = View.GONE
+                useAsSender.visibility = View.GONE
                 val v = state.params.video
                 val s = state.stats
                 statsOverlay.text =
@@ -182,6 +217,7 @@ class ReceiverActivity : Activity() {
 
             is ReceiverState.Failed -> {
                 status.visibility = View.VISIBLE
+                useAsSender.visibility = View.VISIBLE
                 status.text = getString(R.string.receiver_failed, state.message)
             }
         }
@@ -213,9 +249,12 @@ class ReceiverActivity : Activity() {
         }.firstOrNull { it is Inet4Address && !it.isLoopbackAddress }?.hostAddress
     }
 
-    private companion object {
-        const val MATCH = FrameLayout.LayoutParams.MATCH_PARENT
-        const val WRAP = FrameLayout.LayoutParams.WRAP_CONTENT
-        const val REQUEST_WIFI_DIRECT = 21
+    companion object {
+        /** Switch this device to sender mode and remember it (handled by the app's launcher activity). */
+        const val ACTION_USE_AS_SENDER = "dev.ririprojector.action.USE_AS_SENDER"
+
+        private const val MATCH = FrameLayout.LayoutParams.MATCH_PARENT
+        private const val WRAP = FrameLayout.LayoutParams.WRAP_CONTENT
+        private const val REQUEST_WIFI_DIRECT = 21
     }
 }

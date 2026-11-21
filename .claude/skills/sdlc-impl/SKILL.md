@@ -22,5 +22,5 @@ Issue: #$ARGUMENTS
 4. If a step requires leaving the plan (new module, unplanned protocol change, new library)
    **stop and ask the user**; then update the plan.
 5. At the end: `./gradlew assembleDebug testDebugUnitTest spotlessCheck` must be green.
-6. Summarize what was done and suggest `/sdlc-test` (and `/firetv-deploy both` if the change is
+6. Summarize what was done and suggest `/sdlc-test` (and `/device-deploy both` if the change is
    visible on device).
