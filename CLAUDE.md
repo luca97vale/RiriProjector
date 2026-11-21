@@ -1,11 +1,13 @@
-# RiriProjector — guide for Claude Code
+| Device | `/device-deploy` | Build, install on receiver/sender devices, filtered logcat || Full-screen activity (D-pad and touch) with `SurfaceView``mediaProjection` foreground service, phone/scripts/deploy.sh receiver|sender|both # build + install via adb (see /device-deploy) UI (Compose) || Launch activity, mode selection (auto-receiver on TV-like devices, remembered manual choice everywhere), wiring, single manifest |# RiriProjector — guide for Claude Code
 
-A single Android app (Kotlin) that mirrors the screen **and audio** of a **Galaxy Tab** (sender) to a
-**Fire TV Stick / Android projector** (receiver) over the LAN, with lower latency and better quality
-than Miracast.
+A single Android app (Kotlin) that mirrors the screen **and audio** of any **Android phone or tablet** (sender) to any
+**Android TV, set-top box, projector, phone or tablet** (receiver) over the LAN, with lower latency
+and better quality than Miracast. Nothing is tied to a vendor or model: roles and limits follow API
+levels and device features (see "Platform constraints"). Reference test devices so far: Galaxy Tab S9
+(sender), Fire TV Stick and Pixel 10 (receivers).
 
 ```
-Tablet (sender)                                         Fire TV (receiver)
+Sender (phone/tablet, API 29+ for audio)                 Receiver (TV/box/projector/phone, API 28+)
 MediaProjection → VirtualDisplay → Surface              NSD discovery (_ririproj._tcp)
   → MediaCodec encoder HEVC|H.264 (realtime, CBR)       TCP server ← HELLO/caps
   → protocol framing → TCP (TCP_NODELAY) ─────────────→ deframing → MediaCodec decoder (low-latency)
@@ -22,12 +24,12 @@ in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); roadmap in [docs/PLAN.md](docs/
 
 | Module | Type | Responsibility |
 |---|---|---|
-| `:app` | Android app | Launch activity, mode selection (auto-receiver on TV/leanback), wiring, single manifest |
+| `:app` | Android app | Launch activity, mode selection (auto-receiver on TV-like devices, remembered manual choice everywhere), wiring, single manifest |
 | `:core:protocol` | **Pure Kotlin/JVM** | Framing, messages, (de)serialization, versioning, codec negotiation. No Android deps → fast JVM tests |
 | `:core:net` | Android lib | TCP transport (client/server), NSD publish/discover, backpressure, RTT measurement |
 | `:core:media` | Android lib | MediaCodec encoder/decoder wrappers (video and Opus), codec selection from `MediaCodecList`, low-latency params, audio capture (`AudioPlaybackCapture`) and playback (`AudioTrack`) |
-| `:feature:sender` | Android lib | MediaProjection (video + audio), `mediaProjection` foreground service, tablet UI |
-| `:feature:receiver` | Android lib | Full-screen leanback activity with `SurfaceView`, audio player, A/V sync, stats overlay |
+| `:feature:sender` | Android lib | MediaProjection (video + audio), `mediaProjection` foreground service, phone/tablet UI (Compose) |
+| `:feature:receiver` | Android lib | Full-screen activity (D-pad and touch) with `SurfaceView`, audio player, A/V sync, stats overlay |
 
 Dependency rule: `feature → core:media/net → core:protocol`. Features never depend on each other.
 All logic that can be tested without a device (framing, bitrate policy, codec choice from a capability
@@ -46,11 +48,13 @@ On Windows use `./gradlew` from Git Bash (or `gradlew.bat`). Gradle runs on JDK 
 ./gradlew spotlessApply              # ktlint formatting
 ./gradlew spotlessCheck lintDebug    # what CI runs besides tests and build
 ./gradlew connectedDebugAndroidTest  # instrumented tests (device attached)
-scripts/deploy.sh firetv|tablet|both # build + install via adb (see /firetv-deploy)
+scripts/deploy.sh receiver|sender|both # build + install via adb (see /device-deploy)
 ```
 
-Local environment variables (never committed): `FIRETV_HOST` (Fire TV IP, port 5555 by default),
-`TABLET_SERIAL` (adb serial of the tablet, optional).
+Local environment variables (never committed): `RECEIVER_HOST` (receiver IP for `adb connect`, port
+`RECEIVER_PORT`, 5555 by default) or `RECEIVER_SERIAL` (USB-attached receiver), and `SENDER_SERIAL`
+(adb serial of the sender, optional). The old names `FIRETV_HOST`/`FIRETV_PORT`/`TABLET_SERIAL` still
+work as fallbacks.
 
 ## SDLC flow (mandatory)
 
@@ -66,7 +70,7 @@ Details in [docs/SDLC.md](docs/SDLC.md). Available skills:
 | Review | `/sdlc-review` | Review by the `media-net-reviewer` agent + fixes |
 | PR | `/sdlc-pr` | PR with the filled-in template, linked to the issue |
 | Full cycle | `/sdlc-feature <description>` | Orchestrates the phases above, pausing for approval |
-| Device | `/firetv-deploy` | Build, install on Fire TV/tablet, filtered logcat |
+| Device | `/device-deploy` | Build, install on the receiver/sender devices, filtered logcat |
 
 ## Conventions
 
@@ -88,11 +92,18 @@ Details in [docs/SDLC.md](docs/SDLC.md). Available skills:
 
 ## Platform constraints to remember
 
-- Fire TV Stick: Fire OS 7 = Android 9 (API 28), Fire OS 8 = Android 11 (API 30) → `minSdk 28`.
-  `KEY_LOW_LATENCY` only from API 30: on API 28 use vendor keys when present, otherwise minimize
-  app-side buffering. Requires `LEANBACK_LAUNCHER`, a 320×180 banner,
-  `uses-feature touchscreen required=false`.
-- Galaxy Tab (Android 14+): MediaProjection consent for every session, foreground service with
+- Roles, not models: **sender** = any phone or tablet (video from `minSdk 28`, audio capture from API 29,
+  single-app sharing from API 34); **receiver** = any TV, set-top box, projector, phone or tablet
+  (`minSdk 28`). Never branch on `Build.MODEL`/manufacturer; gate on API level, `MediaCodecList`
+  capabilities and system features. Vendor-specific codec keys are best effort and always have a
+  plain fallback.
+- `minSdk 28` keeps older TV sticks (e.g. Fire OS 7 = Android 9) as receivers. `KEY_LOW_LATENCY` only
+  from API 30: below, try vendor keys when present, otherwise minimize app-side buffering.
+- TV devices: `LEANBACK_LAUNCHER`, a 320×180 banner, `uses-feature touchscreen required=false`, D-pad
+  navigation. "TV-like" = `FEATURE_LEANBACK` or `UI_MODE_TYPE_TELEVISION` (or the Fire TV feature flag,
+  since some Fire OS builds report neither) → auto-receiver; every device can switch role manually.
+- Small screens: layouts must work at 360 dp width in both orientations (phones as sender or receiver).
+- Android 14+ senders: MediaProjection consent for every session, foreground service with
   `foregroundServiceType="mediaProjection"` started **before** `getMediaProjection`,
   `MediaProjection.Callback` registered before creating the VirtualDisplay.
 - Audio: `AudioPlaybackCapture` requires API 29+ and `RECORD_AUDIO`; apps with

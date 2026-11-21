@@ -70,7 +70,7 @@ The MVP is complete only at the end of M5 (audio included).
 - `VideoEncoder` (`:core:media`): HEVC/H.264 hardware, ADR-004 parameters, sync frame request,
   live bitrate update.
 - Encoder → `MessageWriter` loop on a dedicated thread, bounded queue dropping non-keyframes.
-- Verification: `/firetv-deploy both`, stable mirroring for 10 minutes, metrics in overlay.
+- Verification: `/device-deploy both`, stable mirroring for 10 minutes, metrics in overlay.
 
 ## M5 — Audio (ADR-007, mandatory for the MVP)
 - Protocol: `AUDIO_CONFIG`/`AUDIO_FRAME`, PCM/Opus negotiation in HELLO/START; final transport
