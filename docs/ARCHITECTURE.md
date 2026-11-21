@@ -6,15 +6,24 @@ with a progressive number; accepted ones are not rewritten, they are superseded.
 ---
 
 ## ADR-001 — Single app with two modes
-**Accepted.** One APK. On launch: if the device has `FEATURE_LEANBACK` (Fire TV/projector) the
+**Accepted.** One APK. On launch: if the device has `FEATURE_LEANBACK` (Android TV, Fire TV, projector) the
 receiver starts directly; otherwise the user chooses (default sender).
 The manifest declares both `LAUNCHER` and `LEANBACK_LAUNCHER`, `touchscreen required=false`,
-`microphone required=false` (implied by `RECORD_AUDIO`, would otherwise hide the app on Fire TV)
+`microphone required=false` (implied by `RECORD_AUDIO`, would otherwise hide the app on TV devices)
 and a TV banner.
 *Revision (M0)*: "TV" = `amazon.hardware.fire_tv` OR `FEATURE_LEANBACK` OR
-`UI_MODE_TYPE_TELEVISION` (some Fire TV/projector builds do not report leanback reliably).
+`UI_MODE_TYPE_TELEVISION` (some TV/projector builds, e.g. Fire TV, do not report leanback reliably).
 `MainActivity` is a UI-less trampoline (`noHistory`, `excludeFromRecents`); an explicit `mode`
 launch extra overrides detection.
+*Revision (#24, all Android devices)*: the roles are not tied to a model or vendor. **Sender** = any
+phone or tablet (video from minSdk 28, audio capture from API 29, single-app sharing from API 34);
+**receiver** = any TV, set-top box, projector, phone or tablet (minSdk 28). The promised user choice
+now exists: the sender screen offers *Use this device as a receiver* and the receiver waiting screen
+*Use this device as a sender*. They send `dev.ririprojector.action.USE_AS_RECEIVER` / `USE_AS_SENDER`
+(package-scoped) to `MainActivity`, which stores the choice. Precedence at launch: `mode` extra (not
+stored, used by `scripts/deploy.sh`) > stored choice > TV detection. The receiver toggles its stats
+overlay with a tap as well as with D-pad keys. Reference test devices so far: Galaxy Tab S9 (sender),
+Fire TV Stick on Fire OS 7 and Pixel 10 (receivers); figures below say which device they come from.
 
 ## ADR-002 — Transport: TCP with custom framing, no RTP/WebRTC
 **Accepted.** On a home LAN, TCP with `TCP_NODELAY` gives sufficient latency and free reliability;
@@ -30,7 +39,7 @@ the kernel; `trafficClass` with DSCP AF41 / video; `keepAlive`.
 and the video delay to STATS. v3 makes PING/PONG NTP-style on `CLOCK_MONOTONIC` (4 timestamps; PING
 carries the sender's offset and RTT estimate), adds capture→shown latency to STATS and adds
 VIDEO_RECONFIG. Versions are not interoperable, and a mismatch ends the handshake with
-`INCOMPATIBLE` and an "update both devices" message on the tablet.
+`INCOMPATIBLE` and an "update both devices" message on the sender.
 
 Unknown values: latency fields use `-1` (`ControlMessage.UNKNOWN`), the signed A/V offset uses
 `Int.MIN_VALUE` (`UNKNOWN_SIGNED`), and `Ping.offsetUs` uses `Long.MIN_VALUE` (`NO_OFFSET`). Control payloads: big-endian, strings = u16 length + UTF-8, lists = u8 count; media packets carry raw codec output. Unknown message types are skipped by readers; invalid field values are `MALFORMED_PAYLOAD`.
@@ -89,7 +98,7 @@ Messages:
      `KEY_I_FRAME_INTERVAL = 10` s as a safety net;
   2. *realtime*: the realtime keys with a 2 s I-frame interval;
   3. *plain*: only keys every encoder accepts.
-  The accepted tier is logged and shown in the tablet's stats; a name denylist exists for encoders
+  The accepted tier is logged and shown in the sender's stats; a name denylist exists for encoders
   whose intra-refresh output shows artefacts on device.
 - **Adaptive bitrate** (`BitratePolicy`, `:core:net`, pure and clock-injected, AIMD). It lives in
   `ProjectionHost`, so its value survives reconnections.
@@ -109,7 +118,7 @@ Messages:
 ## ADR-005 — Decoder pipeline (receiver)
 **Accepted.**
 - `SurfaceView` (not `TextureView`) for the shortest composition path.
-- `KEY_LOW_LATENCY=1` if `FEATURE_LowLatency` (API 30+); on Fire OS 7 try known vendor keys
+- `KEY_LOW_LATENCY=1` if `FEATURE_LowLatency` (API 30+); below API 30 (e.g. Fire OS 7) try known vendor keys
   (e.g. `vendor.low-latency.enable`) only if the codec advertises them; `KEY_PRIORITY=0`,
   high `KEY_OPERATING_RATE`.
 - Asynchronous mode (`setCallback`) on a dedicated thread; outputs released immediately
@@ -132,14 +141,14 @@ The sender uses `NsdManager.discoverServices`; fallback to manual IP:port entry
 (some networks/routers filter multicast).
 
 ## ADR-007 — Audio (part of the MVP)
-**Accepted.** Tablet audio must play on the TV: mirroring without audio is not considered working.
-- **Capture**: `AudioPlaybackCapture` (API 29+, fine on the tablet) from the same `MediaProjection` as
+**Accepted.** Sender audio must play on the receiver: mirroring without audio is not considered working.
+- **Capture**: `AudioPlaybackCapture` (API 29+; API 28 senders mirror video only) from the same `MediaProjection` as
   video, `RECORD_AUDIO` permission, usages `MEDIA`, `GAME`, `UNKNOWN`. Known limitation: apps that
   declare `allowAudioPlaybackCapture=false` (or use non-capturable usages, e.g. calls) are not
   captured → shown in the UI, not a bug.
 - **Format**: default **PCM s16le 48 kHz stereo** in 10 ms packets (~1.5 Mbps, no codec latency,
-  negligible next to video on a LAN). **Opus** (MediaCodec encoder API 29+, decoder available on
-  Fire OS 7) as an option for weak networks, selected during negotiation.
+  negligible next to video on a LAN). **Opus** (MediaCodec encoder API 29+, decoder available from
+  API 21, e.g. on Fire OS 7) as an option for weak networks, selected during negotiation.
 - **Transport** *(decided in M5)*: the **same TCP connection** as video. The sender `SendQueue`
   writes by priority (control > audio > video). Priority only holds in user space, so the socket
   send buffer is kept small (64 KB, about two frames at 20 Mbps): congestion then builds in the
@@ -150,13 +159,13 @@ The sender uses `NsdManager.discoverServices`; fallback to manual IP:port entry
   receiver creates a `JitterBuffer` + `AudioPlayer` for that format; audio failures never end the session
   (mirroring continues video-only and the sender UI says so).
 - **Opus** is deferred to the bandwidth policy work (M6): PCM adds no codec latency.
-- **Playback (receiver)**: `AudioTrack` with `PERFORMANCE_MODE_LOW_LATENCY`, minimal buffer (on
-  Fire TV it still lands on the normal HDMI mixer: the audio policy has no fast output, and the
-  path after our track adds ~220 ms we cannot reduce).
+- **Playback (receiver)**: `AudioTrack` with `PERFORMANCE_MODE_LOW_LATENCY`, minimal buffer. Measured on a Fire
+  TV Stick, it still lands on the normal HDMI mixer: the audio policy has no fast output, and the
+  path after our track adds ~220 ms we cannot reduce. Other receivers differ; `AvSync` measures it.
 - **Jitter buffer** *(revised in M6, after device measurements)*. Over Wi-Fi, audio arrives in
   clumps 40–80 ms apart, so the level is a sawtooth. The first design (20–60 ms target, anything
   above target + 20 ms discarded at once) threw each clump away and underran on the next gap
-  (~1 per second on Fire TV). `JitterBuffer` now controls the **low-water mark**:
+  (~1 per second, measured on a Fire TV Stick). `JitterBuffer` now controls the **low-water mark**:
   - arrival gaps are measured in played time (audio pulled between two pushes); gaps over 150 ms
     are stalls, met with an underrun rather than covered (covering them would add their length to
     the latency for good);
@@ -178,8 +187,8 @@ The sender uses `NsdManager.discoverServices`; fallback to manual IP:port entry
   render time: with `releaseOutputBuffer(i, true)` some decoders echo the pts instead). Audio
   "played" comes only from `AudioTrack.getTimestamp` samples that pass `TimestampValidator`
   (call succeeded, position advanced or the same sample repeated, younger than 200 ms).
-- **Sync mode** *(decided in M5, user choice in the tablet settings, sent in START)*. Measured on a
-  Tab S9 → Pixel: video is on screen ~10 ms after arrival, audio plays ~190 ms after (capture
+- **Sync mode** *(decided in M5, user choice in the sender settings, sent in START)*. Measured on a
+  Galaxy Tab S9 → Pixel 10: video is on screen ~10 ms after arrival, audio plays ~190 ms after (capture
   ~75 ms, jitter buffer, track and device output), so audio is late by ~180 ms.
   - **Lip-sync (default)**: the receiver delays video to meet audio. Every video unit goes through a
     `VideoDelayLine` (one byte ring sized for 300 ms + margin at twice the bitrate, ≥ 2 MiB, 64
@@ -194,12 +203,12 @@ The sender uses `NsdManager.discoverServices`; fallback to manual IP:port entry
   - With audio off the delay never leaves 0 (no audio samples), so lip-sync costs nothing.
 - **Audio off** *(M5)*: a sender setting (default on). Off means no RECORD_AUDIO request, no capture,
   no AUDIO_CONFIG.
-- **To verify on device**: whether audio keeps playing from the tablet speakers during capture and
+- **To verify on device**: whether audio keeps playing from the sender speakers during capture and
   how to mute it without affecting the captured stream.
 
 ## ADR-008 — Tooling
 **Accepted.** Gradle Kotlin DSL + version catalog, latest stable AGP/Kotlin at scaffolding time,
-Gradle running on JDK 25 LTS with Java 17 bytecode, Compose for the tablet UI, minimal Views for the
+Gradle running on JDK 25 LTS with Java 17 bytecode, Compose for the sender UI, minimal Views for the
 receiver, Spotless (ktlint) + Android Lint, JUnit4 + Truth + kotlinx-coroutines-test for JVM tests,
 AndroidX Test for instrumented tests.
 *Revision (M0)*: Gradle 9.9.1, AGP 9.5.1 with built-in Kotlin and the new DSL (no
@@ -210,12 +219,12 @@ with `-Xjdk-release=17` / `options.release = 17` so they cannot use APIs missing
 
 ## ADR-009 — Single-app sharing and its audio
 **Accepted** (M5). The choice between the entire screen and one app is made **only in the system
-consent dialog** (Android 14+: `createConfigForUserChoice`); the tablet UI has no share setting.
+consent dialog** (Android 14+: `createConfigForUserChoice`); the sender UI has no share setting.
 - Playback capture is **device-wide** whatever the projection shows, and Android 14–16 have no API
   that tells what the user picked in the dialog. For a one-app share, capturing everything would
   leak other apps' sound into it.
 - **Requirement: the audio follows the choice automatically.** The system brings the chosen app to
-  the front right after the dialog (verified on a Tab S9, One UI / Android 16); for the entire screen
+  the front right after the dialog (verified on a Galaxy Tab S9, One UI / Android 16); for the entire screen
   nothing else comes to the front. With the user-granted **Usage access** (`PACKAGE_USAGE_STATS`
   app op) the session reads `UsageEvents.ACTIVITY_RESUMED` between the dialog being shown and
   1.5 s after its result, ignoring RiriProjector, System UI and the launcher (`SharedAppPicker`,
@@ -230,13 +239,13 @@ consent dialog** (Android 14+: `createConfigForUserChoice`); the tablet UI has n
   is taken for a one-app share of that app.
 - *Superseded*: a manual "Audio from" picker and a "Share" setting (earlier M5 iterations) were
   rejected by the user: one decision, in the system dialog.
-- When the shared app leaves the screen (`onCapturedContentVisibilityChanged`), the tablet shows a
-  warning: the projector shows nothing until the user returns to it.
+- When the shared app leaves the screen (`onCapturedContentVisibilityChanged`), the sender shows a
+  warning: the receiver shows nothing until the user returns to it.
 - Revisit when `MediaProjectionConfig` can request app-scoped audio (API 37
-  `setAudioRequested`) on the target tablets.
+  `setAudioRequested`) on target senders.
 
 ## ADR-010 — Reconnection and in-session reconfiguration
-**Accepted** (M6). The tablet keeps mirroring across network hiccups, receiver restarts and size
+**Accepted** (M6). The sender keeps mirroring across network hiccups, receiver restarts and size
 changes without asking the user to share again.
 
 **Sender: two lifetimes.**
@@ -261,7 +270,7 @@ changes without asking the user to share again.
   reset the outage, so a receiver that accepts and then fails cannot keep the loop alive forever.
 - A first connection that never completed its handshake is not retried: a receiver that never
   answered is a user error. Once one handshake succeeded, later failures are retried.
-- The tablet shows "Reconnecting…" while it keeps the projection.
+- The sender shows "Reconnecting…" while it keeps the projection.
 - `ReconnectPolicy.classify` decides between giving up (*final*) and trying again (*retry*):
 
 | Cause | Decision |
@@ -279,8 +288,8 @@ changes without asking the user to share again.
   up to 3 s. The new session first completes its handshake (so the sender's handshake timeout
   never waits on it), then waits up to 1.5 s for the old one to release its decoder (a latch counted
   right after the decoder closes), since a Surface takes one codec at a time.
-- Leaving the receiver (Back) sends `BYE(USER_STOPPED)`, so the tablet stops. Backgrounding it
-  sends `BYE(NORMAL)`, so the tablet keeps retrying and resumes if the TV app returns within 30 s.
+- Leaving the receiver (Back) sends `BYE(USER_STOPPED)`, so the sender stops. Backgrounding it
+  sends `BYE(NORMAL)`, so the sender keeps retrying and resumes if the receiver app returns within 30 s.
 
 **Size changes (rotation, one-app window resize).**
 - *Source.* On API 34+ the only source is `MediaProjection.Callback.onCapturedContentResize`
@@ -309,5 +318,5 @@ changes without asking the user to share again.
 - a dummy 1×1 SurfaceTexture between links: a never-drained consumer stalls the producer;
 - a `ConnectivityManager.NetworkCallback` to retry as soon as Wi-Fi returns: deferred; the 500 ms
   backoff already reconnects within ~1 s of the network coming back;
-- relying on adaptive playback for size changes: unreliable on Fire TV, and it mixes sizes in the
+- relying on adaptive playback for size changes: unreliable on the Fire TV Stick decoder, and it mixes sizes in the
   delay line.

@@ -121,9 +121,10 @@ object CodecNegotiator {
      * Largest size with the source aspect ratio that fits every limit, each side rounded down to a
      * multiple of 8 (keeps 1080 lines intact; hardware codecs pad internally).
      *
-     * The source keeps its real orientation and is fitted inside the receiver display as-is: the TV
-     * does not rotate, so a portrait tablet becomes a pillarboxed portrait stream rather than a
-     * full-height image the TV would have to downscale. Codec limits are checked per axis.
+     * The source keeps its real orientation and is fitted inside the receiver display as-is: the
+     * receiver does not rotate the stream, so a portrait sender on a landscape TV becomes a
+     * pillarboxed portrait stream rather than a full-height image the TV would have to downscale.
+     * Codec limits are checked per axis.
      */
     internal fun fitResolution(
         sender: SenderCapabilities,

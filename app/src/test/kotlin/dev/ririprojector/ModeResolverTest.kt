@@ -60,7 +60,9 @@ class ModeResolverTest {
 
     @Test
     fun `explicit extra beats remembered choice`() {
-        assertThat(ModeResolver.resolve("sender", isTv = false, remembered = AppMode.RECEIVER)).isEqualTo(AppMode.SENDER)
+        assertThat(
+            ModeResolver.resolve("sender", isTv = false, remembered = AppMode.RECEIVER),
+        ).isEqualTo(AppMode.SENDER)
     }
 
     @Test
@@ -70,7 +72,8 @@ class ModeResolverTest {
 
     @Test
     fun `switch actions map to modes`() {
-        fun target(action: String?) = ModeResolver.switchTarget(action, useAsReceiverAction = "R", useAsSenderAction = "S")
+        fun target(action: String?) =
+            ModeResolver.switchTarget(action, useAsReceiverAction = "R", useAsSenderAction = "S")
         assertThat(target("R")).isEqualTo(AppMode.RECEIVER)
         assertThat(target("S")).isEqualTo(AppMode.SENDER)
         assertThat(target("android.intent.action.MAIN")).isNull()

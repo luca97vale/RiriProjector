@@ -4,8 +4,9 @@ Milestone roadmap. Each milestone is a GitHub issue and follows the SDLC cycle (
 `docs/plans/` before code). Milestones are ordered to reduce risk: first prove the end-to-end video
 chain, then audio, then optimize latency.
 
-**Measurable MVP goal**: 1080p60 HEVC (or H.264) **with audio** from the Galaxy Tab to the Fire TV
-over 5 GHz Wi-Fi, glass-to-glass latency ≤ 100 ms p95 (final target ≤ 60 ms), A/V offset within
+**Measurable MVP goal**: 1080p60 HEVC (or H.264) **with audio** from an Android phone or tablet to an Android
+TV/projector receiver (reference devices: Galaxy Tab S9 → Fire TV Stick) over 5 GHz Wi-Fi,
+glass-to-glass latency ≤ 100 ms p95 (final target ≤ 60 ms), A/V offset within
 ±40 ms, no freeze or audio gap > 500 ms in 10 minutes, automatic reconnection within 3 s.
 The MVP is complete only at the end of M5 (audio included).
 
@@ -55,15 +56,15 @@ The MVP is complete only at the end of M5 (audio included).
 - Bounded send queue dropping non-key frames.
 - Tests: JVM over loopback sockets (full handshake, remote close, timeout), NSD instrumented.
 
-## M3 — Receiver (Fire TV)
-- Full-screen leanback `ReceiverActivity` with `SurfaceView`, keep-screen-on, stats overlay
+## M3 — Receiver (TV / any Android device)
+- Full-screen `ReceiverActivity` (leanback-friendly) with `SurfaceView`, keep-screen-on, stats overlay
   toggled from the remote.
 - `VideoDecoder` (`:core:media`): hardware decoder selection from `MediaCodecList`, low-latency
   configuration (ADR-005), async mode, CONFIG/keyframe handling, drop until next IDR +
   REQUEST_KEYFRAME on backlog.
 - HELLO with the device's real capabilities.
 
-## M4 — Sender (Galaxy Tab) → **first end-to-end**
+## M4 — Sender (phone/tablet) → **first end-to-end**
 - Compose UI: discovered receivers, status, settings (codec, resolution, fps, bitrate).
 - Foreground `ProjectionService` (`mediaProjection`): consent, `MediaProjection.Callback`,
   `VirtualDisplay` on the encoder Surface, stop from notification.
@@ -81,17 +82,17 @@ The MVP is complete only at the end of M5 (audio included).
   underrun → silence, build-up → drop, pts realignment), optional Opus decoder.
 - A/V sync via pts + `AudioTrack.getTimestamp`; A/V offset in the overlay.
 - UI: "audio not capturable" indicator for apps that forbid it; check and handle audio still
-  playing from the tablet speakers.
+  playing from the sender speakers.
 - Verification: clap/flash test video → measured A/V offset ≤ 40 ms; 10 minutes of music with no
   audible gaps.
 
 ## M6 — Latency and robustness
 - Measurement: sender timestamps in FRAME + clock offset estimate via PING → capture→decode
-  latency in overlay; glass-to-glass procedure (stopwatch on the tablet filmed together with the
-  TV at 240 fps) documented in [docs/LATENCY.md](LATENCY.md).
+  latency in overlay; glass-to-glass procedure (stopwatch on the sender filmed together with the
+  receiver at 240 fps) documented in [docs/LATENCY.md](LATENCY.md).
 - Adaptive bitrate (pure `BitratePolicy`) based on send queue and STATS.
 - Intra-refresh where supported; tuning of `KEY_REPEAT_PREVIOUS_FRAME_AFTER`, operating rate,
-  vendor keys (MediaTek on Fire TV, Exynos/Qualcomm on Samsung).
+  vendor keys where present (e.g. Qualcomm, MediaTek, Exynos), always with a plain fallback.
 - Rotation and resolution change (`onCapturedContentResize`) with encoder reconfiguration.
 - Automatic reconnection, Wi-Fi loss handling, receiver in background (ADR-010).
 
@@ -99,18 +100,19 @@ The MVP is complete only at the end of M5 (audio included).
 - Persistent settings, last receiver remembered, quick start.
 - Release signing (keystore outside the repo, secrets in GitHub Actions), release workflow on tag
   that attaches the signed APK.
-- User README: sideloading on the Fire TV.
+- User README: sideloading on TV devices (Android TV / Google TV, Fire TV) and phones.
+- Device support matrix filled in from user reports (API level, vendor, codec, latency).
 
 ---
 
 ## Main risks
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Fire TV decoder without real low-latency mode on Fire OS 7 | high latency | measure early (M3), vendor keys, at most 1 frame in flight, H.264 fallback |
-| Multicast/NSD filtered by the router | no discovery | manual IP entry + QR code with IP:port on the TV |
+| Receiver decoder without real low-latency mode (API < 30, e.g. Fire OS 7) | high latency | measure early (M3), vendor keys, at most 1 frame in flight, H.264 fallback |
+| Multicast/NSD filtered by the router | no discovery | manual IP entry + QR code with IP:port on the receiver |
 | Keyframe spikes on Wi-Fi | stutter | intra-refresh, IDR only on request, CBR with small VBV |
 | MediaProjection consent per session on Android 14+ | UX | long session with reconnection that keeps the token while the service is alive |
 | Protected content (DRM/FLAG_SECURE) shown black | expected | document as a limitation |
 | Apps forbidding audio capture (`allowAudioPlaybackCapture=false`) | no audio for those apps | detect and show it in the UI; document as a limitation |
-| Fire TV HDMI audio output latency differs from video | lip-sync off | measure with `AudioTrack.getTimestamp`, configurable video delay |
+| Receiver (HDMI) audio output latency differs from video | lip-sync off | measure with `AudioTrack.getTimestamp`, configurable video delay |
 | Audio packets queued behind video keyframes | audio gaps | dedicated audio socket or priority scheduler (ADR-007), adaptive jitter buffer |
