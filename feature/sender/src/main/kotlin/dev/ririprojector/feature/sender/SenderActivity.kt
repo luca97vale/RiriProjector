@@ -40,6 +40,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -51,13 +52,17 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
 import dev.ririprojector.net.ReceiverEndpoint
 import dev.ririprojector.net.nsd.NsdBrowser
 import dev.ririprojector.protocol.model.StreamPreferences
 import dev.ririprojector.protocol.model.SyncMode
 import dev.ririprojector.protocol.model.VideoCodec
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.mapNotNull
+import kotlinx.coroutines.launch
 
 /** Sender entry point (any phone or tablet): pick a receiver, tune the stream, start/stop mirroring. */
 class SenderActivity : ComponentActivity() {
@@ -138,6 +143,18 @@ class SenderActivity : ComponentActivity() {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         val receivers = NsdBrowser(this).receivers().catch { emit(emptyList()) }
+        val settings = SenderSettingsRepository(SharedPreferencesStore.create(this))
+        val initialSettings = settings.load()
+        var lastReceiver by mutableStateOf(initialSettings.lastReceiver)
+        // Remember a receiver once a session reached Streaming with it; once per target (ADR-012).
+        lifecycleScope.launch {
+            SenderStatus.state.mapNotNull { (it as? SenderState.Streaming)?.target }
+                .distinctUntilChanged()
+                .collect { target ->
+                    settings.saveLastReceiver(target)
+                    if (SenderSettingsCodec.isRememberable(target)) lastReceiver = target
+                }
+        }
         setContent {
             MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
                 Surface(modifier = Modifier.fillMaxSize()) {
@@ -153,6 +170,8 @@ class SenderActivity : ComponentActivity() {
                         onStart = ::requestProjection,
                         onStop = { ProjectionService.stop(this) },
                         onUseAsReceiver = ::useAsReceiver,
+                        settings = initialSettings.copy(lastReceiver = lastReceiver),
+                        onSettingsChange = settings::savePrefs,
                     )
                 }
             }
@@ -243,14 +262,18 @@ private fun SenderScreen(
     onStart: (ReceiverEndpoint, StreamPreferences) -> Unit,
     onStop: () -> Unit,
     onUseAsReceiver: () -> Unit,
+    settings: SenderSettings,
+    onSettingsChange: (StreamPreferences) -> Unit,
 ) {
-    var manual by rememberSaveable { mutableStateOf("") }
-    var codec by rememberSaveable { mutableStateOf<String?>(null) }
-    var maxHeight by rememberSaveable { mutableStateOf(1080) }
-    var fps by rememberSaveable { mutableStateOf(60) }
-    var bitrateMbps by rememberSaveable { mutableStateOf(0) }
-    var audio by rememberSaveable { mutableStateOf(true) }
-    var sync by rememberSaveable { mutableStateOf(SyncMode.LIP_SYNC) }
+    val saved = settings.prefs
+    val last = settings.lastReceiver
+    var manual by rememberSaveable { mutableStateOf(last?.let { "${it.host}:${it.port}" } ?: "") }
+    var codec by rememberSaveable { mutableStateOf(saved.preferredVideoCodec?.name) }
+    var maxHeight by rememberSaveable { mutableStateOf(saved.maxHeight ?: 1080) }
+    var fps by rememberSaveable { mutableStateOf(saved.maxFps ?: 60) }
+    var bitrateMbps by rememberSaveable { mutableStateOf((saved.bitrateBps ?: 0) / 1_000_000) }
+    var audio by rememberSaveable { mutableStateOf(saved.audioEnabled) }
+    var sync by rememberSaveable { mutableStateOf(saved.syncMode) }
     val prefs =
         remember(codec, maxHeight, fps, bitrateMbps, audio, sync) {
             StreamPreferences(
@@ -262,6 +285,9 @@ private fun SenderScreen(
                 syncMode = sync,
             )
         }
+    LaunchedEffect(prefs) { onSettingsChange(prefs) }
+    val quickStart = remember(last, receivers) { SenderSettingsCodec.resolveQuickStart(last, receivers) }
+    val lastUsed = quickStart?.takeIf { it.advertised }?.endpoint
     val active =
         state !is SenderState.Idle && state !is SenderState.Ended
 
@@ -289,9 +315,13 @@ private fun SenderScreen(
                     Column(Modifier.padding(16.dp)) {
                         Text(r.name, style = MaterialTheme.typography.titleMedium)
                         Text("${r.host}:${r.port}", style = MaterialTheme.typography.bodySmall)
+                        val lastUsedLabel = stringResource(R.string.sender_last_used)
+                        if (r == lastUsed) Text(lastUsedLabel, style = MaterialTheme.typography.labelSmall)
                     }
                 }
             }
+            // Hidden while mirroring: discovery is paused, so the streaming receiver would show here.
+            if (!active) LastReceiverCard(quickStart) { onStart(it, prefs) }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
                     value = manual,

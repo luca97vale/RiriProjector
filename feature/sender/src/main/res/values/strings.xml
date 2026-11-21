@@ -5,6 +5,8 @@
     <string name="sender_receivers">Receivers</string>
     <string name="sender_manual_hint">IP address (or IP:port)</string>
     <string name="sender_connect">Connect</string>
+    <string name="sender_last_receiver">Last receiver</string>
+    <string name="sender_last_used">Last used</string>
     <string name="sender_settings">Stream settings</string>
     <string name="sender_codec">Codec</string>
     <string name="sender_resolution">Max resolution</string>

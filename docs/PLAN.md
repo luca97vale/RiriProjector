@@ -102,6 +102,9 @@ The MVP is complete only at the end of M5 (audio included).
   that attaches the signed APK.
 - User README: sideloading on TV devices (Android TV / Google TV, Fire TV) and phones.
 - Device support matrix filled in from user reports (API level, vendor, codec, latency).
+- Detailed plan: [plans/12-settings-release.md](plans/12-settings-release.md); decisions in ADR-012.
+- Status: implemented (#12); on-device check of settings/quick start and the first signed release
+  (environment, secrets, smoke test on both devices) pending.
 
 ---
 
