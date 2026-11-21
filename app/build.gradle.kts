@@ -27,12 +27,15 @@ android {
     defaultConfig {
         applicationId = "dev.ririprojector"
         // The release workflow derives both from the tag: vX.Y.Z → X*10000 + Y*100 + Z.
-        versionCode = providers.gradleProperty("riri.versionCode").orNull?.toInt() ?: 1
+        versionCode = providers.gradleProperty("riri.versionCode").orNull
+            ?.let { it.toIntOrNull() ?: error("riri.versionCode must be an integer, got '$it'") }
+            ?: 1
         versionName = providers.gradleProperty("riri.versionName").orNull ?: "0.1.0"
     }
 
     if (signingValuesSet == releaseSigning.size) {
         val (storePath, storePass, alias, keyPass) = releaseSigning.map { it!! }
+        check(File(storePath).isAbsolute) { "RIRI_KEYSTORE_FILE must be an absolute path, got '$storePath'" }
         signingConfigs.create("release") {
             storeFile = file(storePath)
             storePassword = storePass
