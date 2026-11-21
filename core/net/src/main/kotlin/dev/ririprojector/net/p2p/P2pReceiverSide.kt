@@ -51,13 +51,17 @@ class P2pReceiverAgent(
     private var idle = false
     private var lastOfferSsid: String? = null
     private val rearm = Runnable { discover() }
+    private var closed = false
+    private val reopen = Runnable { if (!closed && start() && idle) discover() }
 
     /** False when the device has no Wi-Fi Direct; the receiver then works over the router only. */
     @SuppressLint("MissingPermission") // API 29+ callers hold the location / nearby permission
     fun start(): Boolean {
         if (ch != null) return true
         P2pLog.init(context)
-        val c = P2pChannel.open(context) { P2pLog.w("agent: P2P channel lost") } ?: return false
+        var opened: P2pChannel? = null
+        val c = P2pChannel.open(context) { onChannelLost(opened) } ?: return false
+        opened = c
         ch = c
         receiver =
             context.registerP2p(WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION) { intent ->
@@ -127,9 +131,26 @@ class P2pReceiverAgent(
         main.postDelayed(rearm, REARM_MS)
     }
 
+    /**
+     * The framework dropped our channel (Wi-Fi restarted, the TV woke from standby): its services and
+     * requests are gone, so reopen it after a short pause instead of staying silent.
+     */
+    private fun onChannelLost(lostChannel: P2pChannel?) {
+        if (lostChannel == null || ch !== lostChannel) return // our own close(), or an old channel
+        P2pLog.w("agent: P2P channel lost, reopening")
+        ch = null
+        main.removeCallbacks(rearm)
+        context.unregisterQuietly(receiver)
+        receiver = null
+        lostChannel.close()
+        main.postDelayed(reopen, REOPEN_MS)
+    }
+
     override fun close() {
         idle = false
         main.removeCallbacks(rearm)
+        closed = true
+        main.removeCallbacks(reopen)
         val c = ch ?: return
         ch = null
         c.quietly { m, cc -> m.stopPeerDiscovery(cc, null) }
@@ -152,6 +173,7 @@ class P2pReceiverAgent(
 
     private companion object {
         const val REARM_MS = 15_000L
+        const val REOPEN_MS = 2_000L
         const val REDACTED = "02:00:00:00:00:00"
     }
 }
