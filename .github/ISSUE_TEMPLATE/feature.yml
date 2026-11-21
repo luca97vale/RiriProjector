@@ -41,4 +41,4 @@ body:
     id: devices
     attributes:
       label: Devices involved
-      placeholder: "Galaxy Tab S9 (One UI 6.1) → Fire TV Stick 4K Max (Fire OS 8)"
+      placeholder: "Sender: phone/tablet model (Android 14) → Receiver: TV/projector/phone model (Android 11)"

@@ -25,13 +25,13 @@ Plan: `docs/plans/<n>-<slug>.md`
 ### On-device tests
 | Item | Result |
 |---|---|
-| Galaxy Tab (model / One UI) | |
-| Fire TV (model / Fire OS) | |
+| Sender (model / Android version) | |
+| Receiver (model / Android version) | |
 | Automatic NSD discovery | |
 | Start/stop mirroring, consent revoked | |
 | Reconnection after Wi-Fi loss / receiver restart | |
-| Tablet rotation | |
-| Audio played on the TV (music/video, 10 min without gaps) | |
+| Sender rotation (and receiver rotation if it is a phone/tablet) | |
+| Audio played on the receiver (music/video, 10 min without gaps) | |
 | Lip-sync (clap/flash test) | |
 
 ### Performance (required if the media/network hot path is touched)

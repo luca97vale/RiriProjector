@@ -20,7 +20,8 @@ Input: $ARGUMENTS
      (e.g. "glass-to-glass latency p95 ≤ 80 ms at 1080p60 on 5 GHz Wi-Fi", "no dropped frames in
      5 minutes of scrolling", "A/V offset ≤ 40 ms").
    - **Out of scope**
-   - **Devices/OS involved** (Galaxy Tab model/One UI, Fire TV model/Fire OS)
+   - **Devices/OS involved** (sender and receiver model, Android version / API level, vendor OS such as
+     One UI or Fire OS if relevant)
    - **Area and milestone** → labels `type:*`, `area:*`, `priority:*`
 4. Show the draft to the user and **ask for confirmation** before creating it.
 5. After the yes: `gh issue create --title "<type>: <title>" --body-file <temp file> --label ...`
