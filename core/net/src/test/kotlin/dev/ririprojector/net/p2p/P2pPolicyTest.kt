@@ -170,8 +170,14 @@ class P2pPolicyTest {
         val tooLong = mapOf("v" to "1", "role" to "rx", "name" to "n".repeat(64), "port" to "1")
         assertThat(P2pTxt.decode(tooLong)).isNull()
         // 32 two-byte characters = 64 bytes.
-        val multibyte = mapOf("v" to "1", "role" to "rx", "name" to "Ã¨".repeat(32), "port" to "1")
+        val multibyte = mapOf("v" to "1", "role" to "rx", "name" to "è".repeat(32), "port" to "1")
         assertThat(P2pTxt.decode(multibyte)).isNull()
+        // 31 two-byte characters + 1 = 63 bytes: exactly at the limit.
+        val atLimit = mapOf("v" to "1", "role" to "rx", "name" to "è".repeat(31) + "a", "port" to "1")
+        assertThat(P2pTxt.decode(atLimit)).isNotNull()
+        // fitName cuts before a 2-byte character that would cross 63 bytes.
+        assertThat(P2pTxt.fitName("a" + "è".repeat(40)).toByteArray(Charsets.UTF_8).size).isEqualTo(63)
+        assertThat(P2pTxt.fitName("ab" + "è".repeat(40)).toByteArray(Charsets.UTF_8).size).isEqualTo(62)
     }
 
     @Test
@@ -203,7 +209,7 @@ class P2pPolicyTest {
         assertThat(P2pTxt.decode(good + ("psk" to "12345678"))).isNotNull()
         assertThat(P2pTxt.decode(good + ("psk" to "1234567"))).isNull()
         assertThat(P2pTxt.decode(good + ("psk" to "abc\u0000defgh"))).isNull()
-        assertThat(P2pTxt.decode(good + ("psk" to "abcdefgÃ¨h"))).isNull()
+        assertThat(P2pTxt.decode(good + ("psk" to "abcdefgèh"))).isNull()
         assertThat(P2pTxt.decode(good + ("psk" to "abcd efgh!"))).isNotNull()
     }
 

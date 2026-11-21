@@ -23,6 +23,7 @@ import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -31,6 +32,7 @@ import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.take
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 
 /**
@@ -228,17 +230,16 @@ object P2pStationJoiner {
 
     /**
      * API 28: removes saved networks of ours left behind when the TV lost power or the process died
-     * mid-session (each holds a passphrase). Call while no station is joined. No-op on API 29+.
+     * mid-session (each holds a passphrase). Runs before each join, off the main thread (Wi-Fi
+     * service IPC), when no station of ours is joined.
      */
     @Suppress("DEPRECATION")
     @SuppressLint("MissingPermission") // API 28: an app may list and remove the networks it added
-    fun removeStaleNetworks(context: Context) {
-        if (Build.VERSION.SDK_INT >= 29) return
-        val wifi = context.applicationContext.getSystemService(WifiManager::class.java) ?: return
+    private suspend fun removeStaleNetworks(wifi: WifiManager) = withContext(Dispatchers.IO) {
         runCatching {
             wifi.configuredNetworks.orEmpty().filter { P2pPolicy.isOwnSsid(it.SSID) }.forEach {
-                wifi.removeNetwork(it.networkId)
-                P2pLog.i("station: removed stale ${it.SSID}")
+                // Refused for networks another install of the app added.
+                if (wifi.removeNetwork(it.networkId)) P2pLog.i("station: removed stale ${it.SSID}")
             }
         }
     }
@@ -247,6 +248,7 @@ object P2pStationJoiner {
     private suspend fun joinAsStation(context: Context, offer: P2pOfferRecord, timeoutMs: Long): P2pStation {
         val wifi = context.applicationContext.getSystemService(WifiManager::class.java)
             ?: throw P2pFailure.Unsupported("station")
+        removeStaleNetworks(wifi)
         val config =
             WifiConfiguration().apply {
                 SSID = "\"${offer.ssid}\""

@@ -179,6 +179,9 @@ class P2pGroupOwner(private val context: Context) {
                         }
                     }.build()
                 val channel = P2pPolicy.channelFor(stationFrequency())
+                // Set before the call: a stop while it is in flight must still remove the group it forms
+                // (no foreign group exists, checked above).
+                created = true
                 try {
                     ch.await("createGroup") { m, c, l -> m.createGroup(c, config(channel), l) }
                 } catch (e: P2pFailure) {
@@ -187,7 +190,6 @@ class P2pGroupOwner(private val context: Context) {
                     P2pLog.w("group: ${channel.mhz} MHz refused (${e.message}), trying any 5 GHz channel")
                     ch.await("createGroup") { m, c, l -> m.createGroup(c, config(GroupChannel.Band5Ghz), l) }
                 }
-                created = true
                 val formed = group.filter { it != null }.first()!!
                 phase("formed on ${formed.frequency} MHz")
 

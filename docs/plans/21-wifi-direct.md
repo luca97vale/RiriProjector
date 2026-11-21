@@ -249,6 +249,21 @@ targets in the same room. Open items for implementation:
 - **Underrun rate.** 2 underruns in ~6 minutes is not yet proven ≤ 0.2/min after the first 10 s;
   the 10-minute acceptance run decides.
 
+## Acceptance runs (2026-11-21, same room)
+Wi-Fi Direct, YouTube, ~13 min (09:01–09:14), TV overlay at the end:
+
+| Metric | Value | Criterion |
+|---|---|---|
+| Stream | HEVC 1728×1080, 31/59 fps, 6.9 Mbps, group on 5220 MHz | 5 GHz: met |
+| Audio underruns | 2 in ~13 min (~0.15/min) | ≤ 0.2/min: met |
+| Capture→played audio | 370 ms (video shown 361; latency 343, p95 376; A/V +8 ms) | ≤ 380 ms: met |
+| Tablet socket writes | max 155 ms, in the link's first ~16 s only; 4 of 152 five-second windows above 50 ms | no block > 50 ms: **not met at link start**; steady state met as far as the rotated log shows |
+| Dropped frames | 2 | — |
+| Discovery and join | TV listed ~2 s after the tap; group formed in 0.4 s; TV joined ~10 s after that | — |
+
+Not yet measured: time from the tap to the first frame, 10 stop/start cycles, TV powered off
+mid-session, and the router path recheck.
+
 ## Implementation steps
 1. [x] `chore(spike)`: a debug-only harness, kept out of the release flow. Run A1/A2/B′, record the
    results here and pick the topology (and decide whether the TV needs a toggle).

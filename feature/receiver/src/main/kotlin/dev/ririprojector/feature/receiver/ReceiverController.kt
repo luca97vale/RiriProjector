@@ -138,7 +138,7 @@ class ReceiverController(
 
     /** A joined group that no session uses is left, so the TV does not stay off its router. */
     private val leaveUnusedStation = Runnable { if (session == null) onSessionsIdle() }
-    private val refreshWaiting = Runnable { if (_state.value is ReceiverState.Waiting) showWaiting() }
+    private val refreshWaiting = Runnable { if (server != null && _state.value is ReceiverState.Waiting) showWaiting() }
 
     private val surfaceLock = ReentrantLock()
     private val surfaceReady = surfaceLock.newCondition()
@@ -181,7 +181,6 @@ class ReceiverController(
 
     fun stop() {
         main.removeCallbacks(retryStart)
-        main.removeCallbacks(refreshWaiting)
         bindAttempts = 0
         runCatching { nsd?.close() }
         nsd = null
@@ -193,6 +192,7 @@ class ReceiverController(
         agent?.close()
         agent = null
         leaveStation()
+        main.removeCallbacks(refreshWaiting) // after leaveStation(), which may post it
     }
 
     /**
@@ -201,7 +201,6 @@ class ReceiverController(
      */
     fun startWifiDirect() {
         if (agent != null || server == null || !WifiDirectSupport.usable(context)) return
-        if (station == null) P2pStationJoiner.removeStaleNetworks(context)
         val a = P2pReceiverAgent(context, P2pTxt.fitName(deviceName), server?.boundPort ?: 0, ::onOffer)
         val started =
             runCatching { a.start() }.getOrElse {
@@ -222,14 +221,17 @@ class ReceiverController(
     private fun onOffer(offer: P2pOfferRecord) {
         if (session != null || joinJob != null || station != null) return
         agent?.setIdle(false) // no scanning while associating
-        joinJob =
+        // Main.immediate runs the body inline: a join that fails before suspending finishes before
+        // launch returns, so the job clears itself on completion rather than in its own finally.
+        val job =
             p2pScope.launch {
                 try {
                     val st = P2pStationJoiner.join(context, offer)
                     station = st
                     directGateway = st.groupOwnerAddress
                     main.postDelayed(leaveUnusedStation, UNUSED_STATION_MS)
-                    launch {
+                    // A sibling, not a child: the join job ends once joined (leaveStation cancels both).
+                    p2pScope.launch {
                         st.lost.first()
                         Log.i(TAG, "Wi-Fi Direct group lost")
                         if (session == null) onSessionsIdle() // otherwise the session's end does it
@@ -240,11 +242,11 @@ class ReceiverController(
                     Log.w(TAG, "cannot join ${offer.name}'s group: ${e.message}")
                     agent?.forgetOffer()
                     if (session == null) agent?.setIdle(true)
-                } finally {
-                    // leaveStation() may already have started another join: clear only our own.
-                    if (joinJob === coroutineContext[Job]) joinJob = null
                 }
             }
+        joinJob = job
+        // Clear only our own: leaveStation() may already have started another join.
+        job.invokeOnCompletion { main.post { if (joinJob === job) joinJob = null } }
     }
 
     /** Main thread: no session streams any more; leave a joined group and listen for offers. */
