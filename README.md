@@ -38,9 +38,11 @@ verified yet; please report results with the bug template.
 - Both on the **same Wi-Fi network**, ideally 5 GHz, with the router not blocking device-to-device
   traffic (guest networks and "AP isolation" usually do).
 
-The same APK runs on both: it opens as a receiver on a TV and as a sender on a tablet. Download
-`ririprojector-<version>.apk` from the
-[latest release](https://github.com/luca97vale/RiriProjector/releases/latest).
+The same APK runs on both: it opens as a receiver on a TV and as a sender on a tablet. The newest
+version is always at
+`https://github.com/luca97vale/RiriProjector/releases/latest/download/ririprojector.apk`
+(release notes and older versions on the
+[releases page](https://github.com/luca97vale/RiriProjector/releases)).
 
 ### Install on the Fire TV (sideloading)
 Fire TV only installs apps from the Amazon Appstore unless you allow it for a specific app.
@@ -50,9 +52,9 @@ Fire TV only installs apps from the Amazon Appstore unless you allow it for a sp
 2. Install **Downloader** (by AFTVnews) from the Appstore: search for "Downloader".
 3. *Settings › My Fire TV › Developer Options › Install unknown apps* and turn it **on for
    Downloader** (on older Fire OS this is a single "Apps from Unknown Sources" switch).
-4. Open Downloader, type the APK link from the latest release
-   (`https://github.com/luca97vale/RiriProjector/releases/latest` opens the page; select the
-   `.apk` asset), let it download, then select **Install**. Delete the APK afterwards when asked.
+4. Open Downloader, type the direct APK link above
+   (`https://github.com/luca97vale/RiriProjector/releases/latest/download/ririprojector.apk`),
+   let it download, then select **Install**. Delete the APK afterwards when asked.
 5. RiriProjector appears under *Your Apps & Channels*. Open it: it shows the TV name and its
    `IP:port`, waiting for a tablet.
 
@@ -135,27 +137,35 @@ passwords never enter the repository.
    keytool -genkeypair -v -keystore ~/keys/riri-release.jks -keyalg RSA -keysize 4096 \
      -validity 10000 -alias riri
    ```
-2. **Add the GitHub secrets** (*Settings › Secrets and variables › Actions*, or scoped to an
-   environment named `release`, which the workflow uses; adding a required reviewer there makes
-   every release wait for approval):
+2. **Create the `release` environment** (*Settings › Environments › New environment*, name
+   `release`) and add yourself as a **required reviewer**. This is required, not optional: a tag
+   push runs the workflow file of the tagged commit, so anyone who can push a tag could otherwise
+   run a modified workflow with the signing key. The reviewer approval is what protects it.
+   Optionally add a tag ruleset limiting who can create `v*` tags.
+3. **Add the secrets to that environment only** (not as repository secrets):
 
    | Secret | Value |
    |---|---|
    | `RELEASE_KEYSTORE_BASE64` | output of `base64 -w0 ~/keys/riri-release.jks` |
    | `RIRI_KEYSTORE_PASSWORD` | keystore password |
    | `RIRI_KEY_ALIAS` | `riri` (the `-alias` above) |
-   | `RIRI_KEY_PASSWORD` | key password (same as the keystore password unless you chose another) |
+   | `RIRI_KEY_PASSWORD` | same as the keystore password (`keytool` creates PKCS12 keystores, which use one password) |
 
 ### Cutting a release
-1. Merge everything to `main` (the workflow refuses tags on other branches).
-2. Tag and push: `git tag v1.0.0 && git push origin v1.0.0`. The version code is
-   `major*10000 + minor*100 + patch`, so minor and patch must stay ≤ 99.
+1. Merge everything to `main` (the workflow refuses tags on other commits, as a guard against
+   mistakes).
+2. Tag and push: `git tag v1.0.0 && git push origin v1.0.0`, then approve the deployment in the
+   workflow run. The version code is `major*10000 + minor*100 + patch`, so minor and patch must
+   stay ≤ 99.
 3. When the workflow is green, install the APK from the release on **both** devices and check a
    mirroring session with audio before announcing it (release builds are shrunk by R8).
 
 ### Signing locally (optional)
-Set the same four values as environment variables before `./gradlew assembleRelease`:
+Set the same four values as environment variables, then run
+`./gradlew --no-configuration-cache assembleRelease` (the configuration cache, on by default in
+this project, would otherwise store the passwords in an encrypted entry under `.gradle/`):
 `RIRI_KEYSTORE_FILE` (absolute path), `RIRI_KEYSTORE_PASSWORD`, `RIRI_KEY_ALIAS`,
 `RIRI_KEY_PASSWORD`. Alternatively put `riri.keystore.file`, `riri.keystore.password`,
 `riri.key.alias`, `riri.key.password` in your user-level `~/.gradle/gradle.properties` (outside the
-repo, but plaintext). Set all four or none: a partial setup fails the build on purpose.
+repo, but plaintext). Set all four or none: a partial setup fails every build, debug included, on
+purpose, so a stray `RIRI_KEY_ALIAS` in your shell explains a failing `assembleDebug`.

@@ -331,15 +331,17 @@ changes without asking the user to share again.
   every field against the choices the screen offers and falls back to the default per field, so a
   value from another version never crashes the app. `preferredAudioCodec` is not persisted.
 - The screen keeps its `rememberSaveable` state (rotation) and initialises it from the stored values;
-  changes are written with `apply()` on taps, never on a codec or socket thread.
+  they are written with `apply()` whenever the selection changes (plus an idempotent write on first
+  composition), never on a codec or socket thread.
 - The **last receiver** is saved by `SenderActivity` once a session reaches `Streaming` with it
   (deduplicated per target), so an address that never connected is not remembered. Only
   TCP-connectable targets are kept: the Wi-Fi Direct placeholder host (ADR-011) is excluded.
   Known gap, accepted to keep `ProjectionService` out of it: if the activity is destroyed in the
   background and a session starts and ends before it returns, nothing is saved.
-- **Quick start** matches the stored receiver against the live NSD list by service name first (a
-  Fire TV's DHCP lease may change its IP), then by host and port; without a match the stored address
-  is offered as a "Last receiver" card.
+- **Quick start** matches the stored receiver against the live NSD list by exact host and port
+  first (receiver names are device names and may repeat), then by name (a Fire TV's DHCP lease may
+  change its IP); without a match the stored address is offered as a "Last receiver" card, hidden
+  while mirroring. IPv6 literals are not remembered: the manual `host:port` field cannot express them.
 
 **Release signing.**
 - Four values, environment variables first and Gradle properties second (user-level
@@ -348,10 +350,15 @@ changes without asking the user to share again.
   release build (CI, contributors); a partial set fails the build.
 - `versionName` / `versionCode` come from `riri.versionName` / `riri.versionCode`; the release
   workflow derives them from the `vX.Y.Z` tag, `versionCode = X*10000 + Y*100 + Z` (Y, Z ≤ 99).
-- `.github/workflows/release.yml` runs on tags on `main` only, in a `release` environment, with
-  secrets passed through `env:`, Gradle caches disabled, the keystore decoded to `$RUNNER_TEMP` and
-  deleted afterwards. It verifies the signature with `apksigner` and attaches the APK and the R8
-  `mapping.txt` to the GitHub release.
+- `.github/workflows/release.yml` runs on `vX.Y.Z` tags in a `release` environment that holds the
+  secrets and **requires a reviewer**. That approval is the security boundary: a tag push runs the
+  workflow file of the tagged commit, so the in-workflow "tag is on `main`" check only guards against
+  mistakes. Secrets are scoped to the steps that use them, checkout does not persist its token,
+  Gradle caches and the configuration cache are disabled (passwords are never serialized), and the
+  keystore is decoded to `$RUNNER_TEMP` and deleted afterwards. It verifies the signature with
+  `apksigner` and attaches the versioned APK, a stable `ririprojector.apk` (for
+  `releases/latest/download/…` links typed on a TV remote) and the R8 `mapping.txt`.
+- Local signed builds should use `--no-configuration-cache` for the same reason.
 - R8 full mode is on for release, with exception class names and line numbers kept. CI builds the
   release variant unsigned on every PR.
 
