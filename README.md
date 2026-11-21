@@ -3,13 +3,7 @@
 Low-latency screen mirroring, **video and audio**, between Android devices on the LAN, as an
 alternative to Miracast. A single app with two roles:
 
-- **Sender**: any Android phone or # Build + install RiriProjector on the receiver and/or the sender (any Android devices).
-# Usage: scripts/deploy.sh [receiver|sender|both] [--release] [--no-build] [--logs]
-# Env: RECEIVER_SERIAL (USB/already-connected receiver) or RECEIVER_HOST (receiver IP, adb connect),
-#      RECEIVER_PORT (default 5555), SENDER_SERIAL (optional), APP_ID (default dev.ririprojector).
-# Old names still work as fallbacks: targets firetv/    receiver|sender|both) TARGET="$arg" ;;
-    firetv) TARGET="receiver" ;; # legacy name
-    tablet) TARGET="sender" ;;   # legacy name, FIRETV_HOST, FIRETV_PORT, TABLET_SERIAL. (MediaProjection → hardware HEVC/H.264 + audio capture → TCP).
+- **Sender**: any Android phone or tablet (MediaProjection → hardware HEVC/H.264 + audio capture → TCP).
 - **Receiver**: any Android TV, set-top box, projector, phone or tablet (NSD discovery, low-latency
   hardware decoder, synchronized audio).
 

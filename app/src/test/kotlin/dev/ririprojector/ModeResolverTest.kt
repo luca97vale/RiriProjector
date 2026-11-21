@@ -71,6 +71,13 @@ class ModeResolverTest {
     }
 
     @Test
+    fun `running sender session beats extra, remembered choice and tv`() {
+        assertThat(
+            ModeResolver.resolve("receiver", isTv = true, remembered = AppMode.RECEIVER, senderSessionActive = true),
+        ).isEqualTo(AppMode.SENDER)
+    }
+
+    @Test
     fun `switch actions map to modes`() {
         fun target(action: String?) =
             ModeResolver.switchTarget(action, useAsReceiverAction = "R", useAsSenderAction = "S")

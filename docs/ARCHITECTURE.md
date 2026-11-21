@@ -20,7 +20,8 @@ phone or tablet (video from minSdk 28, audio capture from API 29, single-app sha
 **receiver** = any TV, set-top box, projector, phone or tablet (minSdk 28). The promised user choice
 now exists: the sender screen offers *Use this device as a receiver* and the receiver waiting screen
 *Use this device as a sender*. They send `dev.ririprojector.action.USE_AS_RECEIVER` / `USE_AS_SENDER`
-(package-scoped) to `MainActivity`, which stores the choice. Precedence at launch: `mode` extra (not
+(package-scoped) to a non-exported `activity-alias` of `MainActivity`, which stores the choice. Precedence
+at launch: a running sender session (its notification reopens the app) > `mode` extra (not
 stored, used by `scripts/deploy.sh`) > stored choice > TV detection. The receiver toggles its stats
 overlay with a tap as well as with D-pad keys. Reference test devices so far: Galaxy Tab S9 (sender),
 Fire TV Stick on Fire OS 7 and Pixel 10 (receivers); figures below say which device they come from.

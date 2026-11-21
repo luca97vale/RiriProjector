@@ -30,8 +30,20 @@ object ModeResolver {
     fun isTv(hasFireTvFeature: Boolean, hasLeanbackFeature: Boolean, isTelevisionUiMode: Boolean): Boolean =
         hasFireTvFeature || hasLeanbackFeature || isTelevisionUiMode
 
-    fun resolve(modeExtra: String?, isTv: Boolean, remembered: AppMode? = null): AppMode =
+    /**
+     * [senderSessionActive]: a mirroring session runs on this device (e.g. its notification was
+     * tapped); it always reopens the sender, whatever was stored or asked for.
+     */
+    fun resolve(
+        modeExtra: String?,
+        isTv: Boolean,
+        remembered: AppMode? = null,
+        senderSessionActive: Boolean = false,
+    ): AppMode = if (senderSessionActive) {
+        AppMode.SENDER
+    } else {
         AppMode.fromExtra(modeExtra) ?: remembered ?: if (isTv) AppMode.RECEIVER else AppMode.SENDER
+    }
 
     /**
      * The mode a switch request asks for, from the actions the feature screens send; null for any

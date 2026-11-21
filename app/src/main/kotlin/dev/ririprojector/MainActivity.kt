@@ -8,6 +8,8 @@ import android.content.res.Configuration
 import android.os.Bundle
 import dev.ririprojector.feature.receiver.ReceiverActivity
 import dev.ririprojector.feature.sender.SenderActivity
+import dev.ririprojector.feature.sender.SenderState
+import dev.ririprojector.feature.sender.SenderStatus
 
 /**
  * UI-less trampoline: starts the sender or the receiver and finishes. It also handles the
@@ -17,9 +19,11 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        // Only through the non-exported alias: other apps can reach the exported launcher, not it.
+        val viaSwitchAlias = intent.component?.className == SWITCH_ALIAS
         val switchTo =
             ModeResolver.switchTarget(
-                intent.action,
+                intent.action.takeIf { viaSwitchAlias },
                 useAsReceiverAction = SenderActivity.ACTION_USE_AS_RECEIVER,
                 useAsSenderAction = ReceiverActivity.ACTION_USE_AS_SENDER,
             )
@@ -37,6 +41,10 @@ class MainActivity : Activity() {
                 intent.getStringExtra(ModeResolver.EXTRA_MODE),
                 isTv,
                 remembered = AppMode.fromExtra(prefs.getString(KEY_MODE, null)),
+                // The mirroring notification opens the app through here: keep it on the sender.
+                senderSessionActive = SenderStatus.state.value.let {
+                    it !is SenderState.Idle && it !is SenderState.Ended
+                },
             )
         val target =
             when (mode) {
@@ -51,5 +59,8 @@ class MainActivity : Activity() {
     private companion object {
         const val PREFS = "mode"
         const val KEY_MODE = "chosenMode"
+
+        /** `activity-alias` in the manifest that carries the switch actions. */
+        const val SWITCH_ALIAS = "dev.ririprojector.SwitchModeActivity"
     }
 }
