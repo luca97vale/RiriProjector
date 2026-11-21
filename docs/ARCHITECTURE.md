@@ -129,7 +129,8 @@ Messages:
 ## ADR-006 — Discovery: NSD (mDNS)
 **Accepted.** The receiver registers `_ririproj._tcp` with TXT records `v=1`, `name`, `codecs`.
 The sender uses `NsdManager.discoverServices`; fallback to manual IP:port entry
-(some networks/routers filter multicast).
+(some networks/routers filter multicast). For a direct link without the router see ADR-011
+(Wi-Fi Direct).
 
 ## ADR-007 — Audio (part of the MVP)
 **Accepted.** Tablet audio must play on the TV: mirroring without audio is not considered working.
@@ -311,3 +312,64 @@ changes without asking the user to share again.
   backoff already reconnects within ~1 s of the network coming back;
 - relying on adaptive playback for size changes: unreliable on Fire TV, and it mixes sizes in the
   delay line.
+
+## ADR-011 — Wi-Fi Direct link (opt-in)
+**Accepted** (#21). Router mode (ADR-006) stays the default. A **"Connect via Wi-Fi Direct"**
+button on the tablet links it straight to the TV; once the devices have an IP path, the session is
+exactly the router one (same `ReceiverServer`, handshake and protocol v3, no wire change).
+
+**Topology B′: the tablet is the group owner, the TV joins it.** Measured in the #21 spike
+(Tab S9 SM-X710 API 36 → Fire TV Stick AFTSSS API 28):
+- A TV-owned group (topology A) is persistent and 2.4 GHz only on Fire OS 7, and the tablet (no
+  DBS) time-slices it with its 5 GHz router link: the stalls this feature removes would remain.
+- The tablet creates the group with `WifiP2pConfig.Builder` on **its own station channel**
+  (`setGroupOperatingFrequency`, 5220 MHz in the measurements; `GROUP_OWNER_BAND_5GHZ` when the
+  station is not on 5 GHz), so it never hops channels. Same room: audio played ~330 ms (router
+  ~460), writes ≤ 12 ms, 2 underruns in ~6 min.
+- On API 28 the TV joins as a **legacy station** (`addNetwork`/`enableNetwork`, no dialog) and so
+  **leaves its router while mirroring** (accepted in the issue); `removeNetwork` + `reconnect()`
+  restore it when the session ends, or 20 s after a join no session used. API 29+ receivers join as
+  P2P clients with the same credentials and keep their router link.
+- The sender needs API 35 (`WifiP2pDevice.getIpAddress`) to learn the TV's address in its group.
+
+**Discovery and credential delivery (P2P DNS-SD, `_ririproj._tcp`, TXT `v=1`).** This record is
+separate from the ADR-006 NSD TXT.
+1. The tablet lists nearby devices with **plain peer discovery** (`discoverPeers` +
+   `requestPeers`). Its DNS-SD queries never got an answer from a Fire TV that is not a group
+   owner, while peer discovery finds it in seconds. Whether a device runs the receiver shows when
+   it takes the offer (timeout message: keep the RiriProjector screen open).
+2. After consent, the tablet creates the group and advertises an **offer**
+   `{role=offer, name, ssid, psk, to=<TV's P2P device address>}` while running `discoverPeers`
+   (listen state).
+3. The TV runs service discovery while its receiver screen is up and no session streams. It
+   requests **all** services: a request by type only asks for the PTR record, so the TXT carrying
+   the offer never arrives. It joins an offer addressed to itself, once per SSID.
+4. The tablet polls its group until the client has an IPv4 address, then stops discovery, clears
+   the offer and connects. Measured: TV listed in ~2 s, offer to joined in ~10 s.
+- The TV also advertises `{role=rx, name, port}` for API 29+ senders that may answer it; the
+  current sender does not need it.
+- The framework can drop the TV's P2P channel (standby, Wi-Fi restart): the agent reopens it after
+  2 s.
+
+**Credentials.** The SSID (`DIRECT-xx-Riri`) and a 16-character passphrase are random per session
+and live only while the session's group exists. The TXT is readable by any nearby P2P device during
+the ~10 s offer window; that exposure is accepted, since the group serves one session and the
+single-session server answers anyone else with BUSY. Logs never print the passphrase.
+
+**Session end over P2P.** The outage limit is **1.5 s** instead of 30 s (ADR-010): when the TV
+leaves the group (powered off, out of range, Back) the group cannot come back by itself, so a lost
+link is final and the tablet says "Lost <name> over Wi-Fi Direct". With the 3 s read timeout the
+worst case is about 4.5 s.
+
+**Where the frequency is shown.** The tablet's status card shows "Wi-Fi Direct · <MHz>". The TV
+(API 28) cannot read its group's frequency, so its overlay shows only the link kind.
+
+**Diagnostics.** Fire OS hides app log lines, so debuggable builds also append the P2P control
+events to `files/p2p.log` (`run-as <package> cat files/p2p.log`).
+
+*Rejected:*
+- topology A (TV group owner): 2.4 GHz only, persistent credentials;
+- topology B with PBC: an accept dialog on the TV every time;
+- typing 192.168.49.1, or delivering the credentials over the router: discovery is mandatory and
+  must not need the router;
+- silently falling back to the router: the user picks the link.

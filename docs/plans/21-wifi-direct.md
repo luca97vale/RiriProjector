@@ -23,6 +23,10 @@ Clarification proposed for the issue: the TV runs Android 9 (API 28), and `WifiP
 needs API 29. So the **tablet's status card** shows the frequency, and the TV overlay shows the link
 kind. Sending the frequency over the wire would need a protocol bump for a display-only value.
 
+Deviation found on the devices: the tablet lists receivers by P2P **peer** discovery, not service
+discovery. The Fire TV never answered the tablet's DNS-SD queries unless it was a group owner
+(ADR-011). Discovery is still automatic (no IP typed); the offer itself still travels over P2P DNS-SD.
+
 ## Approach
 Wi-Fi Direct only replaces **how the two devices reach each other**. Once there is an IP path, the
 session is exactly today's:
@@ -110,74 +114,50 @@ settle near its 10–20 ms floor. The cover limit stays at 150 ms unless the run
 case the receiver passes a lower `coverMs` (~60 ms) for sessions that arrived over P2P.
 
 ## Changes per module
+As built for topology B′ (the spike's decision; ADR-011 has the reasons). Topology A's classes
+(`P2pReceiverHost`, `P2pJoiner`, `linkKindOf`) were not needed.
 - `core:net`, new package `dev.ririprojector.net.p2p`:
-  - `P2pServiceRecord(name, port, ssid, psk)`:
-    - `toTxt()` and `fromTxt()`, pure, `v=1`;
-    - validation: SSID ≤ 32 bytes, PSK 8–63 characters, port in range, unknown version rejected.
-  - `P2pFailure` (sealed: `Unsupported`, `PermissionDenied`, `Busy`, `Timeout`, `Error(code)`) plus a
-    pure mapping from reason codes. BUSY → "another app is using Wi-Fi Direct" (Samsung Quick Share
-    or Smart View may hold P2P).
-  - `P2pReceiverHost(context): Closeable`:
-    - `suspend fun open(name, port)`: create the group, wait for `groupFormed`, read the group info,
-      add the local service;
-    - `close()`: clear the local services, remove the group, restore the station (A2/B′), close the
-      channel;
-    - `state: StateFlow`.
-  - `P2pBrowser(context)`:
-    - `receivers(): Flow<List<P2pReceiver>>`;
-    - joins the separate TXT and service callbacks by `srcDevice.deviceAddress`;
-    - re-arms discovery every 30 s;
-    - on cancel: `stopPeerDiscovery` + `clearServiceRequests`.
-  - `P2pJoiner(context)`:
-    - `suspend fun join(r, timeoutMs = 10_000): P2pLink`;
-    - completes only once the group interface has an IPv4 address;
-    - `close()` calls `cancelConnect` while joining, then `removeGroup`; idempotent.
-  - `P2pLink`:
-    - `endpoint`, `interfaceName`, `frequencyMhz`;
-    - `linkLost: Flow<Unit>`, fed by the connection broadcast and by
-      `ChannelListener.onChannelDisconnected`.
-  - `linkKindOf(localInterfaceName, p2pInterfaceName)`: pure.
-  - `ReconnectPolicy` / `SessionStateMachine`: an `outageLimitMs` parameter, 30 000 ms for the
-    router and 1 500 ms for P2P. With the 3 s silence timeout, the worst case is about 4.5 s.
-  - Manifest:
-    - `CHANGE_WIFI_STATE`;
-    - `ACCESS_FINE_LOCATION` (`maxSdkVersion 32`, requested on the TV only if the spike shows it is
-      needed);
-    - `NEARBY_WIFI_DEVICES` (`neverForLocation`);
-    - `uses-feature android.hardware.wifi.direct required=false`.
+  - `P2pRecords.kt`: `P2pReceiverRecord(name, port)` and `P2pOfferRecord(name, ssid, psk, to)`
+    (`toString` hides the PSK); `P2pTxt.encode`/`decode`, `v=1`, with validation (name ≤ 63 bytes,
+    `DIRECT-` SSID of 9–32 bytes, PSK of 8–63 printable characters, MAC format).
+  - `P2pPolicy.kt`: `P2pFailure` (`Unsupported`, `Busy`, `Timeout`, `PermissionDenied`, `LinkLost`,
+    `Error(code)`) with `of(reason)`; `GroupChannel` and `channelFor(stationFreq)`;
+    `OUTAGE_LIMIT_MS = 1500`, `ROUTER_OUTAGE_LIMIT_MS = 30000`; `ipv4`, `newSsid`, `newPassphrase`.
+  - `P2pCommon.kt`: `P2pChannel` wrapper, suspending `await`, `quietly`, `groupInfo`, receiver
+    registration helpers. `P2pLog.kt`: tag `Riri/P2p`, plus `files/p2p.log` in debuggable builds.
+  - `P2pSender.kt`:
+    - `P2pReceiverBrowser.receivers(): Flow<List<P2pReceiver>>` from peer discovery, re-armed
+      every 15 s, stopped on cancel;
+    - `P2pGroupOwner.open(target, senderName, 30 s): P2pLink` (API 35): group on the station
+      channel → offer → `discoverPeers` → poll the client's IPv4 → stop discovery, clear the offer;
+    - `P2pLink(endpoint, frequencyMhz, lost)`.
+  - `P2pReceiverSide.kt`:
+    - `P2pReceiverAgent`: announces the receiver, requests all services, runs service discovery
+      while idle, hands offers addressed to this device to `onOffer`, reopens a lost channel;
+    - `P2pStationJoiner.join(context, offer, 15 s): P2pStation`: legacy station on API 28, P2P
+      client on API 29+; `P2pStation.lost` and `close()` (restores the router).
+  - `WifiDirectSupport`: `MIN_SENDER_SDK = 35`, `requiredPermissions(sdk)`, `usable`,
+    `usableAsSender`.
+  - `SessionStateMachine(giveUpAfterMs)`: the outage limit per link.
+  - Manifest: `CHANGE_WIFI_STATE`, location (`maxSdkVersion 32`), `NEARBY_WIFI_DEVICES`
+    (`neverForLocation`), `uses-feature android.hardware.wifi.direct required=false`.
 - `feature:sender`:
-  - `SenderActivity`:
-    - the button and the P2P receiver list, hidden without `FEATURE_WIFI_DIRECT`;
-    - `NEARBY_WIFI_DEVICES` requested on demand;
-    - the consent flow, as today.
-  - `ProjectionService`:
-    - `EXTRA_P2P` carries the serialized record;
-    - a service-owned `CoroutineScope`;
-    - a `Joining` state that the `session != null` guard and `ACTION_STOP` both respect (a stop
-      while joining cancels the join, closes the link and stops the projection);
-    - order: projection → join → host;
-    - on `linkLost` (debounced 300 ms, and ignored if the host has already ended with the TV's own
-      BYE): stop with "Lost <name> over Wi-Fi Direct";
-    - `onDestroy` closes the link;
-    - phase timestamps are logged: discovery, pick, consent, join, DHCP, connect, handshake, first
-      frame.
-  - `SenderStatus`: `link` (ROUTER / WIFI_DIRECT) and `frequencyMhz`, shown on the status card.
+  - `SenderActivity`: the Wi-Fi Direct section (hint, button, device list) shown when
+    `usableAsSender`; `NEARBY_WIFI_DEVICES` requested on demand; the pick goes through the usual
+    consent flow and survives recreation (`KEY_DIRECT`).
+  - `ProjectionService`: `EXTRA_DIRECT_ADDRESS`; a service-owned scope; the join is guarded like a
+    session and cancelled by stop; order projection → group → host with the 1.5 s outage limit;
+    link loss ends the session with "Lost <name> over Wi-Fi Direct"; `p2pMessage` maps failures.
+  - `ProjectionHost(outageLimitMs)`; `SenderStatus.direct` (`DirectLink(frequencyMhz)`) shown on
+    the status card.
 - `feature:receiver`:
-  - `ReceiverController`:
-    - owns the P2P host for the receiver screen's lifetime and closes it in `stop()`;
-    - the waiting screen shows "Wi-Fi Direct ready as <name>" (or the reason it is unavailable);
-    - the overlay shows the link kind, from `NetworkInterface.getByInetAddress(socket.localAddress)`
-      compared with the group interface;
-    - the jitter buffer `coverMs` is set per link only if needed.
-  - `ReceiverActivity`: the strings; the permission prompt only if the spike requires it.
-- `docs/ARCHITECTURE.md`:
-  - new ADR-011, covering:
-    - the topology and the measured band;
-    - the credential exposure model;
-    - the P2P outage limit and the cases where P2P ends the session for good;
-    - where the frequency is shown;
-    - P2P DNS-SD;
-  - a cross-reference from ADR-006.
+  - `ReceiverController`: owns the agent and the station with the server's lifetime; joins offers
+    only while no session streams; leaves an unused station after 20 s and a used one when the
+    session ends; marks sessions from the group owner's address as Wi-Fi Direct.
+  - `ReceiverActivity`: "Also reachable over Wi-Fi Direct" on the waiting screen, "· Wi-Fi Direct"
+    in the overlay, and the API 29+ permission request.
+- `app` (debug only): `P2pSpikeService`, the spike harness.
+- `docs/ARCHITECTURE.md`: ADR-011 and a cross-reference from ADR-006.
 
 ## Protocol
 - Wire format: **no change**. `PROTOCOL_VERSION` stays at 3.
@@ -278,5 +258,5 @@ targets in the same room. Open items for implementation:
 4. [x] `feat(receiver)`: host ownership, waiting-screen text, link kind in the overlay.
 5. [x] `feat(sender)`: button, discovery list, permission flow, `ProjectionService` scope, joining state
    and ownership, link loss, phase timestamps, status card.
-6. `docs`: ADR-011, cross-reference from ADR-006, device measurements, issue clarification;
+6. [x] `docs`: ADR-011, cross-reference from ADR-006, device measurements, issue clarification;
    `coverMs` tuning only if the run needs it.
