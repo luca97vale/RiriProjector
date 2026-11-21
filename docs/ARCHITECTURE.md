@@ -321,3 +321,43 @@ changes without asking the user to share again.
   backoff already reconnects within ~1 s of the network coming back;
 - relying on adaptive playback for size changes: unreliable on the Fire TV Stick decoder, and it mixes sizes in the
   delay line.
+
+## ADR-012 — Settings persistence and release signing
+**Accepted** (M7).
+
+**Sender settings.**
+- Stored in a private SharedPreferences file `riri_sender_settings`, as strings, with a
+  `settings.version` key for future migrations. `SenderSettingsCodec` (pure, JVM-tested) validates
+  every field against the choices the screen offers and falls back to the default per field, so a
+  value from another version never crashes the app. `preferredAudioCodec` is not persisted.
+- The screen keeps its `rememberSaveable` state (rotation) and initialises it from the stored values;
+  changes are written with `apply()` on taps, never on a codec or socket thread.
+- The **last receiver** is saved by `SenderActivity` once a session reaches `Streaming` with it
+  (deduplicated per target), so an address that never connected is not remembered. Only
+  TCP-connectable targets are kept: the Wi-Fi Direct placeholder host (ADR-011) is excluded.
+  Known gap, accepted to keep `ProjectionService` out of it: if the activity is destroyed in the
+  background and a session starts and ends before it returns, nothing is saved.
+- **Quick start** matches the stored receiver against the live NSD list by service name first (a
+  Fire TV's DHCP lease may change its IP), then by host and port; without a match the stored address
+  is offered as a "Last receiver" card.
+
+**Release signing.**
+- Four values, environment variables first and Gradle properties second (user-level
+  `~/.gradle/gradle.properties`, outside the repo): `RIRI_KEYSTORE_FILE` (absolute path),
+  `RIRI_KEYSTORE_PASSWORD`, `RIRI_KEY_ALIAS`, `RIRI_KEY_PASSWORD`. All or none: none gives an unsigned
+  release build (CI, contributors); a partial set fails the build.
+- `versionName` / `versionCode` come from `riri.versionName` / `riri.versionCode`; the release
+  workflow derives them from the `vX.Y.Z` tag, `versionCode = X*10000 + Y*100 + Z` (Y, Z ≤ 99).
+- `.github/workflows/release.yml` runs on tags on `main` only, in a `release` environment, with
+  secrets passed through `env:`, Gradle caches disabled, the keystore decoded to `$RUNNER_TEMP` and
+  deleted afterwards. It verifies the signature with `apksigner` and attaches the APK and the R8
+  `mapping.txt` to the GitHub release.
+- R8 full mode is on for release, with exception class names and line numbers kept. CI builds the
+  release variant unsigned on every PR.
+
+*Rejected:*
+- DataStore: its asynchronous first read would show the defaults for a frame, or block the main
+  thread; a handful of values written on taps does not need it;
+- saving the receiver when tapped: a mistyped address would be remembered;
+- `keystore.properties` / `local.properties` for secrets: blocked by repository hooks, and
+  environment variables cover both CI and local builds.
