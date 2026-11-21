@@ -749,8 +749,12 @@ class ReceiverController(
         const val PTS_HOLE_TOLERANCE_US = 2_000L
         const val PREEMPT_WAIT_MS = 1_500L
 
-        /** A joined Wi-Fi Direct group nobody connects through is left after this. */
-        const val UNUSED_STATION_MS = 20_000L
+        /**
+         * A joined Wi-Fi Direct group nobody connects through is left after this. The tablet offers
+         * its group as soon as the TV is picked, before the consent dialog, so this covers a user
+         * reading that dialog (the tablet drops an unclaimed group after 45 s).
+         */
+        const val UNUSED_STATION_MS = 60_000L
 
         /** When the waiting screen re-reads this device's address after leaving a group. */
         val WAITING_REFRESH_MS = longArrayOf(500L, 3_000L, 8_000L)

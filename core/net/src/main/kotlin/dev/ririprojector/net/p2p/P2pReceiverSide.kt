@@ -54,6 +54,8 @@ class P2pReceiverAgent(
     private var idle = false
     private var lastOfferSsid: String? = null
     private val rearm = Runnable { discover() }
+    private val requeryTick: Runnable = Runnable { requery() }
+    private var request: WifiP2pDnsSdServiceRequest? = null
     private var closed = false
     private val reopen: Runnable =
         Runnable {
@@ -107,11 +109,9 @@ class P2pReceiverAgent(
         c.manager.addLocalService(c.channel, service, logging("addLocalService"))
         // All services, as the spike verified: a request by type only asks for the PTR record, so the
         // TXT record that carries the offer never arrives.
-        c.manager.addServiceRequest(
-            c.channel,
-            WifiP2pDnsSdServiceRequest.newInstance(),
-            logging("addServiceRequest"),
-        )
+        val first = WifiP2pDnsSdServiceRequest.newInstance()
+        request = first
+        c.manager.addServiceRequest(c.channel, first, logging("addServiceRequest"))
         P2pLog.i("agent: started as $name on port $port")
         return true
     }
@@ -122,6 +122,7 @@ class P2pReceiverAgent(
         P2pLog.i("agent: idle=$value")
         idle = value
         main.removeCallbacks(rearm)
+        main.removeCallbacks(requeryTick)
         if (value) discover() else ch?.quietly { m, c -> m.stopPeerDiscovery(c, null) }
     }
 
@@ -132,14 +133,70 @@ class P2pReceiverAgent(
 
     /**
      * Service discovery fetches the sender's offer; its find also keeps this device visible to the
-     * sender's peer discovery, which is how the tablet lists receivers.
+     * sender's peer discovery, which is how the tablet lists receivers. Rounds stay long: a new round
+     * starts with a full channel scan, during which the TV cannot be found.
      */
     @SuppressLint("MissingPermission")
     private fun discover() {
         val c = ch ?: return
         if (!idle) return
-        c.manager.discoverServices(c.channel, logging("discoverServices"))
+        c.manager.discoverServices(
+            c.channel,
+            object : WifiP2pManager.ActionListener {
+                override fun onSuccess() = Unit
+
+                override fun onFailure(reason: Int) {
+                    // BUSY right after leaving a group: try again soon rather than in REARM_MS.
+                    P2pLog.w("agent: discoverServices failed ($reason), retrying")
+                    if (reason == NO_SERVICE_REQUESTS) restoreRequest()
+                    main.removeCallbacks(rearm)
+                    if (idle) main.postDelayed(rearm, RETRY_MS)
+                }
+            },
+        )
         main.postDelayed(rearm, REARM_MS)
+        main.removeCallbacks(requeryTick)
+        main.postDelayed(requeryTick, REQUERY_MS)
+    }
+
+    /**
+     * The framework queries each peer only once per discovery round, and the sender publishes its offer
+     * only after the user picks this device. Replacing the request makes the framework send a fresh query
+     * to the peers it already knows, without the channel scan a new round would cost. Measured: with it
+     * every offer arrived (4/4), without it none did within 60 s (0/3).
+     */
+    private fun requery() {
+        val c = ch ?: return
+        if (!idle) return
+        val next = WifiP2pDnsSdServiceRequest.newInstance()
+        val old = request
+        // The old request goes only once the new one is in: a failed add must never leave none, which
+        // would make every later discovery fail with NO_SERVICE_REQUESTS.
+        c.quietly { m, cc ->
+            m.addServiceRequest(
+                cc,
+                next,
+                object : WifiP2pManager.ActionListener {
+                    override fun onSuccess() {
+                        if (ch !== c) return
+                        request = next
+                        if (old != null) c.quietly { m2, c2 -> m2.removeServiceRequest(c2, old, null) }
+                    }
+
+                    override fun onFailure(reason: Int) = Unit // keep the old request; next tick retries
+                },
+            )
+        }
+        main.postDelayed(requeryTick, REQUERY_MS)
+    }
+
+    /** Recovers from a request the framework no longer has (NO_SERVICE_REQUESTS). */
+    private fun restoreRequest() {
+        val c = ch ?: return
+        val fresh = WifiP2pDnsSdServiceRequest.newInstance()
+        c.quietly { m, cc -> m.clearServiceRequests(cc, null) }
+        c.quietly { m, cc -> m.addServiceRequest(cc, fresh, logging("addServiceRequest (restored)")) }
+        request = fresh
     }
 
     /**
@@ -151,6 +208,8 @@ class P2pReceiverAgent(
         P2pLog.w("agent: P2P channel lost, reopening")
         ch = null
         main.removeCallbacks(rearm)
+        main.removeCallbacks(requeryTick)
+        request = null
         context.unregisterQuietly(receiver)
         receiver = null
         lostChannel.close()
@@ -160,6 +219,7 @@ class P2pReceiverAgent(
     override fun close() {
         idle = false
         main.removeCallbacks(rearm)
+        main.removeCallbacks(requeryTick)
         closed = true
         main.removeCallbacks(reopen)
         val c = ch ?: return
@@ -184,6 +244,9 @@ class P2pReceiverAgent(
 
     private companion object {
         const val REARM_MS = 15_000L
+        const val RETRY_MS = 2_000L
+        const val REQUERY_MS = 2_000L
+        const val NO_SERVICE_REQUESTS = 3 // WifiP2pManager.NO_SERVICE_REQUESTS
         const val REOPEN_MS = 2_000L
         const val REOPEN_RETRY_MS = 10_000L
         const val REDACTED = "02:00:00:00:00:00"
