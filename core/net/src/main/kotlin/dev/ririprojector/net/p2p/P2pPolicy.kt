@@ -73,6 +73,14 @@ object P2pPolicy {
     fun newSsid(random: SecureRandom = SecureRandom()): String =
         "DIRECT-" + (1..2).map { SSID_ALPHABET[random.nextInt(SSID_ALPHABET.length)] }.joinToString("") + "-Riri"
 
+    private val OWN_SSID = Regex("^DIRECT-[$SSID_ALPHABET]{2}-Riri$")
+
+    /**
+     * Whether [ssid] is one of our group names, with or without the quotes `WifiConfiguration`
+     * adds. Only our own groups and saved networks are ever removed. Pure.
+     */
+    fun isOwnSsid(ssid: String?): Boolean = ssid != null && OWN_SSID.matches(ssid.removeSurrounding("\""))
+
     /** A fresh 16-character passphrase (~80 bits). */
     fun newPassphrase(random: SecureRandom = SecureRandom()): String =
         (1..16).map { PSK_ALPHABET[random.nextInt(PSK_ALPHABET.length)] }.joinToString("")

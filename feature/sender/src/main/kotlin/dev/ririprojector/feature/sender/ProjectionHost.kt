@@ -96,6 +96,9 @@ internal class ProjectionHost(
     /** How long one outage may last before giving up: 30 s over the router, 1.5 s over Wi-Fi Direct. */
     private val outageLimitMs: Long = P2pPolicy.ROUTER_OUTAGE_LIMIT_MS,
 ) {
+    /** [target] with the name the receiver gave in its HELLO, once a link has one. */
+    @Volatile private var shownTarget: ReceiverEndpoint = target
+
     @Volatile private var stopRequested = false
 
     @Volatile private var endMessage: String? = null
@@ -414,6 +417,9 @@ internal class ProjectionHost(
                 val (hello, params) =
                     Handshake.asSender(conn, capabilities(negotiatedSource), preferences, sessionId, handshakeTimeoutMs)
                 Log.i(TAG, "streaming to ${hello.deviceName} (${target.host}): ${params.video}")
+                // Show who actually answered: over Wi-Fi Direct the tablet streams to whichever device
+                // joined its group, so a wrong receiver must be visible (ADR-011).
+                shownTarget = target.copy(name = hello.deviceName.ifBlank { target.name })
                 val codec = catalog.best(params.video.codec, encoder = true) ?: throw IOException("no encoder")
                 val policy =
                     bitrate ?: BitratePolicy(params.video.bitrateBps, nowMs = SystemClock.elapsedRealtime()).also {
@@ -444,7 +450,7 @@ internal class ProjectionHost(
                 }
                 streamed = true
                 SenderStatus.set(
-                    SenderState.Streaming(target, params, SenderStats(encoderName = encoderName, audio = status)),
+                    SenderState.Streaming(shownTarget, params, SenderStats(encoderName = encoderName, audio = status)),
                 )
                 // Rotated while connecting: the size negotiated above is already stale.
                 if (currentSource != negotiatedSource) ctl.post(applyResize)
@@ -635,7 +641,7 @@ internal class ProjectionHost(
                         lastFrames = frames
                         lastBytes = bytes
                         lastAt = now
-                        params?.let { SenderStatus.set(SenderState.Streaming(target, it, stats)) }
+                        params?.let { SenderStatus.set(SenderState.Streaming(shownTarget, it, stats)) }
                     }
 
                     MessageType.BYE -> {

@@ -29,6 +29,7 @@ import dev.ririprojector.net.p2p.P2pOfferRecord
 import dev.ririprojector.net.p2p.P2pReceiverAgent
 import dev.ririprojector.net.p2p.P2pStation
 import dev.ririprojector.net.p2p.P2pStationJoiner
+import dev.ririprojector.net.p2p.P2pTxt
 import dev.ririprojector.net.p2p.WifiDirectSupport
 import dev.ririprojector.protocol.ByeReason
 import dev.ririprojector.protocol.ControlMessage
@@ -137,6 +138,7 @@ class ReceiverController(
 
     /** A joined group that no session uses is left, so the TV does not stay off its router. */
     private val leaveUnusedStation = Runnable { if (session == null) onSessionsIdle() }
+    private val refreshWaiting = Runnable { if (_state.value is ReceiverState.Waiting) showWaiting() }
 
     private val surfaceLock = ReentrantLock()
     private val surfaceReady = surfaceLock.newCondition()
@@ -179,6 +181,7 @@ class ReceiverController(
 
     fun stop() {
         main.removeCallbacks(retryStart)
+        main.removeCallbacks(refreshWaiting)
         bindAttempts = 0
         runCatching { nsd?.close() }
         nsd = null
@@ -198,8 +201,18 @@ class ReceiverController(
      */
     fun startWifiDirect() {
         if (agent != null || server == null || !WifiDirectSupport.usable(context)) return
-        val a = P2pReceiverAgent(context, deviceName.take(MAX_P2P_NAME_CHARS), server?.boundPort ?: 0, ::onOffer)
-        if (!a.start()) return
+        if (station == null) P2pStationJoiner.removeStaleNetworks(context)
+        val a = P2pReceiverAgent(context, P2pTxt.fitName(deviceName), server?.boundPort ?: 0, ::onOffer)
+        val started =
+            runCatching { a.start() }.getOrElse {
+                // Never let Wi-Fi Direct take the router path down with it.
+                Log.w(TAG, "Wi-Fi Direct unavailable: ${it.message}")
+                false
+            }
+        if (!started) {
+            a.close()
+            return
+        }
         agent = a
         a.setIdle(session == null)
         if (_state.value is ReceiverState.Waiting) showWaiting()
@@ -228,7 +241,8 @@ class ReceiverController(
                     agent?.forgetOffer()
                     if (session == null) agent?.setIdle(true)
                 } finally {
-                    joinJob = null
+                    // leaveStation() may already have started another join: clear only our own.
+                    if (joinJob === coroutineContext[Job]) joinJob = null
                 }
             }
     }
@@ -244,8 +258,18 @@ class ReceiverController(
         p2pScope.coroutineContext.cancelChildren()
         joinJob = null
         station?.close()
+        if (station != null) refreshWaitingSoon()
         station = null
         directGateway = null
+    }
+
+    /**
+     * The waiting screen shows this device's address. After leaving a group the TV takes a few
+     * seconds to get its router address back, so refresh it a couple of times.
+     */
+    private fun refreshWaitingSoon() {
+        main.removeCallbacks(refreshWaiting)
+        for (delayMs in WAITING_REFRESH_MS) main.postDelayed(refreshWaiting, delayMs)
     }
 
     private fun isDirect(connection: Connection) = directGateway != null && connection.remoteAddress == directGateway
@@ -726,8 +750,8 @@ class ReceiverController(
         /** A joined Wi-Fi Direct group nobody connects through is left after this. */
         const val UNUSED_STATION_MS = 20_000L
 
-        /** Keeps the P2P TXT entry short (one length byte per entry). */
-        const val MAX_P2P_NAME_CHARS = 30
+        /** When the waiting screen re-reads this device's address after leaving a group. */
+        val WAITING_REFRESH_MS = longArrayOf(500L, 3_000L, 8_000L)
 
         /** Keeps [min] off the wire's sentinel values. */
         fun clampInt(value: Long, min: Long): Int = value.coerceIn(min, Int.MAX_VALUE.toLong()).toInt()

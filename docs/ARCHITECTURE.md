@@ -324,7 +324,8 @@ exactly the router one (same `ReceiverServer`, handshake and protocol v3, no wir
   DBS) time-slices it with its 5 GHz router link: the stalls this feature removes would remain.
 - The tablet creates the group with `WifiP2pConfig.Builder` on **its own station channel**
   (`setGroupOperatingFrequency`, 5220 MHz in the measurements; `GROUP_OWNER_BAND_5GHZ` when the
-  station is not on 5 GHz), so it never hops channels. Same room: audio played ~330 ms (router
+  station is not on 5 GHz, or when the driver refuses the station's channel, e.g. DFS), so it never
+  hops channels. Same room: audio played ~330 ms (router
   ~460), writes ≤ 12 ms, 2 underruns in ~6 min.
 - On API 28 the TV joins as a **legacy station** (`addNetwork`/`enableNetwork`, no dialog) and so
   **leaves its router while mirroring** (accepted in the issue); `removeNetwork` + `reconnect()`
@@ -354,7 +355,13 @@ separate from the ADR-006 NSD TXT.
 **Credentials.** The SSID (`DIRECT-xx-Riri`) and a 16-character passphrase are random per session
 and live only while the session's group exists. The TXT is readable by any nearby P2P device during
 the ~10 s offer window; that exposure is accepted, since the group serves one session and the
-single-session server answers anyone else with BUSY. Logs never print the passphrase.
+single-session server answers anyone else with BUSY. Residual risk: a device that reads the
+offer and joins before the TV would get the stream, since the tablet connects to the first client
+with an address (an API 28 legacy client cannot be matched to the picked P2P device address). The
+tablet's status card shows the name the receiver gives in its HELLO, so a wrong receiver is visible;
+binding the session to a nonce in the offer would need a protocol change and is left for later.
+Logs never print the passphrase, and the tablet removes only groups it created; the TV removes saved
+`DIRECT-xx-Riri` networks left behind by a power loss when its receiver screen starts.
 
 **Session end over P2P.** The outage limit is **1.5 s** instead of 30 s (ADR-010): when the TV
 leaves the group (powered off, out of range, Back) the group cannot come back by itself, so a lost

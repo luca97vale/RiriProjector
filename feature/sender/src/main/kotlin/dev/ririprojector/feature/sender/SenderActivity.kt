@@ -50,6 +50,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.ririprojector.net.ReceiverEndpoint
 import dev.ririprojector.net.nsd.NsdBrowser
+import dev.ririprojector.net.p2p.P2pFailure
 import dev.ririprojector.net.p2p.P2pReceiver
 import dev.ririprojector.net.p2p.P2pReceiverBrowser
 import dev.ririprojector.net.p2p.WifiDirectSupport
@@ -175,7 +176,16 @@ class SenderActivity : ComponentActivity() {
                     val searching = directSearch && !active
                     val directFound by remember(searching) {
                         if (searching) {
-                            P2pReceiverBrowser(this).receivers().catch {
+                            P2pReceiverBrowser(this).receivers().catch { e ->
+                                // BUSY, Wi-Fi off, channel lost: say so instead of searching forever.
+                                directSearch = false
+                                val message =
+                                    if (e is P2pFailure.Busy) {
+                                        getString(R.string.sender_error_p2p_busy)
+                                    } else {
+                                        getString(R.string.sender_error_p2p_failed, e.message ?: e.javaClass.simpleName)
+                                    }
+                                Toast.makeText(this@SenderActivity, message, Toast.LENGTH_LONG).show()
                                 emit(emptyList())
                             }
                         } else {

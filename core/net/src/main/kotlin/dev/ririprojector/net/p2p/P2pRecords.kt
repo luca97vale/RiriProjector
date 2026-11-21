@@ -45,6 +45,25 @@ object P2pTxt {
     private const val MAX_SSID_BYTES = 32
     private val MAC = Regex("^[0-9a-f]{2}(:[0-9a-f]{2}){5}$")
 
+    /**
+     * [name] cut to what a record accepts: at most [MAX_NAME_BYTES] UTF-8 bytes, on a code-point
+     * boundary, trimmed. A blank result becomes [fallback]. Pure.
+     */
+    fun fitName(name: String, fallback: String = "RiriProjector"): String {
+        val out = StringBuilder()
+        var bytes = 0
+        var i = 0
+        while (i < name.length) {
+            val cp = name.codePointAt(i)
+            val size = String(Character.toChars(cp)).toByteArray(Charsets.UTF_8).size
+            if (bytes + size > MAX_NAME_BYTES) break
+            out.appendCodePoint(cp)
+            bytes += size
+            i += Character.charCount(cp)
+        }
+        return out.toString().trim().ifBlank { fallback }
+    }
+
     fun encode(record: P2pRecord): Map<String, String> = when (record) {
         is P2pReceiverRecord -> {
             require(validName(record.name) && record.port in 1..65_535) { "invalid receiver record" }

@@ -124,7 +124,7 @@ class P2pSpikeService : Service() {
                             }
                         }
                         .build()
-                log("gob passphrase=$pass")
+                log("gob passphrase=${pass.take(2)}…")
                 p2p.createGroup(ch, config, listener("createGroup(5GHz)"))
             }
 
@@ -259,7 +259,9 @@ class P2pSpikeService : Service() {
     private fun describe(g: WifiP2pGroup?): String {
         if (g == null) return "group=null"
         val freq = if (Build.VERSION.SDK_INT >= 29) g.frequency.toString() else "n/a"
-        return "group ssid=${g.networkName} psk=${g.passphrase} if=${g.`interface`} owner=${g.isGroupOwner} freq=$freq clients=${g.clientList.map { c ->
+        return "group ssid=${g.networkName} psk=${g.passphrase?.take(
+            2,
+        )}… if=${g.`interface`} owner=${g.isGroupOwner} freq=$freq clients=${g.clientList.map { c ->
             c.deviceAddress + "/" + (if (Build.VERSION.SDK_INT >= 35) c.ipAddress?.hostAddress else "?")
         }}"
     }

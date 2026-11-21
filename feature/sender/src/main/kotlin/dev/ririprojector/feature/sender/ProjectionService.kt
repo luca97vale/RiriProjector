@@ -29,6 +29,7 @@ import dev.ririprojector.net.p2p.P2pGroupOwner
 import dev.ririprojector.net.p2p.P2pLink
 import dev.ririprojector.net.p2p.P2pPolicy
 import dev.ririprojector.net.p2p.P2pReceiver
+import dev.ririprojector.net.p2p.P2pTxt
 import dev.ririprojector.net.p2p.WifiDirectSupport
 import dev.ririprojector.protocol.ByeReason
 import dev.ririprojector.protocol.model.DisplayInfo
@@ -195,8 +196,7 @@ class ProjectionService : Service() {
     private fun senderName(): String = (
         Settings.Global.getString(contentResolver, Settings.Global.DEVICE_NAME)?.takeIf { it.isNotBlank() }
             ?: Build.MODEL
-        )
-        .take(MAX_P2P_NAME_CHARS)
+        ).let(P2pTxt::fitName)
 
     private fun stopSession(reason: ByeReason, message: String? = null) {
         val s = session
@@ -322,7 +322,6 @@ class ProjectionService : Service() {
         /** Placeholder host shown while the Wi-Fi Direct group forms; the real one comes from the group. */
         const val DIRECT_HOST = "wifi-direct"
         private const val LINK_LOST_GRACE_MS = 300L
-        private const val MAX_P2P_NAME_CHARS = 30
 
         fun start(
             context: Context,

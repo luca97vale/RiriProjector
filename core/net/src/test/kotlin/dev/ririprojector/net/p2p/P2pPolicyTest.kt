@@ -170,7 +170,7 @@ class P2pPolicyTest {
         val tooLong = mapOf("v" to "1", "role" to "rx", "name" to "n".repeat(64), "port" to "1")
         assertThat(P2pTxt.decode(tooLong)).isNull()
         // 32 two-byte characters = 64 bytes.
-        val multibyte = mapOf("v" to "1", "role" to "rx", "name" to "è".repeat(32), "port" to "1")
+        val multibyte = mapOf("v" to "1", "role" to "rx", "name" to "Ã¨".repeat(32), "port" to "1")
         assertThat(P2pTxt.decode(multibyte)).isNull()
     }
 
@@ -203,7 +203,7 @@ class P2pPolicyTest {
         assertThat(P2pTxt.decode(good + ("psk" to "12345678"))).isNotNull()
         assertThat(P2pTxt.decode(good + ("psk" to "1234567"))).isNull()
         assertThat(P2pTxt.decode(good + ("psk" to "abc\u0000defgh"))).isNull()
-        assertThat(P2pTxt.decode(good + ("psk" to "abcdefgèh"))).isNull()
+        assertThat(P2pTxt.decode(good + ("psk" to "abcdefgÃ¨h"))).isNull()
         assertThat(P2pTxt.decode(good + ("psk" to "abcd efgh!"))).isNotNull()
     }
 
@@ -233,5 +233,37 @@ class P2pPolicyTest {
     fun `decode ignores unknown extra keys and rejects an empty map`() {
         assertThat(P2pTxt.decode(P2pTxt.encode(offer) + ("future" to "x"))).isEqualTo(offer)
         assertThat(P2pTxt.decode(emptyMap())).isNull()
+    }
+
+    @Test
+    fun `fitName keeps long CJK and emoji names within the record limit`() {
+        val cjk = "客厅的电视".repeat(10) // 50 chars, 150 bytes
+        val fitted = P2pTxt.fitName(cjk)
+        assertThat(fitted.toByteArray(Charsets.UTF_8).size).isAtMost(63)
+        assertThat(cjk).startsWith(fitted)
+        assertThat(P2pTxt.decode(P2pTxt.encode(P2pReceiverRecord(fitted, 47800)))).isNotNull()
+
+        val emoji = "📺".repeat(20) // 4-byte code points: never split a surrogate pair
+        val e = P2pTxt.fitName(emoji)
+        assertThat(e.toByteArray(Charsets.UTF_8).size).isEqualTo(60)
+        assertThat(e.length % 2).isEqualTo(0)
+    }
+
+    @Test
+    fun `fitName trims and falls back when blank`() {
+        assertThat(P2pTxt.fitName("  Living room TV  ")).isEqualTo("Living room TV")
+        assertThat(P2pTxt.fitName("   ")).isEqualTo("RiriProjector")
+        assertThat(P2pTxt.fitName("FireTVStick di Luca")).isEqualTo("FireTVStick di Luca")
+    }
+
+    @Test
+    fun `isOwnSsid matches only our group names, quoted or not`() {
+        repeat(50) { assertThat(P2pPolicy.isOwnSsid(P2pPolicy.newSsid())).isTrue() }
+        assertThat(P2pPolicy.isOwnSsid("\"DIRECT-hY-Riri\"")).isTrue()
+        assertThat(P2pPolicy.isOwnSsid("DIRECT-us-Tab S9 di luca")).isFalse()
+        assertThat(P2pPolicy.isOwnSsid("DIRECT-aK-FireTVStick di Luca")).isFalse()
+        assertThat(P2pPolicy.isOwnSsid("DIRECT-abc-Riri")).isFalse()
+        assertThat(P2pPolicy.isOwnSsid("Riri Bau Bau")).isFalse()
+        assertThat(P2pPolicy.isOwnSsid(null)).isFalse()
     }
 }

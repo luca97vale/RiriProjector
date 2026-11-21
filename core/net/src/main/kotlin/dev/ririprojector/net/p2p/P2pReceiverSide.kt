@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.annotation.TargetApi
 import android.content.BroadcastReceiver
 import android.content.Context
+import android.net.DhcpInfo
 import android.net.wifi.SupplicantState
 import android.net.wifi.WifiConfiguration
 import android.net.wifi.WifiManager
@@ -52,13 +53,27 @@ class P2pReceiverAgent(
     private var lastOfferSsid: String? = null
     private val rearm = Runnable { discover() }
     private var closed = false
-    private val reopen = Runnable { if (!closed && start() && idle) discover() }
+    private val reopen: Runnable =
+        Runnable {
+            when {
+                closed -> Unit
+                start() -> if (idle) discover()
+                else -> main.postDelayed(reopen, REOPEN_RETRY_MS) // e.g. Wi-Fi still off after standby
+            }
+        }
 
     /** False when the device has no Wi-Fi Direct; the receiver then works over the router only. */
     @SuppressLint("MissingPermission") // API 29+ callers hold the location / nearby permission
     fun start(): Boolean {
         if (ch != null) return true
         P2pLog.init(context)
+        // Built first: an invalid record must fail before anything is registered.
+        val service =
+            WifiP2pDnsSdServiceInfo.newInstance(
+                P2pTxt.RECEIVER_INSTANCE,
+                P2pTxt.SERVICE_TYPE,
+                P2pTxt.encode(P2pReceiverRecord(P2pTxt.fitName(name), port)),
+            )
         var opened: P2pChannel? = null
         val c = P2pChannel.open(context) { onChannelLost(opened) } ?: return false
         opened = c
@@ -87,12 +102,6 @@ class P2pReceiverAgent(
                 }
             },
         )
-        val service =
-            WifiP2pDnsSdServiceInfo.newInstance(
-                P2pTxt.RECEIVER_INSTANCE,
-                P2pTxt.SERVICE_TYPE,
-                P2pTxt.encode(P2pReceiverRecord(name, port)),
-            )
         c.manager.addLocalService(c.channel, service, logging("addLocalService"))
         // All services, as the spike verified: a request by type only asks for the PTR record, so the
         // TXT record that carries the offer never arrives.
@@ -174,6 +183,7 @@ class P2pReceiverAgent(
     private companion object {
         const val REARM_MS = 15_000L
         const val REOPEN_MS = 2_000L
+        const val REOPEN_RETRY_MS = 10_000L
         const val REDACTED = "02:00:00:00:00:00"
     }
 }
@@ -216,6 +226,23 @@ object P2pStationJoiner {
             joinAsStation(context, offer, timeoutMs)
         }
 
+    /**
+     * API 28: removes saved networks of ours left behind when the TV lost power or the process died
+     * mid-session (each holds a passphrase). Call while no station is joined. No-op on API 29+.
+     */
+    @Suppress("DEPRECATION")
+    @SuppressLint("MissingPermission") // API 28: an app may list and remove the networks it added
+    fun removeStaleNetworks(context: Context) {
+        if (Build.VERSION.SDK_INT >= 29) return
+        val wifi = context.applicationContext.getSystemService(WifiManager::class.java) ?: return
+        runCatching {
+            wifi.configuredNetworks.orEmpty().filter { P2pPolicy.isOwnSsid(it.SSID) }.forEach {
+                wifi.removeNetwork(it.networkId)
+                P2pLog.i("station: removed stale ${it.SSID}")
+            }
+        }
+    }
+
     @Suppress("DEPRECATION") // the only dialog-free way on API 28
     private suspend fun joinAsStation(context: Context, offer: P2pOfferRecord, timeoutMs: Long): P2pStation {
         val wifi = context.applicationContext.getSystemService(WifiManager::class.java)
@@ -249,19 +276,22 @@ object P2pStationJoiner {
 
         try {
             if (!wifi.enableNetwork(id, true)) throw P2pFailure.Error("enableNetwork", -1)
-            withTimeout(timeoutMs) {
-                while (true) {
-                    val info = wifi.connectionInfo
-                    val dhcp = wifi.dhcpInfo
-                    if (info?.networkId == id && info.supplicantState == SupplicantState.COMPLETED &&
-                        dhcp?.ipAddress != 0
-                    ) {
-                        break
+            val dhcp =
+                withTimeout(timeoutMs) {
+                    var ready: DhcpInfo? = null
+                    while (ready == null) {
+                        val info = wifi.connectionInfo
+                        val d = wifi.dhcpInfo // one snapshot: it can be null while associating
+                        if (info?.networkId == id && info.supplicantState == SupplicantState.COMPLETED &&
+                            d != null && d.ipAddress != 0
+                        ) {
+                            ready = d
+                        } else {
+                            delay(POLL_MS)
+                        }
                     }
-                    delay(POLL_MS)
+                    ready
                 }
-            }
-            val dhcp = wifi.dhcpInfo
             val gateway = P2pPolicy.ipv4(if (dhcp.gateway != 0) dhcp.gateway else dhcp.serverAddress)
             P2pLog.i("station: joined ${offer.ssid}, group owner $gateway")
             main.postDelayed(watch, WATCH_MS)
@@ -289,7 +319,8 @@ object P2pStationJoiner {
 
         fun release() {
             ch.quietly { m, c -> m.cancelConnect(c, null) }
-            ch.quietly { m, c -> m.removeGroup(c, null) }
+            // Only the sender's group we joined: never another app's group.
+            if (joined.value != null) ch.quietly { m, c -> m.removeGroup(c, null) }
             context.unregisterQuietly(receiver)
             ch.close()
         }
@@ -300,7 +331,10 @@ object P2pStationJoiner {
                     val info = intent.parcelable<WifiP2pInfo>(WifiP2pManager.EXTRA_WIFI_P2P_INFO)
                     val g = intent.parcelable<WifiP2pGroup>(WifiP2pManager.EXTRA_WIFI_P2P_GROUP)
                     val owner = info?.groupOwnerAddress?.hostAddress
-                    if (info?.groupFormed == true && !info.isGroupOwner && owner != null && g?.`interface` != null) {
+                    // The offered group only: the first (sticky) broadcast may describe an older one.
+                    if (info?.groupFormed == true && !info.isGroupOwner && owner != null && g?.`interface` != null &&
+                        g.networkName == offer.ssid
+                    ) {
                         joined.value = owner to g.`interface`
                     } else if (established) {
                         lost.value = true

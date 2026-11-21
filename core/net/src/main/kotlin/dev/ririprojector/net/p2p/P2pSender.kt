@@ -132,6 +132,9 @@ class P2pGroupOwner(private val context: Context) {
     suspend fun open(target: P2pReceiver, senderName: String, timeoutMs: Long = DEFAULT_TIMEOUT_MS): P2pLink {
         val lost = MutableStateFlow(false)
         val group = MutableStateFlow<WifiP2pGroup?>(null)
+        var created = false
+        val ssid = P2pPolicy.newSsid()
+        val psk = P2pPolicy.newPassphrase()
         var established = false
         P2pLog.init(context)
         val ch = P2pChannel.open(context) { lost.value = true } ?: throw P2pFailure.Unsupported("group")
@@ -142,7 +145,8 @@ class P2pGroupOwner(private val context: Context) {
         fun release() {
             ch.quietly { m, c -> m.clearLocalServices(c, null) }
             ch.quietly { m, c -> m.stopPeerDiscovery(c, null) }
-            ch.quietly { m, c -> m.removeGroup(c, null) }
+            // Only the group this call created: never another app's (Quick Share, Smart View).
+            if (created) ch.quietly { m, c -> m.removeGroup(c, null) }
             context.unregisterQuietly(receiver)
             ch.close()
         }
@@ -152,25 +156,38 @@ class P2pGroupOwner(private val context: Context) {
                 context.registerP2p(WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION) { intent ->
                     val info = intent.parcelable<WifiP2pInfo>(WifiP2pManager.EXTRA_WIFI_P2P_INFO)
                     val g = intent.parcelable<WifiP2pGroup>(WifiP2pManager.EXTRA_WIFI_P2P_GROUP)
-                    group.value = g?.takeIf { info?.groupFormed == true && it.isGroupOwner }
+                    // Ours only: the first (sticky) broadcast may describe an older group.
+                    group.value = g?.takeIf { info?.groupFormed == true && it.isGroupOwner && it.networkName == ssid }
                     // After the receiver joined: the group went away or the receiver left it.
                     if (established && (info?.groupFormed != true || g == null || g.clientList.isEmpty())) {
                         lost.value = true
                     }
                 }
             return withTimeout(timeoutMs) {
-                // A group left over by a crash would make createGroup fail with BUSY.
-                runCatching { ch.await("removeGroup") { m, c, l -> m.removeGroup(c, l) } }
-                val ssid = P2pPolicy.newSsid()
-                val psk = P2pPolicy.newPassphrase()
-                val config =
+                // A group of ours left over by a crash would make createGroup fail; another app's group
+                // is not ours to remove.
+                val existing = ch.groupInfo()
+                if (existing != null) {
+                    if (!P2pPolicy.isOwnSsid(existing.networkName)) throw P2pFailure.Busy("group")
+                    runCatching { ch.await("removeGroup") { m, c, l -> m.removeGroup(c, l) } }
+                }
+                fun config(channel: GroupChannel) =
                     WifiP2pConfig.Builder().setNetworkName(ssid).setPassphrase(psk).apply {
-                        when (val channel = P2pPolicy.channelFor(stationFrequency())) {
+                        when (channel) {
                             is GroupChannel.Frequency -> setGroupOperatingFrequency(channel.mhz)
                             GroupChannel.Band5Ghz -> setGroupOperatingBand(WifiP2pConfig.GROUP_OWNER_BAND_5GHZ)
                         }
                     }.build()
-                ch.await("createGroup") { m, c, l -> m.createGroup(c, config, l) }
+                val channel = P2pPolicy.channelFor(stationFrequency())
+                try {
+                    ch.await("createGroup") { m, c, l -> m.createGroup(c, config(channel), l) }
+                } catch (e: P2pFailure) {
+                    // Some drivers refuse a group owner on the station's channel (DFS): any 5 GHz one.
+                    if (channel !is GroupChannel.Frequency || e is P2pFailure.Busy) throw e
+                    P2pLog.w("group: ${channel.mhz} MHz refused (${e.message}), trying any 5 GHz channel")
+                    ch.await("createGroup") { m, c, l -> m.createGroup(c, config(GroupChannel.Band5Ghz), l) }
+                }
+                created = true
                 val formed = group.filter { it != null }.first()!!
                 phase("formed on ${formed.frequency} MHz")
 
