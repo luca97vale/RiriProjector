@@ -85,10 +85,15 @@ class ReceiverActivity : Activity() {
                         bottomMargin = (32 * resources.displayMetrics.density).toInt()
                     },
                 )
-                // Touch receivers (phones, tablets) have no D-pad: a tap toggles the overlay.
+                // Touch receivers (phones, tablets) have no D-pad: a tap toggles the overlay. The
+                // screen itself holds the initial focus, so OK on a remote keeps toggling the
+                // overlay; the role button needs a deliberate D-pad move first.
                 setOnClickListener { toggleOverlay() }
+                isFocusable = true
+                defaultFocusHighlightEnabled = false
             }
         setContentView(root)
+        root.requestFocus()
 
         controller = ReceiverController(applicationContext, deviceName(), displayInfo(), ::localIpv4)
         controller.onStreamStarted = { params ->
