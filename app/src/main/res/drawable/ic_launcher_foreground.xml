@@ -1,15 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Projector beam glyph inside the 72dp adaptive-icon safe zone -->
-<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="108dp"
-    android:height="108dp"
-    android:viewportWidth="108"
-    android:viewportHeight="108">
-    <path
-        android:fillColor="@color/brand_accent"
-        android:pathData="M30,44h22v20h-22z" />
-    <path
-        android:fillColor="@color/brand_accent"
-        android:fillAlpha="0.6"
-        android:pathData="M52,48L80,38L80,70L52,60z" />
-</vector>
+<!-- The 108dp adaptive-icon layer: the artwork in the middle 76dp, so launcher masks keep it whole. -->
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:drawable="@drawable/launcher_art"
+    android:inset="16dp" />

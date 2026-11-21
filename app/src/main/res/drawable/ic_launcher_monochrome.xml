@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Themed-icon silhouette (Android 13+): the artwork's play screen with its Wi-Fi waves. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Screen with a play triangle cut out -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M37,46h34a4,4 0,0 1,4 4v20a4,4 0,0 1,-4 4h-34a4,4 0,0 1,-4 -4v-20a4,4 0,0 1,4 -4zM50,52v16l13,-8z" />
+    <!-- Wi-Fi dot and waves above the screen -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M54,42m-2.5,0a2.5,2.5 0,1 1,5 0a2.5,2.5 0,1 1,-5 0" />
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:pathData="M48.5,37.5a8,8 0,0 1,11 0M44,33a14,14 0,0 1,20 0" />
+</vector>

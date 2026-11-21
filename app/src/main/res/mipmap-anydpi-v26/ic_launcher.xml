@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- AAPT only resolves adaptive icons from an explicit -v26 folder, whatever minSdk is. -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
     tools:ignore="ObsoleteSdkInt">
-    <background android:drawable="@color/brand_background" />
+    <background android:drawable="@color/icon_background" />
     <foreground android:drawable="@drawable/ic_launcher_foreground" />
-    <monochrome android:drawable="@drawable/ic_launcher_foreground" />
+    <monochrome android:drawable="@drawable/ic_launcher_monochrome" />
 </adaptive-icon>
