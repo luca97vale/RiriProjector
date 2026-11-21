@@ -14,7 +14,7 @@
     <!-- Receiver: keep the TV awake while mirroring -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
-    <!-- Same APK runs on tablets and on Fire TV / Android TV projectors (ADR-001) -->
+    <!-- Same APK on phones, tablets, Android TV / Fire TV devices and projectors (ADR-001) -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
@@ -39,6 +39,13 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+            <!-- "Use this device as a receiver/sender" from the two screens (ADR-001). The choice is
+                 remembered; the screens send these with setPackage, so only this app resolves them. -->
+            <intent-filter>
+                <action android:name="dev.ririprojector.action.USE_AS_RECEIVER" />
+                <action android:name="dev.ririprojector.action.USE_AS_SENDER" />
+                <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
     </application>

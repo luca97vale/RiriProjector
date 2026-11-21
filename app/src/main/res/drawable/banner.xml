@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 320x180dp leanback banner (Fire TV / Android TV launcher row) -->
+<!-- 320x180dp leanback banner (TV launcher row: Android TV, Google TV, Fire TV) -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
     tools:ignore="VectorRaster"

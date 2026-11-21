@@ -7,25 +7,40 @@ enum class AppMode {
     ;
 
     companion object {
-        /** Parses the `mode` launch extra (case-insensitive); unknown values yield null. */
+        /** Parses the `mode` launch extra or a stored choice (case-insensitive); unknown values yield null. */
         fun fromExtra(value: String?): AppMode? =
             entries.firstOrNull { it.name.equals(value?.trim(), ignoreCase = true) }
     }
 }
 
 /**
- * Picks the app mode at launch (ADR-001): an explicit `mode` extra wins, otherwise TV-like
- * devices become receivers and everything else a sender.
+ * Picks the app mode at launch (ADR-001): an explicit `mode` extra wins, then the choice the user
+ * made in the app ("Use this device as a receiver/sender"), otherwise TV-like devices become
+ * receivers and everything else (phones, tablets) a sender.
  */
 object ModeResolver {
     const val EXTRA_MODE = "mode"
 
-    /** Amazon's feature flag for Fire TV devices (some do not report leanback reliably). */
+    /**
+     * Fire TV feature flag. Some Fire OS builds report neither leanback nor the TV UI mode, so it is
+     * one more TV signal; any other device just does not have it.
+     */
     const val FEATURE_FIRE_TV = "amazon.hardware.fire_tv"
 
     fun isTv(hasFireTvFeature: Boolean, hasLeanbackFeature: Boolean, isTelevisionUiMode: Boolean): Boolean =
         hasFireTvFeature || hasLeanbackFeature || isTelevisionUiMode
 
-    fun resolve(modeExtra: String?, isTv: Boolean): AppMode =
-        AppMode.fromExtra(modeExtra) ?: if (isTv) AppMode.RECEIVER else AppMode.SENDER
+    fun resolve(modeExtra: String?, isTv: Boolean, remembered: AppMode? = null): AppMode =
+        AppMode.fromExtra(modeExtra) ?: remembered ?: if (isTv) AppMode.RECEIVER else AppMode.SENDER
+
+    /**
+     * The mode a switch request asks for, from the actions the feature screens send; null for any
+     * other action (a normal launch).
+     */
+    fun switchTarget(action: String?, useAsReceiverAction: String, useAsSenderAction: String): AppMode? =
+        when (action) {
+            useAsReceiverAction -> AppMode.RECEIVER
+            useAsSenderAction -> AppMode.SENDER
+            else -> null
+        }
 }

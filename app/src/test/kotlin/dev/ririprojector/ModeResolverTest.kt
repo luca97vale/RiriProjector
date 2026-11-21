@@ -32,7 +32,7 @@ class ModeResolverTest {
     }
 
     @Test
-    fun `fire tv feature alone marks a tv even without leanback`() {
+    fun `vendor tv feature alone marks a tv even without leanback`() {
         assertThat(
             ModeResolver.isTv(hasFireTvFeature = true, hasLeanbackFeature = false, isTelevisionUiMode = false),
         ).isTrue()
@@ -46,9 +46,34 @@ class ModeResolverTest {
     }
 
     @Test
-    fun `tablet is not a tv`() {
+    fun `phone or tablet is not a tv`() {
         assertThat(
             ModeResolver.isTv(hasFireTvFeature = false, hasLeanbackFeature = false, isTelevisionUiMode = false),
         ).isFalse()
+    }
+
+    @Test
+    fun `remembered choice beats device type`() {
+        assertThat(ModeResolver.resolve(null, isTv = false, remembered = AppMode.RECEIVER)).isEqualTo(AppMode.RECEIVER)
+        assertThat(ModeResolver.resolve(null, isTv = true, remembered = AppMode.SENDER)).isEqualTo(AppMode.SENDER)
+    }
+
+    @Test
+    fun `explicit extra beats remembered choice`() {
+        assertThat(ModeResolver.resolve("sender", isTv = false, remembered = AppMode.RECEIVER)).isEqualTo(AppMode.SENDER)
+    }
+
+    @Test
+    fun `unknown extra falls back to remembered choice`() {
+        assertThat(ModeResolver.resolve("tv", isTv = false, remembered = AppMode.RECEIVER)).isEqualTo(AppMode.RECEIVER)
+    }
+
+    @Test
+    fun `switch actions map to modes`() {
+        fun target(action: String?) = ModeResolver.switchTarget(action, useAsReceiverAction = "R", useAsSenderAction = "S")
+        assertThat(target("R")).isEqualTo(AppMode.RECEIVER)
+        assertThat(target("S")).isEqualTo(AppMode.SENDER)
+        assertThat(target("android.intent.action.MAIN")).isNull()
+        assertThat(target(null)).isNull()
     }
 }
