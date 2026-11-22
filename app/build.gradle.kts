@@ -58,6 +58,7 @@ android {
 }
 
 dependencies {
+    implementation(project(":core:ui"))
     implementation(project(":feature:sender"))
     implementation(project(":feature:receiver"))
     implementation(libs.androidx.core.ktx)

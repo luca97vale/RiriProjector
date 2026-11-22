@@ -12,6 +12,6 @@
     <item
         android:width="180dp"
         android:height="180dp"
-        android:drawable="@drawable/launcher_art"
+        android:drawable="@drawable/riri_dog_art"
         android:gravity="center" />
 </layer-list>

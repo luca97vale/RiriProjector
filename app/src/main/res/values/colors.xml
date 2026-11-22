@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Matches the navy around the launcher artwork (launcher_art). -->
+    <!-- Matches the navy around the launcher artwork (riri_dog_art in :core:ui). -->
     <color name="icon_background">#FF100E3B</color>
 </resources>
