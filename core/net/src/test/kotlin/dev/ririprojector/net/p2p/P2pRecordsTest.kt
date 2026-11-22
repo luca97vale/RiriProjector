@@ -58,11 +58,12 @@ class P2pRecordsTest {
         assertTrue("abcdefgh12345678" !in offer.toString())
     }
 
-    @Test fun groupSharesTheStations5GhzChannel() {
-        assertEquals(GroupChannel.Frequency(5_220), P2pPolicy.channelFor(5_220))
-        assertEquals(GroupChannel.Band5Ghz, P2pPolicy.channelFor(2_432))
-        assertEquals(GroupChannel.Band5Ghz, P2pPolicy.channelFor(null))
-        assertEquals(GroupChannel.Band5Ghz, P2pPolicy.channelFor(-1))
+    @Test fun groupSharesTheStationsChannel() {
+        assertEquals(GroupChannel.Frequency(5_220), P2pPolicy.channelFor(5_220, crossBandGo = false))
+        assertEquals(GroupChannel.Frequency(2_432), P2pPolicy.channelFor(2_432, crossBandGo = false))
+        assertEquals(GroupChannel.Band5Ghz, P2pPolicy.channelFor(2_432, crossBandGo = true))
+        assertEquals(GroupChannel.Band5Ghz, P2pPolicy.channelFor(null, crossBandGo = false))
+        assertEquals(GroupChannel.Band5Ghz, P2pPolicy.channelFor(-1, crossBandGo = false))
     }
 
     @Test fun generatedCredentialsAreValid() {
