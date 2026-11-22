@@ -15,24 +15,68 @@ class P2pPolicyTest {
     }
 
     @Test
-    fun `channelFor shares the frequency at both 5 GHz boundaries`() {
-        assertThat(P2pPolicy.channelFor(4_900)).isEqualTo(GroupChannel.Frequency(4_900))
-        assertThat(P2pPolicy.channelFor(5_900)).isEqualTo(GroupChannel.Frequency(5_900))
+    fun `channelFor shares the frequency at both 5 GHz boundaries, with or without cross-band`() {
+        for (crossBand in listOf(true, false)) {
+            assertThat(P2pPolicy.channelFor(4_900, crossBand)).isEqualTo(GroupChannel.Frequency(4_900))
+            assertThat(P2pPolicy.channelFor(5_220, crossBand)).isEqualTo(GroupChannel.Frequency(5_220))
+            assertThat(P2pPolicy.channelFor(5_899, crossBand)).isEqualTo(GroupChannel.Frequency(5_899))
+        }
     }
 
     @Test
     fun `channelFor falls back to Band5Ghz just outside the 5 GHz range`() {
-        assertThat(P2pPolicy.channelFor(4_899)).isEqualTo(GroupChannel.Band5Ghz)
-        assertThat(P2pPolicy.channelFor(5_901)).isEqualTo(GroupChannel.Band5Ghz)
+        for (crossBand in listOf(true, false)) {
+            assertThat(P2pPolicy.channelFor(4_899, crossBand)).isEqualTo(GroupChannel.Band5Ghz)
+            assertThat(P2pPolicy.channelFor(5_900, crossBand)).isEqualTo(GroupChannel.Band5Ghz)
+        }
     }
 
     @Test
-    fun `channelFor falls back to Band5Ghz for 2,4 GHz, 6 GHz and no station link`() {
-        assertThat(P2pPolicy.channelFor(2_412)).isEqualTo(GroupChannel.Band5Ghz)
-        assertThat(P2pPolicy.channelFor(2_484)).isEqualTo(GroupChannel.Band5Ghz)
-        assertThat(P2pPolicy.channelFor(6_115)).isEqualTo(GroupChannel.Band5Ghz)
-        assertThat(P2pPolicy.channelFor(null)).isEqualTo(GroupChannel.Band5Ghz)
-        assertThat(P2pPolicy.channelFor(0)).isEqualTo(GroupChannel.Band5Ghz)
+    fun `a timeout marks cross-band unreliable only for a reached receiver that never joined a 5 GHz group`() {
+        assertThat(P2pPolicy.crossBandUnreliable(2_432, 5_240, offerDelivered = true, joined = false)).isTrue()
+        // Joined, receiver not reached, group not formed: says nothing about the radio.
+        assertThat(P2pPolicy.crossBandUnreliable(2_432, 5_240, offerDelivered = true, joined = true)).isFalse()
+        assertThat(P2pPolicy.crossBandUnreliable(2_432, 5_240, offerDelivered = false, joined = false)).isFalse()
+        assertThat(P2pPolicy.crossBandUnreliable(2_432, null, offerDelivered = true, joined = false)).isFalse()
+        // Not cross-band: same-band group, 5 GHz station, no station.
+        assertThat(P2pPolicy.crossBandUnreliable(2_432, 2_432, offerDelivered = true, joined = false)).isFalse()
+        assertThat(P2pPolicy.crossBandUnreliable(5_220, 5_220, offerDelivered = true, joined = false)).isFalse()
+        assertThat(P2pPolicy.crossBandUnreliable(null, 5_240, offerDelivered = true, joined = false)).isFalse()
+    }
+
+    @Test
+    fun `a single-radio sender on 2,4 GHz shares its station channel (#32)`() {
+        for (mhz in listOf(2_412, 2_432, 2_467, 2_472)) {
+            assertThat(P2pPolicy.channelFor(mhz, crossBandGo = false)).isEqualTo(GroupChannel.Frequency(mhz))
+        }
+    }
+
+    @Test
+    fun `a cross-band sender on 2,4 GHz still gets 5 GHz`() {
+        for (mhz in listOf(2_412, 2_432, 2_467, 2_472, 2_484)) {
+            assertThat(P2pPolicy.channelFor(mhz, crossBandGo = true)).isEqualTo(GroupChannel.Band5Ghz)
+        }
+    }
+
+    @Test
+    fun `channel 14 allows no Wi-Fi Direct, so a single-radio sender gets another 2,4 GHz channel`() {
+        assertThat(P2pPolicy.channelFor(2_484, crossBandGo = false)).isEqualTo(GroupChannel.Band2Ghz)
+    }
+
+    @Test
+    fun `channelFor uses Band5Ghz for 6 GHz, no station link and invalid frequencies`() {
+        for (crossBand in listOf(true, false)) {
+            for (mhz in listOf(6_115, null, 0, -1)) {
+                assertThat(P2pPolicy.channelFor(mhz, crossBand)).isEqualTo(GroupChannel.Band5Ghz)
+            }
+        }
+    }
+
+    @Test
+    fun `fallbackFor keeps the band of the refused channel`() {
+        assertThat(P2pPolicy.fallbackFor(GroupChannel.Frequency(2_432))).isEqualTo(GroupChannel.Band2Ghz)
+        assertThat(P2pPolicy.fallbackFor(GroupChannel.Frequency(2_484))).isEqualTo(GroupChannel.Band2Ghz)
+        assertThat(P2pPolicy.fallbackFor(GroupChannel.Frequency(5_260))).isEqualTo(GroupChannel.Band5Ghz)
     }
 
     @Test

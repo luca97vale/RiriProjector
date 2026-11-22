@@ -4,6 +4,8 @@ import android.annotation.SuppressLint
 import android.annotation.TargetApi
 import android.content.BroadcastReceiver
 import android.content.Context
+import android.net.wifi.ScanResult
+import android.net.wifi.WifiAvailableChannel
 import android.net.wifi.WifiManager
 import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pGroup
@@ -147,6 +149,10 @@ class P2pGroupOwner(private val context: Context) {
         val ssid = P2pPolicy.newSsid()
         val psk = P2pPolicy.newPassphrase()
         var established = false
+        // What a timeout proves about the radio (#32): see P2pPolicy.crossBandUnreliable.
+        var station: Int? = null
+        var formedMhz: Int? = null
+        val offerDelivered = AtomicBoolean(false)
         P2pLog.init(context)
         val ch = P2pChannel.open(context) { lost.value = true } ?: throw P2pFailure.Unsupported("group")
         var receiver: BroadcastReceiver? = null
@@ -196,9 +202,13 @@ class P2pGroupOwner(private val context: Context) {
                         when (channel) {
                             is GroupChannel.Frequency -> setGroupOperatingFrequency(channel.mhz)
                             GroupChannel.Band5Ghz -> setGroupOperatingBand(WifiP2pConfig.GROUP_OWNER_BAND_5GHZ)
+                            GroupChannel.Band2Ghz -> setGroupOperatingBand(WifiP2pConfig.GROUP_OWNER_BAND_2GHZ)
                         }
                     }.build()
-                val channel = P2pPolicy.channelFor(stationFrequency())
+                station = stationFrequency()
+                val crossBand = crossBandGo()
+                val channel = P2pPolicy.channelFor(station, crossBand)
+                P2pLog.i("group: station ${station ?: "none"} MHz, crossBand=$crossBand -> $channel")
                 // Published before the group exists (its name and passphrase are already chosen): the TV's
                 // discovery can fetch it while the group forms, and the join waits for the network.
                 val offer = P2pOfferRecord(senderName, ssid, psk, target.deviceAddress)
@@ -215,12 +225,17 @@ class P2pGroupOwner(private val context: Context) {
                 try {
                     ch.await("createGroup") { m, c, l -> m.createGroup(c, config(channel), l) }
                 } catch (e: P2pFailure) {
-                    // Some drivers refuse a group owner on the station's channel (DFS): any 5 GHz one.
+                    // Some drivers refuse a group owner on the station's channel (DFS): same band, any channel.
                     if (channel !is GroupChannel.Frequency || e is P2pFailure.Busy) throw e
-                    P2pLog.w("group: ${channel.mhz} MHz refused (${e.message}), trying any 5 GHz channel")
-                    ch.await("createGroup") { m, c, l -> m.createGroup(c, config(GroupChannel.Band5Ghz), l) }
+                    val fallback = P2pPolicy.fallbackFor(channel)
+                    P2pLog.w(
+                        "group: ${channel.mhz} MHz refused (${e.message}), trying $fallback: " +
+                            "different channel, time slicing expected",
+                    )
+                    ch.await("createGroup") { m, c, l -> m.createGroup(c, config(fallback), l) }
                 }
                 val formed = group.filter { it != null }.first()!!
+                formedMhz = formed.frequency
                 phase("formed on ${formed.frequency} MHz")
                 // Fast path: over the router the offer arrives in tens of ms, while P2P discovery takes 4–24 s
                 // on a Fire TV. After formation, so the receiver finds the network on its first scan.
@@ -238,6 +253,7 @@ class P2pGroupOwner(private val context: Context) {
                                             LAN_HANDSHAKE_MS,
                                         )
                                     }
+                                    offerDelivered.set(true)
                                     phase("offer sent over the router to $host")
                                     break
                                 } catch (e: IOException) {
@@ -277,6 +293,12 @@ class P2pGroupOwner(private val context: Context) {
             }
         } catch (e: TimeoutCancellationException) {
             release()
+            if (P2pPolicy.crossBandUnreliable(station, formedMhz, offerDelivered.get(), established)) {
+                // The radio time-slices after all (#32): later attempts in this process share the
+                // station channel.
+                dbsUnreliable = true
+                P2pLog.w("group: nobody joined the cross-band group; sharing the station channel from now on")
+            }
             throw P2pFailure.Timeout("group")
         } catch (e: CancellationException) {
             release()
@@ -293,7 +315,30 @@ class P2pGroupOwner(private val context: Context) {
             it > 0
         }
 
+    /**
+     * Whether this radio can run a 5 GHz group next to its station link on another band (#32): chip
+     * DBS, and 5 GHz group-owner channels usable under the current concurrency.
+     */
+    @SuppressLint("MissingPermission") // NEARBY_WIFI_DEVICES is granted before any group is created
+    private fun crossBandGo(): Boolean {
+        if (dbsUnreliable) return false
+        val wifi = context.applicationContext.getSystemService(WifiManager::class.java) ?: return false
+        if (!wifi.isDualBandSimultaneousSupported) return false
+        return try {
+            wifi.getUsableChannels(ScanResult.WIFI_BAND_5_GHZ, WifiAvailableChannel.OP_MODE_WIFI_DIRECT_GO)
+                .isNotEmpty()
+        } catch (e: UnsupportedOperationException) {
+            true // the DBS flag alone decides
+        } catch (e: SecurityException) {
+            false // conservative: sharing the station channel always works
+        }
+    }
+
     companion object {
+        /** Set once a cross-band group got no join although the radio claimed DBS (#32). */
+        @Volatile
+        private var dbsUnreliable = false
+
         /** Receiver discovery of the offer (~4 s), its join (~6 s) and DHCP, with margin. */
         const val DEFAULT_TIMEOUT_MS = 30_000L
         private const val POLL_MS = 250L

@@ -48,6 +48,7 @@
     <string name="sender_direct_searching">Looking for nearby Wi-Fi Direct devices… Open RiriProjector on the receiver, then pick it below.</string>
     <string name="sender_direct_permission">Allow nearby devices to use Wi-Fi Direct.</string>
     <string name="sender_direct_link">Wi-Fi Direct · %1$d MHz</string>
+    <string name="sender_direct_24ghz_hint">Wi-Fi Direct is on 2.4 GHz because this device uses your router\'s 2.4 GHz band. Connect it to your router\'s 5 GHz Wi-Fi, if it has one, for a faster direct link.</string>
     <string name="sender_error_p2p_lost">lost %1$s over Wi-Fi Direct</string>
     <string name="sender_error_p2p_unsupported">this device cannot use Wi-Fi Direct (is Wi-Fi on?)</string>
     <string name="sender_error_p2p_busy">another app is using Wi-Fi Direct; close it and try again</string>

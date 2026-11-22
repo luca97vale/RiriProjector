@@ -335,10 +335,25 @@ P2P_OFFER (v4), the router fast path below.
 - A TV-owned group (topology A) is persistent and 2.4 GHz only on Fire OS 7, and the tablet (no
   DBS) time-slices it with its 5 GHz router link: the stalls this feature removes would remain.
 - The tablet creates the group with `WifiP2pConfig.Builder` on **its own station channel**
-  (`setGroupOperatingFrequency`, 5220 MHz in the measurements; `GROUP_OWNER_BAND_5GHZ` when the
-  station is not on 5 GHz, or when the driver refuses the station's channel, e.g. DFS), so it never
-  hops channels. Same room: audio played ~330 ms (router
-  ~460), writes ≤ 12 ms, 2 underruns in ~6 min.
+  (`setGroupOperatingFrequency`, 5220 MHz in the measurements), so it never hops channels. Same
+  room: audio played ~330 ms (router ~460), writes ≤ 12 ms, 2 underruns in ~6 min.
+- **Channel rule, "5 GHz when possible" (#32).** Most senders have one radio: a group on another
+  band than the station link makes it time-slice. A Pixel 10 (API 37, no DBS) on a 2.4 GHz router
+  link with a 5 GHz group never answered the Fire TV's authentication (TV at -55 dBm, three tries,
+  nothing logged on the Pixel). `P2pPolicy.channelFor(station, crossBandGo)`:
+  station on 5 GHz → that frequency; station on 2.4 GHz → `GROUP_OWNER_BAND_5GHZ` only if
+  `crossBandGo`, else that 2.4 GHz frequency (channel 14 allows no P2P → `GROUP_OWNER_BAND_2GHZ`);
+  no station or 6 GHz → `GROUP_OWNER_BAND_5GHZ` (Fire OS 7 cannot join on 6 GHz). `crossBandGo` =
+  `isDualBandSimultaneousSupported()` and `getUsableChannels(5 GHz, OP_MODE_WIFI_DIRECT_GO)` not
+  empty, unless a cross-band group already timed out with nobody joined in this process (the
+  signals lied; the service's retry then shares the station channel). A refused frequency (e.g.
+  DFS) falls back to the same **band**, not the same channel: time slicing is then expected. On a
+  2.4 GHz direct link the sender suggests moving to the router's 5 GHz Wi-Fi.
+- Known limits of the rule: channels 12/13 (2467/2472 MHz) are invisible to receivers set to a US
+  region; an API 29+ single-radio receiver keeps its router link, so if that link is on 2.4 GHz and
+  a cross-band sender picks 5 GHz the receiver time-slices (fixing it needs the receiver to
+  advertise its station frequency: a protocol change). Fire OS 7 receivers leave their router and
+  are unaffected.
 - On API 28 the TV joins as a **legacy station** (`addNetwork`/`enableNetwork`, no dialog) and so
   **leaves its router while mirroring** (accepted in the issue); `removeNetwork` + `reconnect()`
   restore it when the session ends, or 60 s after a join no session used (a slow consent dialog). API 29+ receivers join as

@@ -1,5 +1,6 @@
 package dev.ririprojector.net.p2p
 
+import dev.ririprojector.net.WifiBand
 import java.io.IOException
 import java.security.SecureRandom
 
@@ -36,11 +37,14 @@ sealed class P2pFailure(message: String) : IOException(message) {
 
 /** How the sender's group picks its channel. */
 sealed interface GroupChannel {
-    /** Share the station's 5 GHz channel: one channel for both links, no time slicing. */
+    /** Share the station's channel: one channel for both links, no time slicing. */
     data class Frequency(val mhz: Int) : GroupChannel
 
-    /** No 5 GHz station link to share: let the driver choose a 5 GHz channel. */
+    /** Let the driver choose a 5 GHz channel. */
     data object Band5Ghz : GroupChannel
+
+    /** Let the driver choose a 2.4 GHz channel (the station's one was refused or allows no P2P). */
+    data object Band2Ghz : GroupChannel
 }
 
 /** Pure decisions of the Wi-Fi Direct link (ADR-011). */
@@ -58,15 +62,53 @@ object P2pPolicy {
     const val FIRST_CONNECT_WINDOW_MS = 10_000L
 
     /**
-     * The tablet has no dual-band concurrency (spike #21): a group on another channel than its
-     * station link makes the radio switch channels and blocks writes for hundreds of ms.
+     * "5 GHz when possible" (#32). Most senders have one radio (the tablet in spike #21, the Pixel 10
+     * in #32): a group on another channel than the station link makes the radio switch channels,
+     * which blocks writes for hundreds of ms and can miss the receiver's join entirely. So the group
+     * shares the station's channel, and goes on 5 GHz only when that costs no switching: a 5 GHz
+     * station link, a radio that can run a 5 GHz group next to a 2.4 GHz station ([crossBandGo]), or
+     * no station link at all.
      */
-    fun channelFor(stationFrequencyMhz: Int?): GroupChannel =
-        if (stationFrequencyMhz != null && stationFrequencyMhz in 4_900..5_900) {
-            GroupChannel.Frequency(stationFrequencyMhz)
-        } else {
-            GroupChannel.Band5Ghz
+    fun channelFor(stationFrequencyMhz: Int?, crossBandGo: Boolean): GroupChannel {
+        val band = stationFrequencyMhz?.let { WifiBand.of(it) }
+        return when {
+            band == WifiBand.GHZ_5 -> GroupChannel.Frequency(stationFrequencyMhz!!)
+
+            band == WifiBand.GHZ_2_4 && crossBandGo -> GroupChannel.Band5Ghz
+
+            // Channel 14 allows no Wi-Fi Direct: another 2.4 GHz channel, time slicing expected.
+            stationFrequencyMhz == CHANNEL_14_MHZ -> GroupChannel.Band2Ghz
+
+            band == WifiBand.GHZ_2_4 -> GroupChannel.Frequency(stationFrequencyMhz!!)
+
+            // No link, or 6 GHz (a Fire OS 7 receiver cannot join there): any 5 GHz channel.
+            else -> GroupChannel.Band5Ghz
         }
+    }
+
+    /** The driver refused [channel] (e.g. DFS): keep its band, let the driver pick the channel. */
+    fun fallbackFor(channel: GroupChannel.Frequency): GroupChannel =
+        if (WifiBand.of(channel.mhz) == WifiBand.GHZ_2_4) GroupChannel.Band2Ghz else GroupChannel.Band5Ghz
+
+    /**
+     * A timed-out attempt proves the radio cannot run a cross-band group only if that is what
+     * happened: a 2.4 GHz station, a group formed on 5 GHz, the receiver reached (the router offer
+     * was delivered), and still no join. Any other timeout (receiver closed, out of range, the group
+     * never formed) says nothing about the radio.
+     */
+    fun crossBandUnreliable(
+        stationFrequencyMhz: Int?,
+        formedFrequencyMhz: Int?,
+        offerDelivered: Boolean,
+        joined: Boolean,
+    ): Boolean = !joined &&
+        offerDelivered &&
+        stationFrequencyMhz != null &&
+        WifiBand.of(stationFrequencyMhz) == WifiBand.GHZ_2_4 &&
+        formedFrequencyMhz != null &&
+        WifiBand.of(formedFrequencyMhz) == WifiBand.GHZ_5
+
+    private const val CHANNEL_14_MHZ = 2_484
 
     /** `DhcpInfo` addresses are little-endian ints: 0x0131A8C0 is 192.168.49.1. */
     fun ipv4(littleEndian: Int): String =
