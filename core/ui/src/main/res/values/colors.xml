@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- RiriProjector palette, taken from the launcher artwork: navy ground, projector-beam cyan for
+     primary actions and live state, the dog's tan for warnings. Text pairs pass WCAG AA. -->
+<resources>
+    <color name="riri_navy">#FF100E3B</color>
+    <color name="riri_ink">#FF0B0A2E</color>
+    <color name="riri_surface">#FF16144A</color>
+    <color name="riri_surface_high">#FF1A1852</color>
+    <color name="riri_tile">#FF221F66</color>
+    <color name="riri_outline">#FF3A3880</color>
+    <color name="riri_outline_variant">#FF2A2870</color>
+    <color name="riri_on_surface">#FFF2F4FF</color>
+    <color name="riri_muted">#FFAEB3DD</color>
+    <color name="riri_cyan">#FF3CC8F5</color>
+    <color name="riri_cyan_light">#FF7FDBFA</color>
+    <color name="riri_on_cyan">#FF06142A</color>
+    <color name="riri_tan">#FFF0B46E</color>
+    <color name="riri_warn_container">#FF3A2A12</color>
+    <color name="riri_on_warn_container">#FFFFD39A</color>
+    <color name="riri_coral">#FFFF8A7A</color>
+    <color name="riri_on_coral">#FF2A0A06</color>
+    <color name="riri_error_container">#FF2B1030</color>
+    <color name="riri_ok">#FF8CF0C4</color>
+    <color name="riri_overlay">#DB0A0928</color>
+</resources>

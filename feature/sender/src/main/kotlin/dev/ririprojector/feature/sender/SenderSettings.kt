@@ -34,7 +34,7 @@ data class QuickStart(val endpoint: ReceiverEndpoint, val advertised: Boolean)
 object SenderSettingsCodec {
     const val VERSION = 1
 
-    /** Choice lists of the sender screen; keep in sync with the chips in `SenderActivity.kt`. */
+    /** Choice lists of the sender screen; the sender screen (`SenderScreen.kt`) offers exactly these. */
     val HEIGHTS = listOf(720, 1080, 1440)
     val FPS = listOf(30, 60)
 
