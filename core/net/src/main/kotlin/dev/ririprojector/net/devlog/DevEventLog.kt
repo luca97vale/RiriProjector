@@ -110,7 +110,11 @@ class DevEventLog(private val capacity: Int = DEFAULT_CAPACITY, private val cloc
             buffer[buffer.size - 1] = last.copy(repeat = last.repeat + 1, lastAtMs = maxOf(rel, last.lastAtMs))
         } else {
             if (buffer.size == capacity) buffer.removeFirst()
-            buffer.addLast(DevEvent(rel, level, source, message))
+            // A line stamped in the past (e.g. a frame's render time logged by a later tick) goes to
+            // its place in time, so the log always reads in order.
+            var at = buffer.size
+            while (at > 0 && buffer[at - 1].atMs > rel) at--
+            buffer.add(at, DevEvent(rel, level, source, message))
         }
         _events.value = buffer.toList()
     }

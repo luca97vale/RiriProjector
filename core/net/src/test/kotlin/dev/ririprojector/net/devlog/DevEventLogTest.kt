@@ -21,6 +21,18 @@ class DevEventLogTest {
     }
 
     @Test
+    fun `a line stamped in the past is inserted at its place in time`() {
+        log.begin("start")
+        now += 1_000
+        log.add(DevLevel.INFO, "Net", "audio")
+        log.add(DevLevel.INFO, "Net", "first frame", atMs = now - 300) // render time logged by a later tick
+        now += 100
+        log.add(DevLevel.INFO, "Net", "later")
+        assertThat(messages()).containsExactly("start", "first frame", "audio", "later").inOrder()
+        assertThat(log.events.value.map { it.atMs }).containsExactly(0L, 700L, 1_000L, 1_100L).inOrder()
+    }
+
+    @Test
     fun `capacity bound drops the oldest line`() {
         repeat(7) { log.add(DevLevel.INFO, "Net", "line $it") }
         assertThat(messages()).containsExactly("line 2", "line 3", "line 4", "line 5", "line 6").inOrder()
