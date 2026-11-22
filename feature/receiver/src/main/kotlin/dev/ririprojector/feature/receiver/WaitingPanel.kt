@@ -8,8 +8,10 @@ import android.graphics.drawable.StateListDrawable
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import androidx.core.content.ContextCompat
 import dev.ririprojector.core.ui.DogLoaderMode
@@ -53,41 +55,72 @@ internal class WaitingPanel(context: Context, landscape: Boolean, private val la
         text(if (large) 16f else 14f, color = muted).apply {
             setText(if (touch) R.string.receiver_hint_touch else R.string.receiver_hint_dpad)
         }
-    val useAsSender =
-        Button(context).apply {
-            setText(R.string.receiver_use_as_sender)
-            isAllCaps = false
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, if (large) 18f else 16f)
-            typeface = Typeface.DEFAULT_BOLD
-            minHeight = dp(56)
-            setPadding(dp(28), 0, dp(28), 0)
-            stateListAnimator = null
-            // 10-foot focus: white fill, cyan ring and a slight zoom, so it reads from the sofa.
-            background =
-                StateListDrawable().apply {
-                    addState(intArrayOf(android.R.attr.state_pressed), rounded(cyan, 16f))
-                    addState(intArrayOf(android.R.attr.state_focused), rounded(onSurface, 16f, cyan, 3f))
-                    addState(
-                        intArrayOf(),
-                        rounded(color(UiR.color.riri_surface_high), 16f, color(UiR.color.riri_outline), 2f),
-                    )
-                }
-            setTextColor(
-                ColorStateList(
-                    arrayOf(
-                        intArrayOf(android.R.attr.state_pressed),
-                        intArrayOf(android.R.attr.state_focused),
-                        intArrayOf(),
-                    ),
-                    intArrayOf(color(UiR.color.riri_on_cyan), color(UiR.color.riri_navy), onSurface),
-                ),
-            )
-            setOnFocusChangeListener { v, focused ->
-                val s = if (focused) 1.06f else 1f
-                v.animate().scaleX(s).scaleY(s).setDuration(150).start()
-            }
+    val useAsSender = pillButton(R.string.receiver_use_as_sender)
+
+    /** Developer mode (#33): switched on before a sender connects; label set by [setDeveloperMode]. */
+    val devToggle = pillButton(R.string.receiver_dev_mode_off)
+
+    /** Copies the developer log; shown only while developer mode is on. */
+    val copyLog = pillButton(R.string.receiver_dev_log_copy).apply { visibility = View.GONE }
+
+    private val logText =
+        TextView(context).apply {
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, if (large) 14f else 11f)
+            setTextColor(onSurface)
+            typeface = Typeface.MONOSPACE
+            setLineSpacing(dp(2).toFloat(), 1f)
         }
+
+    /** The developer log, in the dog's place while developer mode is on; never takes D-pad focus. */
+    private val logBox =
+        ScrollView(context).apply {
+            isFocusable = false
+            descendantFocusability = FOCUS_BLOCK_DESCENDANTS
+            background = rounded(color(UiR.color.riri_overlay), 18f, color(UiR.color.riri_outline_variant), 1f)
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+            visibility = View.GONE
+            addView(logText)
+        }
+    private var developerMode = false
+    private var landscape = landscape
+
+    private fun pillButton(textRes: Int) = Button(context).apply {
+        setText(textRes)
+        isAllCaps = false
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, if (large) 18f else 16f)
+        typeface = Typeface.DEFAULT_BOLD
+        minHeight = dp(56)
+        setPadding(dp(28), 0, dp(28), 0)
+        stateListAnimator = null
+        // 10-foot focus: white fill, cyan ring and a slight zoom, so it reads from the sofa.
+        background =
+            StateListDrawable().apply {
+                addState(intArrayOf(android.R.attr.state_pressed), rounded(cyan, 16f))
+                addState(intArrayOf(android.R.attr.state_focused), rounded(onSurface, 16f, cyan, 3f))
+                addState(
+                    intArrayOf(),
+                    rounded(color(UiR.color.riri_surface_high), 16f, color(UiR.color.riri_outline), 2f),
+                )
+            }
+        setTextColor(
+            ColorStateList(
+                arrayOf(
+                    intArrayOf(android.R.attr.state_pressed),
+                    intArrayOf(android.R.attr.state_focused),
+                    intArrayOf(),
+                ),
+                intArrayOf(color(UiR.color.riri_on_cyan), color(UiR.color.riri_navy), onSurface),
+            ),
+        )
+        setOnFocusChangeListener { v, focused ->
+            val s = if (focused) 1.06f else 1f
+            v.animate().scaleX(s).scaleY(s).setDuration(150).start()
+        }
+    }
     private val column = LinearLayout(context).apply { orientation = VERTICAL }
+
+    /** Scrolls the column on short screens (a phone in portrait with developer mode on). */
+    private val columnScroll = ScrollView(context).apply { isFillViewport = false }
 
     init {
         gravity = Gravity.CENTER
@@ -108,26 +141,65 @@ internal class WaitingPanel(context: Context, landscape: Boolean, private val la
         column.addView(addressPill, spaced(gap))
         column.addView(hint, spaced(gap))
         column.addView(useAsSender, spaced(gap))
+        column.addView(devToggle, spaced(gap / 2))
+        column.addView(copyLog, spaced(gap / 2))
+        // Explicit D-pad order between the buttons, the same in both layouts.
+        listOf(useAsSender, devToggle, copyLog).forEach { it.id = View.generateViewId() }
+        useAsSender.nextFocusDownId = devToggle.id
+        devToggle.nextFocusUpId = useAsSender.id
+        devToggle.nextFocusDownId = copyLog.id
+        copyLog.nextFocusUpId = devToggle.id
+        columnScroll.addView(
+            column,
+            ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
+        )
         addView(loader)
-        addView(column)
+        addView(logBox)
+        addView(columnScroll)
         setLandscape(landscape)
     }
 
     /** Side by side on landscape screens, stacked on portrait ones; called again on rotation. */
     fun setLandscape(landscape: Boolean) {
+        this.landscape = landscape
         orientation = if (landscape) HORIZONTAL else VERTICAL
-        val shortSide = minOf(resources.displayMetrics.widthPixels, resources.displayMetrics.heightPixels)
+        val w = resources.displayMetrics.widthPixels
+        val h = resources.displayMetrics.heightPixels
+        val shortSide = minOf(w, h)
         val loaderSize = (shortSide * if (landscape) 0.55f else 0.5f).toInt()
         loader.layoutParams = LayoutParams(loaderSize, loaderSize)
+        // The log needs width for its lines: wider than the dog on landscape, full width on portrait.
+        logBox.layoutParams =
+            if (landscape) {
+                LayoutParams((maxOf(w, h) * 0.45f).toInt(), (shortSide * 0.7f).toInt())
+            } else {
+                LayoutParams(LayoutParams.MATCH_PARENT, (maxOf(w, h) * 0.3f).toInt())
+            }
         val g = if (landscape) Gravity.START else Gravity.CENTER_HORIZONTAL
         column.gravity = g
         listOf(title, subtitle, hint).forEach { it.gravity = g }
-        column.layoutParams =
+        columnScroll.layoutParams =
             if (landscape) {
                 LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(if (large) 56 else 32) }
             } else {
                 LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply { topMargin = dp(16) }
             }
+    }
+
+    /** Developer mode (#33): the log takes the dog's place and "Copy log" appears. */
+    fun setDeveloperMode(on: Boolean) {
+        developerMode = on
+        devToggle.setText(if (on) R.string.receiver_dev_mode_on else R.string.receiver_dev_mode_off)
+        copyLog.visibility = if (on) View.VISIBLE else View.GONE
+        logBox.visibility = if (on) View.VISIBLE else View.GONE
+        loader.visibility = if (on) View.GONE else View.VISIBLE
+        if (!on) logText.text = ""
+    }
+
+    /** Shows [text] (the newest lines) and keeps the newest line in view. */
+    fun setLog(text: CharSequence) {
+        logText.text = text
+        logBox.post { logBox.fullScroll(View.FOCUS_DOWN) }
     }
 
     fun showWaiting(name: String, waiting: String, endpoint: String?) {

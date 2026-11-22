@@ -17,4 +17,9 @@
     <string name="receiver_hint_dpad">Press OK to show or hide stats</string>
     <string name="receiver_hint_touch">Tap the screen to show or hide stats</string>
     <string name="receiver_loader_description">The RiriProjector dog, ready to project</string>
+    <string name="receiver_dev_mode_off">Developer mode: Off</string>
+    <string name="receiver_dev_mode_on">Developer mode: On</string>
+    <string name="receiver_dev_log_copy">Copy log</string>
+    <string name="receiver_dev_log_copied">Log copied</string>
+    <string name="receiver_dev_log_title">RiriProjector developer log</string>
 </resources>
