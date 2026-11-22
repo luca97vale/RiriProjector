@@ -17,7 +17,6 @@ import dev.ririprojector.net.Handshake
 import dev.ririprojector.net.HandshakeException
 import dev.ririprojector.net.ReceiverEndpoint
 import dev.ririprojector.net.SenderClient
-import dev.ririprojector.net.WifiBand
 import dev.ririprojector.protocol.ControlMessage
 import java.io.Closeable
 import java.io.IOException
@@ -150,6 +149,10 @@ class P2pGroupOwner(private val context: Context) {
         val ssid = P2pPolicy.newSsid()
         val psk = P2pPolicy.newPassphrase()
         var established = false
+        // What a timeout proves about the radio (#32): see P2pPolicy.crossBandUnreliable.
+        var station: Int? = null
+        var formedMhz: Int? = null
+        val offerDelivered = AtomicBoolean(false)
         P2pLog.init(context)
         val ch = P2pChannel.open(context) { lost.value = true } ?: throw P2pFailure.Unsupported("group")
         var receiver: BroadcastReceiver? = null
@@ -202,11 +205,9 @@ class P2pGroupOwner(private val context: Context) {
                             GroupChannel.Band2Ghz -> setGroupOperatingBand(WifiP2pConfig.GROUP_OWNER_BAND_2GHZ)
                         }
                     }.build()
-                val station = stationFrequency()
+                station = stationFrequency()
                 val crossBand = crossBandGo()
                 val channel = P2pPolicy.channelFor(station, crossBand)
-                // Remembered on timeout: a cross-band group nobody joined means the signals lied.
-                crossBandFromStation24 = crossBand && station != null && WifiBand.of(station) == WifiBand.GHZ_2_4
                 P2pLog.i("group: station ${station ?: "none"} MHz, crossBand=$crossBand -> $channel")
                 // Published before the group exists (its name and passphrase are already chosen): the TV's
                 // discovery can fetch it while the group forms, and the join waits for the network.
@@ -234,6 +235,7 @@ class P2pGroupOwner(private val context: Context) {
                     ch.await("createGroup") { m, c, l -> m.createGroup(c, config(fallback), l) }
                 }
                 val formed = group.filter { it != null }.first()!!
+                formedMhz = formed.frequency
                 phase("formed on ${formed.frequency} MHz")
                 // Fast path: over the router the offer arrives in tens of ms, while P2P discovery takes 4–24 s
                 // on a Fire TV. After formation, so the receiver finds the network on its first scan.
@@ -251,6 +253,7 @@ class P2pGroupOwner(private val context: Context) {
                                             LAN_HANDSHAKE_MS,
                                         )
                                     }
+                                    offerDelivered.set(true)
                                     phase("offer sent over the router to $host")
                                     break
                                 } catch (e: IOException) {
@@ -290,9 +293,9 @@ class P2pGroupOwner(private val context: Context) {
             }
         } catch (e: TimeoutCancellationException) {
             release()
-            if (crossBandFromStation24 && !established) {
-                // Cross-band 5 GHz group with a 2.4 GHz station and nobody joined: the radio
-                // time-slices after all (#32). Later attempts in this process share the station channel.
+            if (P2pPolicy.crossBandUnreliable(station, formedMhz, offerDelivered.get(), established)) {
+                // The radio time-slices after all (#32): later attempts in this process share the
+                // station channel.
                 dbsUnreliable = true
                 P2pLog.w("group: nobody joined the cross-band group; sharing the station channel from now on")
             }
@@ -312,8 +315,6 @@ class P2pGroupOwner(private val context: Context) {
             it > 0
         }
 
-    private var crossBandFromStation24 = false
-
     /**
      * Whether this radio can run a 5 GHz group next to its station link on another band (#32): chip
      * DBS, and 5 GHz group-owner channels usable under the current concurrency.
@@ -329,7 +330,7 @@ class P2pGroupOwner(private val context: Context) {
         } catch (e: UnsupportedOperationException) {
             true // the DBS flag alone decides
         } catch (e: SecurityException) {
-            true
+            false // conservative: sharing the station channel always works
         }
     }
 

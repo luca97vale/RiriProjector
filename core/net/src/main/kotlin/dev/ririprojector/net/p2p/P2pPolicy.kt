@@ -1,5 +1,6 @@
 package dev.ririprojector.net.p2p
 
+import dev.ririprojector.net.WifiBand
 import java.io.IOException
 import java.security.SecureRandom
 
@@ -68,28 +69,45 @@ object P2pPolicy {
      * station link, a radio that can run a 5 GHz group next to a 2.4 GHz station ([crossBandGo]), or
      * no station link at all.
      */
-    fun channelFor(stationFrequencyMhz: Int?, crossBandGo: Boolean): GroupChannel = when {
-        stationFrequencyMhz == null -> GroupChannel.Band5Ghz
+    fun channelFor(stationFrequencyMhz: Int?, crossBandGo: Boolean): GroupChannel {
+        val band = stationFrequencyMhz?.let { WifiBand.of(it) }
+        return when {
+            band == WifiBand.GHZ_5 -> GroupChannel.Frequency(stationFrequencyMhz!!)
 
-        stationFrequencyMhz in BAND_5_GHZ -> GroupChannel.Frequency(stationFrequencyMhz)
+            band == WifiBand.GHZ_2_4 && crossBandGo -> GroupChannel.Band5Ghz
 
-        stationFrequencyMhz in BAND_2_4_GHZ && crossBandGo -> GroupChannel.Band5Ghz
+            // Channel 14 allows no Wi-Fi Direct: another 2.4 GHz channel, time slicing expected.
+            stationFrequencyMhz == CHANNEL_14_MHZ -> GroupChannel.Band2Ghz
 
-        // Channel 14 allows no Wi-Fi Direct: another 2.4 GHz channel, time slicing expected.
-        stationFrequencyMhz == CHANNEL_14_MHZ -> GroupChannel.Band2Ghz
+            band == WifiBand.GHZ_2_4 -> GroupChannel.Frequency(stationFrequencyMhz!!)
 
-        stationFrequencyMhz in BAND_2_4_GHZ -> GroupChannel.Frequency(stationFrequencyMhz)
-
-        // No link, or 6 GHz (a Fire OS 7 receiver cannot join there): any 5 GHz channel.
-        else -> GroupChannel.Band5Ghz
+            // No link, or 6 GHz (a Fire OS 7 receiver cannot join there): any 5 GHz channel.
+            else -> GroupChannel.Band5Ghz
+        }
     }
 
     /** The driver refused [channel] (e.g. DFS): keep its band, let the driver pick the channel. */
     fun fallbackFor(channel: GroupChannel.Frequency): GroupChannel =
-        if (channel.mhz in BAND_2_4_GHZ) GroupChannel.Band2Ghz else GroupChannel.Band5Ghz
+        if (WifiBand.of(channel.mhz) == WifiBand.GHZ_2_4) GroupChannel.Band2Ghz else GroupChannel.Band5Ghz
 
-    private val BAND_2_4_GHZ = 2_400..2_500
-    private val BAND_5_GHZ = 4_900..5_900
+    /**
+     * A timed-out attempt proves the radio cannot run a cross-band group only if that is what
+     * happened: a 2.4 GHz station, a group formed on 5 GHz, the receiver reached (the router offer
+     * was delivered), and still no join. Any other timeout (receiver closed, out of range, the group
+     * never formed) says nothing about the radio.
+     */
+    fun crossBandUnreliable(
+        stationFrequencyMhz: Int?,
+        formedFrequencyMhz: Int?,
+        offerDelivered: Boolean,
+        joined: Boolean,
+    ): Boolean = !joined &&
+        offerDelivered &&
+        stationFrequencyMhz != null &&
+        WifiBand.of(stationFrequencyMhz) == WifiBand.GHZ_2_4 &&
+        formedFrequencyMhz != null &&
+        WifiBand.of(formedFrequencyMhz) == WifiBand.GHZ_5
+
     private const val CHANNEL_14_MHZ = 2_484
 
     /** `DhcpInfo` addresses are little-endian ints: 0x0131A8C0 is 192.168.49.1. */

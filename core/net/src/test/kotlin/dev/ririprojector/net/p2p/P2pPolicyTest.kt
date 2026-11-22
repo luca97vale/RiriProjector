@@ -19,7 +19,7 @@ class P2pPolicyTest {
         for (crossBand in listOf(true, false)) {
             assertThat(P2pPolicy.channelFor(4_900, crossBand)).isEqualTo(GroupChannel.Frequency(4_900))
             assertThat(P2pPolicy.channelFor(5_220, crossBand)).isEqualTo(GroupChannel.Frequency(5_220))
-            assertThat(P2pPolicy.channelFor(5_900, crossBand)).isEqualTo(GroupChannel.Frequency(5_900))
+            assertThat(P2pPolicy.channelFor(5_899, crossBand)).isEqualTo(GroupChannel.Frequency(5_899))
         }
     }
 
@@ -27,8 +27,21 @@ class P2pPolicyTest {
     fun `channelFor falls back to Band5Ghz just outside the 5 GHz range`() {
         for (crossBand in listOf(true, false)) {
             assertThat(P2pPolicy.channelFor(4_899, crossBand)).isEqualTo(GroupChannel.Band5Ghz)
-            assertThat(P2pPolicy.channelFor(5_901, crossBand)).isEqualTo(GroupChannel.Band5Ghz)
+            assertThat(P2pPolicy.channelFor(5_900, crossBand)).isEqualTo(GroupChannel.Band5Ghz)
         }
+    }
+
+    @Test
+    fun `a timeout marks cross-band unreliable only for a reached receiver that never joined a 5 GHz group`() {
+        assertThat(P2pPolicy.crossBandUnreliable(2_432, 5_240, offerDelivered = true, joined = false)).isTrue()
+        // Joined, receiver not reached, group not formed: says nothing about the radio.
+        assertThat(P2pPolicy.crossBandUnreliable(2_432, 5_240, offerDelivered = true, joined = true)).isFalse()
+        assertThat(P2pPolicy.crossBandUnreliable(2_432, 5_240, offerDelivered = false, joined = false)).isFalse()
+        assertThat(P2pPolicy.crossBandUnreliable(2_432, null, offerDelivered = true, joined = false)).isFalse()
+        // Not cross-band: same-band group, 5 GHz station, no station.
+        assertThat(P2pPolicy.crossBandUnreliable(2_432, 2_432, offerDelivered = true, joined = false)).isFalse()
+        assertThat(P2pPolicy.crossBandUnreliable(5_220, 5_220, offerDelivered = true, joined = false)).isFalse()
+        assertThat(P2pPolicy.crossBandUnreliable(null, 5_240, offerDelivered = true, joined = false)).isFalse()
     }
 
     @Test
