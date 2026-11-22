@@ -24,6 +24,7 @@ import dev.ririprojector.net.HandshakeException
 import dev.ririprojector.net.ReceiverEndpoint
 import dev.ririprojector.net.ReceiverServer
 import dev.ririprojector.net.WifiLatencyLock
+import dev.ririprojector.net.devlog.DevLog
 import dev.ririprojector.net.nsd.NsdPublisher
 import dev.ririprojector.net.p2p.P2pOfferRecord
 import dev.ririprojector.net.p2p.P2pPolicy
@@ -157,19 +158,23 @@ class ReceiverController(
             bindAttempts = 0
             nsd = NsdPublisher(context).publish(deviceName, s.boundPort)
             wifiLock = WifiLatencyLock.acquire(context, "Riri/Receiver")
+            DevLog.info(DEV_SOURCE) { "Listening on port ${s.boundPort}, announced as $deviceName over NSD" }
             startWifiDirect()
             showWaiting()
         } catch (e: BindException) {
             // Another instance (or a previous session) may still be releasing the port.
             if (++bindAttempts <= MAX_BIND_ATTEMPTS) {
                 Log.w(TAG, "port busy, retrying (${e.message})")
+                DevLog.warn(DEV_SOURCE) { "Port busy (${e.message}), retrying" }
                 main.postDelayed(retryStart, BIND_RETRY_MS)
             } else {
                 Log.e(TAG, "cannot bind the server port", e)
+                DevLog.error(DEV_SOURCE) { "Cannot bind the server port: ${e.message}" }
                 _state.value = ReceiverState.Failed(e.message ?: "port in use")
             }
         } catch (e: IOException) {
             Log.e(TAG, "cannot start server", e)
+            DevLog.error(DEV_SOURCE) { "Cannot start the server: ${e.message}" }
             _state.value = ReceiverState.Failed(e.message ?: "server error")
         }
     }
@@ -207,6 +212,7 @@ class ReceiverController(
             runCatching { a.start() }.getOrElse {
                 // Never let Wi-Fi Direct take the router path down with it.
                 Log.w(TAG, "Wi-Fi Direct unavailable: ${it.message}")
+                DevLog.warn(DEV_SOURCE) { "Wi-Fi Direct unavailable: ${it.message}" }
                 false
             }
         if (!started) {
@@ -221,6 +227,12 @@ class ReceiverController(
     /** Main thread: a sender offered its group; join it unless a session already streams. */
     private fun onOffer(offer: P2pOfferRecord) {
         if (session != null || joinJob != null || station != null) return
+        DevLog.beginUnlessRecent("Wi-Fi Direct offer from ${offer.name}", ATTEMPT_WINDOW_MS)
+        DevLog.touch()
+        DevLog.info(DEV_SOURCE) {
+            val how = if (Build.VERSION.SDK_INT >= 29) "a P2P client" else "a Wi-Fi station (API 28)"
+            "Joining ${offer.ssid} as $how, timeout ${P2pStationJoiner.DEFAULT_TIMEOUT_MS / 1000} s"
+        }
         agent?.setIdle(false) // no scanning while associating
         // Main.immediate runs the body inline: a join that fails before suspending finishes before
         // launch returns, so the job clears itself on completion rather than in its own finally.
@@ -230,17 +242,22 @@ class ReceiverController(
                     val st = P2pStationJoiner.join(context, offer)
                     station = st
                     directGateway = st.groupOwnerAddress
+                    DevLog.info(DEV_SOURCE) { "Joined ${offer.name}'s group, sender at ${st.groupOwnerAddress}" }
                     main.postDelayed(leaveUnusedStation, UNUSED_STATION_MS)
                     // A sibling, not a child: the join job ends once joined (leaveStation cancels both).
                     p2pScope.launch {
                         st.lost.first()
                         Log.i(TAG, "Wi-Fi Direct group lost")
+                        DevLog.warn(DEV_SOURCE) { "Wi-Fi Direct group lost" }
                         if (session == null) onSessionsIdle() // otherwise the session's end does it
                     }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     Log.w(TAG, "cannot join ${offer.name}'s group: ${e.message}")
+                    DevLog.error(DEV_SOURCE) {
+                        "Cannot join ${offer.name}'s group: ${e.message ?: e.javaClass.simpleName}"
+                    }
                     agent?.forgetOffer()
                     if (session == null) agent?.setIdle(true)
                 }
@@ -259,6 +276,9 @@ class ReceiverController(
         if (a == null || !P2pPolicy.isOwnSsid(offer.ssid) || offer.passphrase.length !in 8..63) {
             // No Wi-Fi Direct here (the sender's group times out and it says so), or not one of ours.
             Log.w(TAG, "ignored a Wi-Fi Direct offer over the router")
+            DevLog.warn(DEV_SOURCE) {
+                if (a == null) "Ignored a Wi-Fi Direct offer: Wi-Fi Direct is off here" else "Ignored an invalid offer"
+            }
             onSessionsIdle()
             return
         }
@@ -317,6 +337,7 @@ class ReceiverController(
 
     private fun onConnection(connection: Connection) {
         // A reconnecting tablet may replace its own stale session (ReceiverServer preemption).
+        DevLog.beginUnlessRecent("Connection from ${connection.remoteAddress}", ATTEMPT_WINDOW_MS)
         val s = Session(connection, previous = session)
         session = s
         main.post {
@@ -379,6 +400,14 @@ class ReceiverController(
 
         @Volatile private var bytesReceived = 0L
 
+        /** First frame on screen (`CLOCK_MONOTONIC` µs, codec thread); 0 until then. */
+        @Volatile private var firstShownUs = 0L
+
+        // Developer mode, control thread only: what the 1 Hz tick already logged.
+        private var loggedFirstFrame = false
+        private var decodedTicks = 0
+        private var loggedAudioPlaying = false
+
         /** A Wi-Fi Direct offer received instead of START: no stream on this connection. */
         private var lanOffer: ControlMessage.P2pOffer? = null
 
@@ -394,16 +423,24 @@ class ReceiverController(
                         is Handshake.Opening.Offer -> {
                             lanOffer = opening.offer
                             Log.i(TAG, "Wi-Fi Direct offer over the router from ${connection.remoteAddress}")
+                            DevLog.info(DEV_SOURCE) { "Wi-Fi Direct offer received over the router (fast path)" }
                             return // finally hands it to onLanOffer
                         }
                     }
                 params = p
                 Log.i(TAG, "session ${p.sessionId} from ${connection.remoteAddress}: ${p.video}")
+                DevLog.touch()
+                DevLog.info(DEV_SOURCE) {
+                    val v = p.video
+                    "Handshake OK${if (isDirect(connection)) " over Wi-Fi Direct" else ""}: ${v.codec} " +
+                        "${v.width}x${v.height} @${v.fps} fps, ${v.bitrateBps / 1000} kbps, sync ${p.syncMode}"
+                }
                 writer = startWriter()
                 // One codec per Surface: let a preempted session release its decoder first.
                 previous?.let {
                     if (!it.videoReleased.await(PREEMPT_WAIT_MS, TimeUnit.MILLISECONDS)) {
                         Log.w(TAG, "previous session slow to release its decoder")
+                        DevLog.warn(DEV_SOURCE) { "Previous session slow to release its decoder" }
                     }
                 }
                 previous = null
@@ -413,6 +450,7 @@ class ReceiverController(
                 if (target == null || ended) throw IOException("no surface")
                 videoSurface = target
                 startVideo(p)
+                DevLog.info(DEV_SOURCE) { "Decoder $decoderName started, waiting for the first frame" }
                 Log.i(TAG, "sync mode ${p.syncMode}")
                 _state.value =
                     ReceiverState.Streaming(
@@ -424,12 +462,18 @@ class ReceiverController(
                 readLoop()
             } catch (e: HandshakeException) {
                 Log.w(TAG, "handshake failed: ${e.message}")
+                DevLog.warn(DEV_SOURCE) { "Handshake failed: ${e.message}" }
             } catch (e: Exception) {
                 if (!ended) {
                     Log.w(TAG, "session failed: ${e.message}")
+                    DevLog.error(DEV_SOURCE) { "Session failed: ${e.message ?: e.javaClass.simpleName}" }
                     end(ByeReason.ERROR)
                 }
             } finally {
+                if (params != null) {
+                    DevLog.touch()
+                    DevLog.info(DEV_SOURCE) { "Session ended" }
+                }
                 ended = true
                 // Video first: a session preempting this one waits for the Surface to be free.
                 delayLine?.close() // before the decoder: it is the decoder's feeding thread
@@ -508,6 +552,8 @@ class ReceiverController(
                     onFrameRendered = { pts, shownAt ->
                         avSync.onVideoShown(pts, shownAt)
                         captureLatency.onShown(pts, shownAt)
+                        // One field write, logged by the 1 Hz control tick (developer mode, #33).
+                        if (firstShownUs == 0L) firstShownUs = shownAt
                     },
                 ).start()
             decoder = dec
@@ -561,6 +607,7 @@ class ReceiverController(
                         reader.read() ?: return
                     } catch (e: SocketTimeoutException) {
                         Log.w(TAG, "sender silent for $READ_TIMEOUT_MS ms: ending the session")
+                        DevLog.warn(DEV_SOURCE) { "Sender silent for $READ_TIMEOUT_MS ms: ending the session" }
                         throw e
                     }
                 bytesReceived += pk.payloadLength + HEADER_BYTES
@@ -619,8 +666,13 @@ class ReceiverController(
             jitter = null
             if (config.codec != AudioCodec.PCM_S16LE) {
                 Log.w(TAG, "unsupported audio codec ${config.codec}")
+                DevLog.warn(DEV_SOURCE) { "Unsupported audio codec ${config.codec}: video only" }
                 return
             }
+            DevLog.info(DEV_SOURCE) {
+                "Audio stream: ${config.codec} ${config.sampleRateHz / 1000} kHz, ${config.channels} ch"
+            }
+            loggedAudioPlaying = false
             audioPacketUs = config.frameDurationUs.toLong()
             val buffer = JitterBuffer(config.sampleRateHz, config.channels)
             avSync.reset()
@@ -630,6 +682,7 @@ class ReceiverController(
                 jitter = buffer
             } catch (e: Exception) {
                 Log.w(TAG, "cannot start audio: ${e.message}")
+                DevLog.warn(DEV_SOURCE) { "Cannot start audio: ${e.message}" }
             }
         }
 
@@ -664,6 +717,7 @@ class ReceiverController(
                     val secs = (now - lastAt).coerceAtLeast(1) / 1000.0
                     val bytes = bytesReceived
                     val jb = jitter
+                    if (DevLog.enabled) logFirstMedia(d.decodedFrames, jb)
                     val sync = avSync.snapshot()
                     val offsetUs = sync.offsetUs
                     if (delayLine != null) {
@@ -739,6 +793,29 @@ class ReceiverController(
             writerStarted = true
         }
 
+        /**
+         * Developer mode (#33), control thread, once per second: the first frame on screen (stamped
+         * with its render time) and the first audio played. Decoders that never report render times
+         * get a "decoded" line after two ticks with decoded frames instead.
+         */
+        private fun logFirstMedia(decodedFrames: Long, jb: JitterBuffer?) {
+            if (!loggedFirstFrame) {
+                val shown = firstShownUs
+                if (decodedFrames > 0) decodedTicks++
+                if (shown != 0L) {
+                    loggedFirstFrame = true
+                    DevLog.infoAt(shown / 1000, DEV_SOURCE) { "First frame on screen" }
+                } else if (decodedTicks >= 2) {
+                    loggedFirstFrame = true
+                    DevLog.info(DEV_SOURCE) { "First frames decoded (render time unknown)" }
+                }
+            }
+            if (!loggedAudioPlaying && jb != null && avSync.stages().audioPlayed != null) {
+                loggedAudioPlaying = true
+                DevLog.info(DEV_SOURCE) { "Audio playing (buffer ${jb.bufferedMs} ms)" }
+            }
+        }
+
         /** Ends the session from any thread without touching the socket's output. */
         fun end(reason: ByeReason) {
             if (ended) return
@@ -768,6 +845,10 @@ class ReceiverController(
 
     private companion object {
         const val TAG = "Riri/Receiver"
+        const val DEV_SOURCE = "Receiver"
+
+        /** Developer mode: a connection or offer within this time of the last milestone continues the log. */
+        const val ATTEMPT_WINDOW_MS = 20_000L
         const val SURFACE_WAIT_MS = 2_000L
         const val HEADER_BYTES = 16
         const val OUTBOX_CAPACITY = 32
