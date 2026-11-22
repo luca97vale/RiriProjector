@@ -228,7 +228,6 @@ class ReceiverController(
     private fun onOffer(offer: P2pOfferRecord) {
         if (session != null || joinJob != null || station != null) return
         DevLog.beginUnlessRecent("Wi-Fi Direct offer from ${offer.name}", ATTEMPT_WINDOW_MS)
-        DevLog.touch()
         DevLog.info(DEV_SOURCE) {
             val how = if (Build.VERSION.SDK_INT >= 29) "a P2P client" else "a Wi-Fi station (API 28)"
             "Joining ${offer.ssid} as $how, timeout ${P2pStationJoiner.DEFAULT_TIMEOUT_MS / 1000} s"
@@ -241,6 +240,7 @@ class ReceiverController(
                 try {
                     val st = P2pStationJoiner.join(context, offer)
                     station = st
+                    DevLog.touch() // a slow join must not push the sender's connection into a new log
                     directGateway = st.groupOwnerAddress
                     DevLog.info(DEV_SOURCE) { "Joined ${offer.name}'s group, sender at ${st.groupOwnerAddress}" }
                     main.postDelayed(leaveUnusedStation, UNUSED_STATION_MS)
@@ -406,7 +406,9 @@ class ReceiverController(
         // Developer mode, control thread only: what the 1 Hz tick already logged.
         private var loggedFirstFrame = false
         private var decodedTicks = 0
-        private var loggedAudioPlaying = false
+
+        /** The audio stream whose first playback was logged; a new stream (new buffer) logs again. */
+        private var loggedAudioFor: JitterBuffer? = null
 
         /** A Wi-Fi Direct offer received instead of START: no stream on this connection. */
         private var lanOffer: ControlMessage.P2pOffer? = null
@@ -672,7 +674,6 @@ class ReceiverController(
             DevLog.info(DEV_SOURCE) {
                 "Audio stream: ${config.codec} ${config.sampleRateHz / 1000} kHz, ${config.channels} ch"
             }
-            loggedAudioPlaying = false
             audioPacketUs = config.frameDurationUs.toLong()
             val buffer = JitterBuffer(config.sampleRateHz, config.channels)
             avSync.reset()
@@ -810,8 +811,8 @@ class ReceiverController(
                     DevLog.info(DEV_SOURCE) { "First frames decoded (render time unknown)" }
                 }
             }
-            if (!loggedAudioPlaying && jb != null && avSync.stages().audioPlayed != null) {
-                loggedAudioPlaying = true
+            if (jb != null && jb !== loggedAudioFor && avSync.stages().audioPlayed != null) {
+                loggedAudioFor = jb
                 DevLog.info(DEV_SOURCE) { "Audio playing (buffer ${jb.bufferedMs} ms)" }
             }
         }

@@ -20,10 +20,10 @@ Issue: #33 · Status: APPROVED (architect: APPROVED WITH CHANGES, changes integr
 - [ ] "Copy log" copies the full log as plain text.
 - [ ] Developer mode off: no log panel, no change to existing screens; the per-frame encoder→socket
       and socket→decoder loops gain no allocation or logging in either mode.
-- [ ] The event model is pure Kotlin with JVM unit tests, lives in `:core:net` and respects the
+- [x] The event model is pure Kotlin with JVM unit tests, lives in `:core:net` and respects the
       dependency rule.
 - [ ] Layouts work at 360 dp width in both orientations; all strings in `strings.xml`, English.
-- [ ] `assembleDebug testDebugUnitTest spotlessCheck lintDebug` green.
+- [x] `assembleDebug testDebugUnitTest spotlessCheck lintDebug` green.
 
 ## Approach
 A **process-wide, opt-in event sink** in `:core:net` (`dev.ririprojector.net.devlog`):
@@ -186,7 +186,7 @@ No change. Each device shows its own log; `PROTOCOL_VERSION` stays 4.
 - [x] 4. Sender UI: settings section + `DevLogPanel` — `feat(sender): developer mode toggle and live log panel`
 - [x] 5. Receiver events (controller) — `feat(receiver): log connection steps in developer mode`
 - [x] 6. Receiver UI: toggle, log views, copy — `feat(receiver): developer mode toggle and live log`
-- [ ] 7. Tests (test-writer) — `test: developer mode event log and settings`
+- [x] 7. Tests (test-writer) — `test: developer mode event log and settings`
 - [x] 8. Docs: ARCHITECTURE note (ADR-013 developer mode) — `docs: developer mode`
 
 ## Architect review (android-architect: APPROVED WITH CHANGES — integrated)

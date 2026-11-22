@@ -149,11 +149,9 @@ class ReceiverActivity : Activity() {
                 setOnClickListener { toggleOverlay() }
                 isFocusable = true
                 defaultFocusHighlightEnabled = false
-                // A full-screen view finds nothing "below" it by geometry: point the D-pad at the panel buttons.
-                nextFocusDownId = panel.useAsSender.id
-                nextFocusRightId = panel.useAsSender.id
             }
         setContentView(root)
+        setPanelShown(true)
         root.requestFocus()
 
         controller = ReceiverController(applicationContext, deviceName(), displayInfo(), ::localIpv4)
@@ -295,12 +293,23 @@ class ReceiverActivity : Activity() {
         updateStreamLog()
     }
 
+    /**
+     * Shows or hides the waiting panel. A full-screen view finds nothing "below" it by geometry, so
+     * the root points the D-pad at the panel buttons, but only while they are on screen.
+     */
+    private fun setPanelShown(shown: Boolean) {
+        panel.visibility = if (shown) View.VISIBLE else View.GONE
+        val target = if (shown) panel.useAsSender.id else View.NO_ID
+        root.nextFocusDownId = target
+        root.nextFocusRightId = target
+    }
+
     private fun render(state: ReceiverState) {
         when (state) {
             is ReceiverState.Waiting -> {
                 streaming = false
                 updateStreamLog()
-                panel.visibility = View.VISIBLE
+                setPanelShown(true)
                 val direct = if (state.directReady) getString(R.string.receiver_wifi_direct_ready) else ""
                 panel.showWaiting(
                     name = state.name,
@@ -317,7 +326,7 @@ class ReceiverActivity : Activity() {
             is ReceiverState.Streaming -> {
                 // Focus must not stay in the hidden panel: OK on the remote toggles the overlay again.
                 if (panel.hasFocus()) root.requestFocus()
-                panel.visibility = View.GONE
+                setPanelShown(false)
                 if (!streaming) {
                     streaming = true
                     updateStreamLog()
@@ -359,7 +368,7 @@ class ReceiverActivity : Activity() {
             is ReceiverState.Failed -> {
                 streaming = false
                 updateStreamLog()
-                panel.visibility = View.VISIBLE
+                setPanelShown(true)
                 panel.showError(state.message)
             }
         }
