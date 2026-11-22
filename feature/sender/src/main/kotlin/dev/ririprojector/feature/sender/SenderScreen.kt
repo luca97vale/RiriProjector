@@ -65,6 +65,7 @@ import dev.ririprojector.core.ui.DogLoaderMode
 import dev.ririprojector.core.ui.DogLoaderView
 import dev.ririprojector.core.ui.R as UiR
 import dev.ririprojector.net.ReceiverEndpoint
+import dev.ririprojector.net.WifiBand
 import dev.ririprojector.protocol.model.StreamPreferences
 import dev.ririprojector.protocol.model.SyncMode
 import dev.ririprojector.protocol.model.VideoCodec
@@ -665,6 +666,23 @@ private fun LoaderCard(mode: DogLoaderMode, title: String, hint: String, badge: 
 }
 
 @Composable
+private fun WarnHint(text: String) {
+    val extra = LocalRiriColors.current
+    Row(
+        Modifier.fillMaxWidth().clip(MaterialTheme.shapes.medium).background(extra.warnContainer).padding(16.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Icon(
+            painterResource(R.drawable.ic_warning),
+            contentDescription = null,
+            tint = extra.onWarnContainer,
+            modifier = Modifier.size(20.dp),
+        )
+        Text(text, color = extra.onWarnContainer, style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+@Composable
 private fun Streaming(state: SenderState.Streaming, onStop: () -> Unit, link: DirectLink?) {
     val v = state.params.video
     val s = state.stats
@@ -695,23 +713,10 @@ private fun Streaming(state: SenderState.Streaming, onStop: () -> Unit, link: Di
             }
         }
     }
-    if (s.contentHidden) {
-        Row(
-            Modifier.fillMaxWidth().clip(MaterialTheme.shapes.medium).background(extra.warnContainer).padding(16.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Icon(
-                painterResource(R.drawable.ic_warning),
-                contentDescription = null,
-                tint = extra.onWarnContainer,
-                modifier = Modifier.size(20.dp),
-            )
-            Text(
-                stringResource(R.string.sender_content_hidden),
-                color = extra.onWarnContainer,
-                style = MaterialTheme.typography.bodyMedium,
-            )
-        }
+    if (s.contentHidden) WarnHint(stringResource(R.string.sender_content_hidden))
+    // A single-radio sender on a 2.4 GHz router link shares that channel (#32): say how to get 5 GHz.
+    if (link != null && WifiBand.of(link.frequencyMhz) == WifiBand.GHZ_2_4) {
+        WarnHint(stringResource(R.string.sender_direct_24ghz_hint))
     }
     BrandCard {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
