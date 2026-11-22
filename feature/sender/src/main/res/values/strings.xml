@@ -92,6 +92,13 @@
     <string name="sender_section_video">Video</string>
     <string name="sender_section_audio">Audio</string>
     <string name="sender_section_device">This device</string>
+    <string name="sender_section_developer">Developer</string>
+    <string name="sender_developer_mode">Developer mode</string>
+    <string name="sender_developer_mode_hint">Turn on before sharing: shows a live log of every connection step (discovery, Wi-Fi Direct group, handshake, codecs, first frame) with timings and failure reasons.</string>
+    <string name="sender_dev_log_title">Developer log</string>
+    <string name="sender_dev_log_copy">Copy log</string>
+    <string name="sender_dev_log_share">Share log</string>
+    <string name="sender_dev_log_copied">Log copied</string>
     <string name="sender_codec_hint">Auto picks the best codec both devices support.</string>
     <string name="sender_sync_hint">Lip-sync delays the picture to match the sound. Low latency shows it at once: best for games and drawing.</string>
     <string name="sender_version">Version</string>

@@ -24,6 +24,8 @@ import android.view.Display
 import androidx.annotation.RequiresApi
 import androidx.core.content.IntentCompat
 import dev.ririprojector.net.ReceiverEndpoint
+import dev.ririprojector.net.WifiBand
+import dev.ririprojector.net.devlog.DevLog
 import dev.ririprojector.net.p2p.P2pFailure
 import dev.ririprojector.net.p2p.P2pGroupOwner
 import dev.ririprojector.net.p2p.P2pLink
@@ -88,10 +90,12 @@ class ProjectionService : Service() {
                 null
             }
         if (mp == null) {
+            DevLog.error(DEV_SOURCE) { "Screen capture could not start (getMediaProjection failed)" }
             SenderStatus.set(SenderState.Ended(getString(R.string.sender_error_projection)))
             shutdown()
             return START_NOT_STICKY
         }
+        DevLog.info(DEV_SOURCE) { "Screen capture started" }
         projection = mp
         mp.registerCallback(
             object : MediaProjection.Callback() {
@@ -170,11 +174,19 @@ class ProjectionService : Service() {
                     // attempt if there is none or it failed (e.g. timed out while consent was open).
                     val claimedAt = SystemClock.elapsedRealtime()
                     val early = EarlyDirectLink.claim(receiver.deviceAddress)
+                    DevLog.info(DEV_SOURCE) {
+                        if (early != null) {
+                            "Waiting for the Wi-Fi Direct group started at the pick"
+                        } else {
+                            "No group from the pick: creating the Wi-Fi Direct group now"
+                        }
+                    }
                     val link =
                         try {
                             early?.awaitOrRelease()
                         } catch (e: P2pFailure) {
                             Log.w(TAG, "early Wi-Fi Direct attempt failed (${e.message}), retrying")
+                            DevLog.warn(DEV_SOURCE) { "Group from the pick failed (${e.message}): trying again" }
                             null
                         }
                             ?: P2pGroupOwner(
@@ -185,18 +197,28 @@ class ProjectionService : Service() {
                         TAG,
                         "Wi-Fi Direct link ready ${SystemClock.elapsedRealtime() - claimedAt} ms after consent (early: ${early != null})",
                     )
+                    DevLog.info(DEV_SOURCE) {
+                        val band = WifiBand.describe(link.frequencyMhz) ?: "${link.frequencyMhz} MHz"
+                        "Wi-Fi Direct link ready ${SystemClock.elapsedRealtime() - claimedAt} ms after consent: " +
+                            "group on $band, receiver at ${link.endpoint.host}"
+                    }
                     SenderStatus.setDirect(DirectLink(link.frequencyMhz))
                     startHost(link.endpoint)
                     link.lost.first()
                     // The receiver's own BYE usually arrives first: it decides the message then.
                     delay(LINK_LOST_GRACE_MS)
                     Log.i(TAG, "Wi-Fi Direct group lost")
+                    DevLog.warn(DEV_SOURCE) { "Wi-Fi Direct group lost (receiver left or out of range)" }
                     stopSession(ByeReason.NORMAL, getString(R.string.sender_error_p2p_lost, receiver.name))
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     Log.w(TAG, "Wi-Fi Direct failed: ${e.message}")
-                    SenderStatus.set(SenderState.Ended(p2pMessage(e, receiver.name)))
+                    val message = p2pMessage(e, receiver.name)
+                    DevLog.error(DEV_SOURCE) {
+                        "Wi-Fi Direct failed: $message (${e.message ?: e.javaClass.simpleName})"
+                    }
+                    SenderStatus.set(SenderState.Ended(message))
                     shutdown()
                 }
             }
@@ -314,6 +336,7 @@ class ProjectionService : Service() {
 
     companion object {
         private const val TAG = "Riri/Projection"
+        private const val DEV_SOURCE = "Sender"
         private const val CHANNEL = "mirroring"
         private const val NOTIFICATION_ID = 1
         private const val ACTION_STOP = "dev.ririprojector.action.STOP"

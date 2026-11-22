@@ -1,27 +1,40 @@
 package dev.ririprojector.feature.receiver
 
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Color
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.ConnectivityManager
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.FrameLayout
+import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import androidx.core.content.ContextCompat
 import dev.ririprojector.core.ui.R as UiR
 import dev.ririprojector.net.WifiBand
+import dev.ririprojector.net.devlog.DevEvent
+import dev.ririprojector.net.devlog.DevEventLog
+import dev.ririprojector.net.devlog.DevLevel
+import dev.ririprojector.net.devlog.DevLog
 import dev.ririprojector.net.p2p.WifiDirectSupport
 import dev.ririprojector.protocol.ByeReason
 import dev.ririprojector.protocol.model.DisplayInfo
@@ -44,6 +57,15 @@ class ReceiverActivity : Activity() {
     private lateinit var panel: WaitingPanel
     private lateinit var statsOverlay: TextView
     private var overlayVisible = false
+    private lateinit var root: FrameLayout
+    private lateinit var streamLog: ScrollView
+    private lateinit var streamLogText: TextView
+    private var streaming = false
+
+    // Developer mode (#33): stored per device, applied in onStart.
+    private val devPrefs by lazy { getSharedPreferences(DEV_PREFS, MODE_PRIVATE) }
+    private var developerMode = false
+    private var devCollector: Job? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -61,6 +83,12 @@ class ReceiverActivity : Activity() {
             startActivity(Intent(ACTION_USE_AS_SENDER).setPackage(packageName))
             finish()
         }
+        panel.devToggle.setOnClickListener {
+            devPrefs.edit().putBoolean(KEY_DEV_MODE, !developerMode).apply()
+            applyDeveloperMode()
+            logReceiverStatus()
+        }
+        panel.copyLog.setOnClickListener { copyDevLog() }
         val density = metrics.density
         statsOverlay =
             TextView(this).apply {
@@ -76,7 +104,26 @@ class ReceiverActivity : Activity() {
                 setPadding(pad, pad, pad, pad)
                 visibility = View.GONE
             }
-        val root =
+        streamLogText =
+            TextView(this).apply {
+                setTextColor(ContextCompat.getColor(context, UiR.color.riri_on_surface))
+                typeface = Typeface.MONOSPACE
+                textSize = if (large) 13f else 11f
+            }
+        streamLog =
+            ScrollView(this).apply {
+                isFocusable = false
+                descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+                background = GradientDrawable().apply {
+                    setColor(ContextCompat.getColor(context, UiR.color.riri_overlay))
+                    cornerRadius = 20 * density
+                }
+                val pad = (16 * density).toInt()
+                setPadding(pad, pad, pad, pad)
+                visibility = View.GONE
+                addView(streamLogText)
+            }
+        root =
             FrameLayout(this).apply {
                 setBackgroundColor(Color.BLACK)
                 addView(container, FrameLayout.LayoutParams(MATCH, MATCH, Gravity.CENTER))
@@ -84,6 +131,14 @@ class ReceiverActivity : Activity() {
                 addView(
                     statsOverlay,
                     FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.START).apply {
+                        val m = (24 * density).toInt()
+                        setMargins(m, m, m, m)
+                    },
+                )
+                // Developer mode: the log under the stats, shown with them while streaming, at most 40 % high.
+                addView(
+                    streamLog,
+                    FrameLayout.LayoutParams(MATCH, (metrics.heightPixels * 0.4f).toInt(), Gravity.BOTTOM).apply {
                         val m = (24 * density).toInt()
                         setMargins(m, m, m, m)
                     },
@@ -96,6 +151,7 @@ class ReceiverActivity : Activity() {
                 defaultFocusHighlightEnabled = false
             }
         setContentView(root)
+        setPanelShown(true)
         root.requestFocus()
 
         controller = ReceiverController(applicationContext, deviceName(), displayInfo(), ::localIpv4)
@@ -120,7 +176,9 @@ class ReceiverActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
+        applyDeveloperMode() // before the server starts, so its first lines are logged
         controller.start()
+        logReceiverStatus()
         collector = scope.launch { controller.state.collect(::render) }
         // API 29+ needs a runtime permission for Wi-Fi Direct (none on Fire OS 7). Asked once;
         // without it the receiver simply stays router-only.
@@ -146,6 +204,8 @@ class ReceiverActivity : Activity() {
 
     override fun onStop() {
         collector?.cancel()
+        devCollector?.cancel()
+        devCollector = null
         controller.stop()
         super.onStop()
     }
@@ -164,15 +224,92 @@ class ReceiverActivity : Activity() {
         else -> super.onKeyDown(keyCode, event)
     }
 
+    /**
+     * Developer mode (#33): applies the stored choice. The log is collected only while it is on,
+     * and only the newest lines are rendered.
+     */
+    private fun applyDeveloperMode() {
+        developerMode = devPrefs.getBoolean(KEY_DEV_MODE, false)
+        DevLog.enabled = developerMode
+        panel.setDeveloperMode(developerMode)
+        devCollector?.cancel()
+        devCollector = null
+        if (developerMode) {
+            devCollector = scope.launch {
+                DevLog.events.collect { events ->
+                    val text = devLogText(events.takeLast(DEV_LINES_SHOWN))
+                    panel.setLog(text)
+                    streamLogText.text = text
+                    streamLog.post { streamLog.fullScroll(View.FOCUS_DOWN) }
+                }
+            }
+        }
+        updateStreamLog()
+    }
+
+    /** Developer mode: where this receiver can be reached, and on which Wi-Fi band (#33). */
+    private fun logReceiverStatus() {
+        val waiting = controller.state.value as? ReceiverState.Waiting ?: return
+        DevLog.info(DEV_SOURCE) {
+            val band = WifiBand.describe(wifiFrequencyMhz())?.let { "Wi-Fi $it" } ?: "not on Wi-Fi"
+            val direct = if (waiting.directReady) "Wi-Fi Direct ready" else "Wi-Fi Direct unavailable"
+            "Waiting as ${waiting.name} at ${waiting.address ?: "no address"}:${waiting.port}; $band; $direct"
+        }
+    }
+
+    private fun devLogText(events: List<DevEvent>): CharSequence {
+        val warn = ContextCompat.getColor(this, UiR.color.riri_coral)
+        val out = SpannableStringBuilder()
+        events.forEachIndexed { i, e ->
+            if (i > 0) out.append('\n')
+            val start = out.length
+            out.append(DevEventLog.formatLine(e))
+            if (e.level != DevLevel.INFO) {
+                out.setSpan(ForegroundColorSpan(warn), start, out.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+        }
+        return out
+    }
+
+    /** The log under the stats while streaming: only with the overlay, so the picture stays clean. */
+    private fun updateStreamLog() {
+        streamLog.visibility = if (developerMode && streaming && overlayVisible) View.VISIBLE else View.GONE
+    }
+
+    private fun copyDevLog() {
+        val clipboard = getSystemService(ClipboardManager::class.java) ?: return
+        clipboard.setPrimaryClip(ClipData.newPlainText(getString(R.string.receiver_dev_log_title), DevLog.format()))
+        // API 33+ shows its own confirmation.
+        if (Build.VERSION.SDK_INT <
+            33
+        ) {
+            Toast.makeText(this, R.string.receiver_dev_log_copied, Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun toggleOverlay() {
         overlayVisible = !overlayVisible
         statsOverlay.visibility = if (overlayVisible) View.VISIBLE else View.GONE
+        updateStreamLog()
+    }
+
+    /**
+     * Shows or hides the waiting panel. A full-screen view finds nothing "below" it by geometry, so
+     * the root points the D-pad at the panel buttons, but only while they are on screen.
+     */
+    private fun setPanelShown(shown: Boolean) {
+        panel.visibility = if (shown) View.VISIBLE else View.GONE
+        val target = if (shown) panel.useAsSender.id else View.NO_ID
+        root.nextFocusDownId = target
+        root.nextFocusRightId = target
     }
 
     private fun render(state: ReceiverState) {
         when (state) {
             is ReceiverState.Waiting -> {
-                panel.visibility = View.VISIBLE
+                streaming = false
+                updateStreamLog()
+                setPanelShown(true)
                 val direct = if (state.directReady) getString(R.string.receiver_wifi_direct_ready) else ""
                 panel.showWaiting(
                     name = state.name,
@@ -187,7 +324,13 @@ class ReceiverActivity : Activity() {
             }
 
             is ReceiverState.Streaming -> {
-                panel.visibility = View.GONE
+                // Focus must not stay in the hidden panel: OK on the remote toggles the overlay again.
+                if (panel.hasFocus()) root.requestFocus()
+                setPanelShown(false)
+                if (!streaming) {
+                    streaming = true
+                    updateStreamLog()
+                }
                 val v = state.params.video
                 val s = state.stats
                 statsOverlay.text =
@@ -223,7 +366,9 @@ class ReceiverActivity : Activity() {
             }
 
             is ReceiverState.Failed -> {
-                panel.visibility = View.VISIBLE
+                streaming = false
+                updateStreamLog()
+                setPanelShown(true)
                 panel.showError(state.message)
             }
         }
@@ -274,5 +419,11 @@ class ReceiverActivity : Activity() {
         private const val MATCH = FrameLayout.LayoutParams.MATCH_PARENT
         private const val WRAP = FrameLayout.LayoutParams.WRAP_CONTENT
         private const val REQUEST_WIFI_DIRECT = 21
+        private const val DEV_PREFS = "riri_receiver_settings"
+        private const val DEV_SOURCE = "Receiver"
+        private const val KEY_DEV_MODE = "dev.mode"
+
+        /** Lines rendered on screen; the copied log has all of them. */
+        private const val DEV_LINES_SHOWN = 40
     }
 }

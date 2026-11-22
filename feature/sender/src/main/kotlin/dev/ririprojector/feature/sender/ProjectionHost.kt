@@ -28,6 +28,7 @@ import dev.ririprojector.net.SenderClient
 import dev.ririprojector.net.SessionEvent
 import dev.ririprojector.net.SessionState
 import dev.ririprojector.net.SessionStateMachine
+import dev.ririprojector.net.devlog.DevLog
 import dev.ririprojector.net.p2p.P2pPolicy
 import dev.ririprojector.protocol.ByeReason
 import dev.ririprojector.protocol.CodecNegotiator
@@ -254,6 +255,9 @@ internal class ProjectionHost(
                     break
                 }
                 Log.i(TAG, "link lost (${end.failure ?: end.peerBye}): reconnecting, attempt ${state.attempt}")
+                DevLog.warn(DEV_SOURCE) {
+                    "Link lost (${end.failure ?: end.peerBye ?: "closed"}): reconnecting, attempt ${state.attempt}"
+                }
                 SenderStatus.set(SenderState.Reconnecting(target, state.attempt))
                 waitUntil(state.retryAtMs)
                 machine.on(SessionEvent.Tick(SystemClock.elapsedRealtime()))
@@ -264,6 +268,12 @@ internal class ProjectionHost(
             link = null
             failure = failure ?: endMessage
             if (failure != null) Log.w(TAG, "session ended: $failure")
+            val reason = failure
+            if (reason != null) {
+                DevLog.error(DEV_SOURCE) { "Session ended: $reason" }
+            } else {
+                DevLog.info(DEV_SOURCE) { "Session ended normally" }
+            }
             audioQueue = null
             runCatching { audio?.close() }
             audio = null
@@ -423,6 +433,7 @@ internal class ProjectionHost(
                 } catch (e: IOException) {
                     if (ended || SystemClock.elapsedRealtime() + CONNECT_RETRY_PAUSE_MS >= deadline) throw e
                     Log.i(TAG, "connect failed (${e.message}): retrying")
+                    DevLog.warn(DEV_SOURCE) { "TCP connect failed (${e.message}): retrying" }
                     Thread.sleep(CONNECT_RETRY_PAUSE_MS)
                 }
             }
@@ -435,13 +446,23 @@ internal class ProjectionHost(
             var streamed = false
             try {
                 val linkStartAt = SystemClock.elapsedRealtime()
+                DevLog.info(DEV_SOURCE) { "Connecting to ${target.host}:${target.port} (timeout $connectTimeoutMs ms)" }
                 val conn = connectWithin(connectTimeoutMs, connectWindowMs)
                 connection = conn
+                DevLog.info(DEV_SOURCE) { "TCP connected in ${SystemClock.elapsedRealtime() - linkStartAt} ms" }
                 if (ended) return LinkEnd(null)
                 val negotiatedSource = currentSource
                 val (hello, params) =
                     Handshake.asSender(conn, capabilities(negotiatedSource), preferences, sessionId, handshakeTimeoutMs)
                 Log.i(TAG, "connected and handshaken in ${SystemClock.elapsedRealtime() - linkStartAt} ms")
+                DevLog.info(DEV_SOURCE) {
+                    "Handshake OK with ${hello.deviceName} in ${SystemClock.elapsedRealtime() - linkStartAt} ms"
+                }
+                DevLog.info(DEV_SOURCE) {
+                    val v = params.video
+                    "Negotiated ${v.codec} ${v.width}x${v.height} @${v.fps} fps, ${v.bitrateBps / 1000} kbps, " +
+                        "sync ${params.syncMode}"
+                }
                 Log.i(TAG, "streaming to ${hello.deviceName} (${target.host}): ${params.video}")
                 // Show who actually answered: over Wi-Fi Direct the tablet streams to whichever device
                 // joined its group, so a wrong receiver must be visible (ADR-011).
@@ -475,6 +496,8 @@ internal class ProjectionHost(
                     audioQueue = queue
                 }
                 streamed = true
+                DevLog.info(DEV_SOURCE) { "Encoder $encoderName started" }
+                DevLog.info(DEV_SOURCE) { "Audio: ${status.name.lowercase()}" }
                 SenderStatus.set(
                     SenderState.Streaming(shownTarget, params, SenderStats(encoderName = encoderName, audio = status)),
                 )
@@ -491,12 +514,15 @@ internal class ProjectionHost(
                     } else {
                         e.message
                     }
+                DevLog.warn(DEV_SOURCE) { "Handshake failed: ${e.message}" }
             } catch (e: SocketTimeoutException) {
                 cause = e
                 if (!ended) failure = "receiver not responding"
+                if (!ended) DevLog.warn(DEV_SOURCE) { "Timed out (${e.message}): receiver not responding" }
             } catch (e: Exception) {
                 cause = e
                 if (!ended) failure = e.message ?: e.javaClass.simpleName
+                if (!ended) DevLog.warn(DEV_SOURCE) { "Link failed: ${e.message ?: e.javaClass.simpleName}" }
             } finally {
                 encoderError?.let { failure = failure ?: "encoder error: ${it.message}" }
                 if (audioQueue === queue) audioQueue = null
@@ -625,6 +651,9 @@ internal class ProjectionHost(
                     MessageType.STATS -> {
                         val s = p.decodeControl() as ControlMessage.Stats
                         receiverDropped = s.droppedFrames
+                        if (!healthy && s.decodedFpsX100 > 0) {
+                            DevLog.info(DEV_SOURCE) { "Receiver is showing frames (${s.decodedFpsX100 / 100} fps)" }
+                        }
                         if (s.decodedFpsX100 > 0) healthy = true
                         val enc = encoder ?: continue
                         val now = SystemClock.elapsedRealtime()
@@ -673,6 +702,7 @@ internal class ProjectionHost(
                     MessageType.BYE -> {
                         peerBye = (p.decodeControl() as ControlMessage.Bye).reason
                         Log.i(TAG, "receiver said goodbye: $peerBye")
+                        DevLog.warn(DEV_SOURCE) { "Receiver said goodbye: $peerBye" }
                         return
                     }
 
@@ -737,6 +767,7 @@ internal class ProjectionHost(
 
     private companion object {
         const val TAG = "Riri/Sender"
+        const val DEV_SOURCE = "Sender"
         const val PING_INTERVAL_MS = 1_000L
         const val WRITER_DRAIN_MS = 300L
         const val BYE_GRACE_MS = 300L

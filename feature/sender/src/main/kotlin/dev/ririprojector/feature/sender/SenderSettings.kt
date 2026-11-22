@@ -18,6 +18,8 @@ data class SenderSettings(
     val prefs: StreamPreferences = SenderSettingsCodec.DEFAULT_PREFS,
     /** The last receiver a session reached Streaming with; null if none or not TCP-connectable. */
     val lastReceiver: ReceiverEndpoint? = null,
+    /** Developer mode (#33): shows a live log of the connection steps. Device setting, not sent in START. */
+    val developerMode: Boolean = false,
 )
 
 /**
@@ -61,6 +63,7 @@ object SenderSettingsCodec {
     const val KEY_LAST_NAME = "last.name"
     const val KEY_LAST_HOST = "last.host"
     const val KEY_LAST_PORT = "last.port"
+    const val KEY_DEV_MODE = "dev.mode"
 
     /** Codec stored when the user picked "Auto". */
     private const val AUTO = "AUTO"
@@ -81,7 +84,11 @@ object SenderSettingsCodec {
                 audioEnabled = read(KEY_AUDIO)?.toBooleanStrictOrNull() ?: d.audioEnabled,
                 syncMode = SyncMode.entries.firstOrNull { it.name == read(KEY_SYNC) } ?: d.syncMode,
             )
-        return SenderSettings(prefs, decodeReceiver(read))
+        return SenderSettings(
+            prefs,
+            decodeReceiver(read),
+            developerMode = read(KEY_DEV_MODE)?.toBooleanStrictOrNull() ?: false,
+        )
     }
 
     private fun decodeReceiver(read: (String) -> String?): ReceiverEndpoint? {
@@ -100,6 +107,11 @@ object SenderSettingsCodec {
         KEY_BITRATE_MBPS to (prefs.bitrateBps?.div(MBPS) ?: 0).toString(),
         KEY_AUDIO to prefs.audioEnabled.toString(),
         KEY_SYNC to prefs.syncMode.name,
+    )
+
+    fun encodeDeveloperMode(on: Boolean): Map<String, String?> = mapOf(
+        KEY_VERSION to VERSION.toString(),
+        KEY_DEV_MODE to on.toString(),
     )
 
     fun encodeReceiver(r: ReceiverEndpoint): Map<String, String?> = mapOf(
@@ -137,6 +149,8 @@ class SenderSettingsRepository(private val store: KeyValueStore) {
     fun load(): SenderSettings = SenderSettingsCodec.decode(store::getString)
 
     fun savePrefs(prefs: StreamPreferences) = store.putAll(SenderSettingsCodec.encodePrefs(prefs))
+
+    fun saveDeveloperMode(on: Boolean) = store.putAll(SenderSettingsCodec.encodeDeveloperMode(on))
 
     /** Ignored for endpoints that cannot be reconnected over TCP (e.g. Wi-Fi Direct). */
     fun saveLastReceiver(r: ReceiverEndpoint) {
