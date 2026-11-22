@@ -7,6 +7,7 @@ import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.net.ConnectivityManager
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -20,6 +21,7 @@ import android.widget.FrameLayout
 import android.widget.TextView
 import androidx.core.content.ContextCompat
 import dev.ririprojector.core.ui.R as UiR
+import dev.ririprojector.net.WifiBand
 import dev.ririprojector.net.p2p.WifiDirectSupport
 import dev.ririprojector.protocol.ByeReason
 import dev.ririprojector.protocol.model.DisplayInfo
@@ -206,7 +208,7 @@ class ReceiverActivity : Activity() {
                         s.avOffsetMs?.let { getString(R.string.receiver_av_offset, it) }
                             ?: getString(R.string.receiver_av_unknown),
                         s.decoderName,
-                        if (state.direct) getString(R.string.receiver_link_direct, state.peer) else state.peer,
+                        linkLabel(state.direct, state.peer),
                         s.videoDelayMs,
                         s.latency?.let {
                             getString(
@@ -244,6 +246,18 @@ class ReceiverActivity : Activity() {
         val mode = d.mode
         return DisplayInfo(mode.physicalWidth, mode.physicalHeight, mode.refreshRate.toInt().coerceAtLeast(1))
     }
+
+    /** Peer address, link type and the Wi-Fi band in use (#23), e.g. "192.168.1.6 · Wi-Fi 5 GHz (5220 MHz)". */
+    private fun linkLabel(direct: Boolean, peer: String): String {
+        val base = if (direct) getString(R.string.receiver_link_direct, peer) else peer
+        // API 29+ joins Wi-Fi Direct as a P2P client: connectionInfo then describes the router, not the link.
+        val band = if (direct && Build.VERSION.SDK_INT >= 29) null else WifiBand.describe(wifiFrequencyMhz())
+        return if (band != null) getString(R.string.receiver_link_band, base, band) else base
+    }
+
+    @Suppress("DEPRECATION") // frequency only: no location-gated fields are read
+    private fun wifiFrequencyMhz(): Int =
+        applicationContext.getSystemService(WifiManager::class.java)?.connectionInfo?.frequency ?: -1
 
     private fun localIpv4(): String? {
         val cm = getSystemService(ConnectivityManager::class.java) ?: return null
