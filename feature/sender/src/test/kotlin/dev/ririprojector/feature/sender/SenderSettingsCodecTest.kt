@@ -276,6 +276,61 @@ class SenderSettingsCodecTest {
         assertThat(repo.load().lastReceiver).isEqualTo(tv)
     }
 
+    @Test
+    fun `developer mode defaults to false when absent`() {
+        assertThat(load().developerMode).isFalse()
+    }
+
+    @Test
+    fun `developer mode on and off round trip`() {
+        listOf(true, false).forEach {
+            val repo = SenderSettingsRepository(MapStore())
+            repo.saveDeveloperMode(it)
+            assertThat(repo.load().developerMode).isEqualTo(it)
+        }
+    }
+
+    @Test
+    fun `encodeDeveloperMode round trips through load`() {
+        val store = MapStore()
+        store.putAll(SenderSettingsCodec.encodeDeveloperMode(true))
+        assertThat(SenderSettingsRepository(store).load().developerMode).isTrue()
+    }
+
+    @Test
+    fun `invalid developer mode value falls back to false`() {
+        listOf("yes", "TRUE ", "1", "").forEach {
+            assertThat(load(SenderSettingsCodec.KEY_DEV_MODE to it).developerMode).isFalse()
+        }
+    }
+
+    @Test
+    fun `saveDeveloperMode writes the dev mode key`() {
+        val store = MapStore()
+        SenderSettingsRepository(store).saveDeveloperMode(true)
+        assertThat(store.map["dev.mode"]).isEqualTo("true")
+    }
+
+    @Test
+    fun `saving developer mode does not clobber prefs or last receiver`() {
+        val repo = SenderSettingsRepository(MapStore())
+        val prefs = defaults.copy(maxHeight = 1440, audioEnabled = false)
+        repo.savePrefs(prefs)
+        repo.saveLastReceiver(tv)
+        repo.saveDeveloperMode(true)
+        val s = repo.load()
+        assertThat(s.prefs).isEqualTo(prefs)
+        assertThat(s.lastReceiver).isEqualTo(tv)
+    }
+
+    @Test
+    fun `saving prefs does not clobber developer mode`() {
+        val repo = SenderSettingsRepository(MapStore())
+        repo.saveDeveloperMode(true)
+        repo.savePrefs(defaults.copy(maxHeight = 720))
+        assertThat(repo.load().developerMode).isTrue()
+    }
+
     /** The values the sender screen chips offer (SenderActivity.kt); the codec lists must match them. */
     @Test
     fun `choice lists match the sender screen chips`() {
