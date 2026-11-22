@@ -8,6 +8,7 @@
     <string name="receiver_wifi_direct_ready">\n\nAlso reachable over Wi-Fi Direct: tap “Connect via Wi-Fi Direct” on the sender.</string>
     <string name="receiver_waiting_with_direct" translatable="false">%1$s%2$s</string>
     <string name="receiver_link_direct">%1$s · Wi-Fi Direct</string>
+    <string name="receiver_link_band">%1$s · Wi-Fi %2$s</string>
     <string name="receiver_latency">%1$d ms (p95 %2$d, ±%3$d) capture→shown</string>
     <string name="receiver_ready">Ready</string>
     <string name="receiver_error_label">Error</string>
