@@ -456,3 +456,40 @@ events to `files/p2p.log` (`run-as <package> cat files/p2p.log`).
 - saving the receiver when tapped: a mistyped address would be remembered;
 - `keystore.properties` / `local.properties` for secrets: blocked by repository hooks, and
   environment variables cover both CI and local builds.
+
+## ADR-013 — Developer mode (on-device connection log)
+**Accepted** (#33). Diagnosing a failed connection used to need `adb logcat` on both devices.
+Developer mode, switched on **before** a share, shows each device's own connection steps on screen.
+
+- **Model.** `DevEventLog` (`:core:net`, `dev.ririprojector.net.devlog`, pure, JVM-tested) is a
+  thread-safe ring buffer of at most 300 `DevEvent`s exposed as `StateFlow<List<DevEvent>>`. Each
+  event has a level (INFO/WARN/ERROR), a source and a message, and a timestamp relative to the start of
+  the attempt (`CLOCK_MONOTONIC` ms, the clock of frame render times). Consecutive identical lines
+  collapse into one with a repeat count. `DevLog` is the process-wide sink. It is off by default:
+  each helper then costs one volatile read, and its `inline` lambda never builds the string. Turning
+  it off clears the log.
+- **Sources.** Every `P2pLog` line, which covers both sides of Wi-Fi Direct (ADR-011), is
+  forwarded, so the P2P classes have no hooks of their own. The sender's activity, service and host,
+  and the receiver's controller, add human-readable control-path lines: target, this device's band
+  and RSSI, consent, TCP connect, handshake, negotiated stream, encoder and decoder, audio, first
+  frame on screen, link loss and why the session ended.
+- **Attempts.** The sender starts a new log when the user picks a receiver, before the early group,
+  and keeps it after a failure until the next pick. The receiver has no start button, so a connection
+  or an accepted offer starts a new log only if the last milestone is older than 20 s. Milestones are
+  the handshake, the session end and an accepted offer, and ordinary lines never count. That way
+  offer → join → connection, and a quick reconnect after a drop, stay in one log.
+- **Hot path.** The encoder→socket and socket→decoder loops are unchanged. The receiver's
+  frame-rendered callback stores the first render time in one field, and the 1 Hz control tick logs
+  it.
+- **UI.** On the sender, "Developer mode" sits in a Developer settings section (persisted as
+  `dev.mode`, not part of START). The log panel shows under the status card while the log is not
+  empty, with Copy and Share. On the receiver, a D-pad focusable toggle on the waiting screen
+  (persisted in `riri_receiver_settings`) puts the newest 40 lines in the dog's place. While
+  streaming, they show under the stats overlay. "Copy log" copies everything.
+- **Scope and privacy.** Each device shows only its own log. Nothing is sent over the wire (no
+  protocol change) or written to disk beyond the existing debug-only `p2p.log`. The group
+  passphrase never appears, because both offer types redact it in `toString()`.
+- Rejected: reading logcat from the app (needs `READ_LOGS`, and Fire OS hides app lines); sending
+  events to the peer (a protocol change, and most failures happen before any socket exists);
+  instance-scoped logs threaded through constructors (the early group starts before the service
+  exists, and it would restructure the P2P classes).

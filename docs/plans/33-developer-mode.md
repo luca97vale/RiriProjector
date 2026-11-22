@@ -181,13 +181,13 @@ No change. Each device shows its own log; `PROTOCOL_VERSION` stays 4.
 
 ## Implementation steps
 - [x] 1. `:core:net` devlog model (`DevEventLog`, `DevLog`) + `P2pLog` hook — `feat(net): developer-mode event log`
-- [ ] 2. Sender settings field + codec + repository — `feat(sender): persist developer mode`
-- [ ] 3. Sender events (activity, service, host) — `feat(sender): log connection steps in developer mode`
-- [ ] 4. Sender UI: settings section + `DevLogPanel` — `feat(sender): developer mode toggle and live log panel`
-- [ ] 5. Receiver events (controller) — `feat(receiver): log connection steps in developer mode`
-- [ ] 6. Receiver UI: toggle, log views, copy — `feat(receiver): developer mode toggle and live log`
+- [x] 2. Sender settings field + codec + repository — `feat(sender): persist developer mode`
+- [x] 3. Sender events (activity, service, host) — `feat(sender): log connection steps in developer mode`
+- [x] 4. Sender UI: settings section + `DevLogPanel` — `feat(sender): developer mode toggle and live log panel`
+- [x] 5. Receiver events (controller) — `feat(receiver): log connection steps in developer mode`
+- [x] 6. Receiver UI: toggle, log views, copy — `feat(receiver): developer mode toggle and live log`
 - [ ] 7. Tests (test-writer) — `test: developer mode event log and settings`
-- [ ] 8. Docs: ARCHITECTURE note (ADR-013 developer mode) — `docs: developer mode`
+- [x] 8. Docs: ARCHITECTURE note (ADR-013 developer mode) — `docs: developer mode`
 
 ## Architect review (android-architect: APPROVED WITH CHANGES — integrated)
 1. Sender panel: shown when developer mode is on **and the log is not empty**, whatever the state —
