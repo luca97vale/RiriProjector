@@ -86,6 +86,7 @@ class ReceiverActivity : Activity() {
         panel.devToggle.setOnClickListener {
             devPrefs.edit().putBoolean(KEY_DEV_MODE, !developerMode).apply()
             applyDeveloperMode()
+            logReceiverStatus()
         }
         panel.copyLog.setOnClickListener { copyDevLog() }
         val density = metrics.density
@@ -148,6 +149,9 @@ class ReceiverActivity : Activity() {
                 setOnClickListener { toggleOverlay() }
                 isFocusable = true
                 defaultFocusHighlightEnabled = false
+                // A full-screen view finds nothing "below" it by geometry: point the D-pad at the panel buttons.
+                nextFocusDownId = panel.useAsSender.id
+                nextFocusRightId = panel.useAsSender.id
             }
         setContentView(root)
         root.requestFocus()
@@ -174,8 +178,9 @@ class ReceiverActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
+        applyDeveloperMode() // before the server starts, so its first lines are logged
         controller.start()
-        applyDeveloperMode()
+        logReceiverStatus()
         collector = scope.launch { controller.state.collect(::render) }
         // API 29+ needs a runtime permission for Wi-Fi Direct (none on Fire OS 7). Asked once;
         // without it the receiver simply stays router-only.
@@ -242,6 +247,16 @@ class ReceiverActivity : Activity() {
             }
         }
         updateStreamLog()
+    }
+
+    /** Developer mode: where this receiver can be reached, and on which Wi-Fi band (#33). */
+    private fun logReceiverStatus() {
+        val waiting = controller.state.value as? ReceiverState.Waiting ?: return
+        DevLog.info(DEV_SOURCE) {
+            val band = WifiBand.describe(wifiFrequencyMhz())?.let { "Wi-Fi $it" } ?: "not on Wi-Fi"
+            val direct = if (waiting.directReady) "Wi-Fi Direct ready" else "Wi-Fi Direct unavailable"
+            "Waiting as ${waiting.name} at ${waiting.address ?: "no address"}:${waiting.port}; $band; $direct"
+        }
     }
 
     private fun devLogText(events: List<DevEvent>): CharSequence {
@@ -396,6 +411,7 @@ class ReceiverActivity : Activity() {
         private const val WRAP = FrameLayout.LayoutParams.WRAP_CONTENT
         private const val REQUEST_WIFI_DIRECT = 21
         private const val DEV_PREFS = "riri_receiver_settings"
+        private const val DEV_SOURCE = "Receiver"
         private const val KEY_DEV_MODE = "dev.mode"
 
         /** Lines rendered on screen; the copied log has all of them. */

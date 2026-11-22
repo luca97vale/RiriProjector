@@ -117,10 +117,19 @@ internal class WaitingPanel(context: Context, landscape: Boolean, private val la
             v.animate().scaleX(s).scaleY(s).setDuration(150).start()
         }
     }
-    private val column = LinearLayout(context).apply { orientation = VERTICAL }
+    private val column =
+        LinearLayout(context).apply {
+            orientation = VERTICAL
+            clipChildren = false
+        }
 
     /** Scrolls the column on short screens (a phone in portrait with developer mode on). */
-    private val columnScroll = ScrollView(context).apply { isFillViewport = false }
+    private val columnScroll =
+        ScrollView(context).apply {
+            // The focused button zooms past the column edge: let it draw there.
+            clipChildren = false
+            clipToPadding = false
+        }
 
     init {
         gravity = Gravity.CENTER
@@ -177,6 +186,8 @@ internal class WaitingPanel(context: Context, landscape: Boolean, private val la
             }
         val g = if (landscape) Gravity.START else Gravity.CENTER_HORIZONTAL
         column.gravity = g
+        // Left-aligned buttons zoom rightwards on focus, so the scroll view never clips them.
+        listOf(useAsSender, devToggle, copyLog).forEach { if (landscape) it.pivotX = 0f else it.resetPivot() }
         listOf(title, subtitle, hint).forEach { it.gravity = g }
         columnScroll.layoutParams =
             if (landscape) {
