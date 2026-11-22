@@ -3,6 +3,7 @@ package dev.ririprojector.net.p2p
 import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.util.Log
+import dev.ririprojector.net.devlog.DevLog
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -10,7 +11,8 @@ import java.util.Locale
 
 /**
  * Wi-Fi Direct event log. Fire OS hides app log lines, so debuggable builds also append to
- * `files/p2p.log` (read with `run-as <package> cat files/p2p.log`). Control-path only, never per frame.
+ * `files/p2p.log` (read with `run-as <package> cat files/p2p.log`); developer mode also shows every
+ * line on screen (`DevLog`, #33). Control-path only, never per frame.
  */
 internal object P2pLog {
     private const val MAX_BYTES = 256 * 1024L
@@ -25,11 +27,13 @@ internal object P2pLog {
 
     fun i(message: String) {
         Log.i(TAG, message)
+        DevLog.info(DevLog.SOURCE_P2P) { message }
         append("I", message)
     }
 
     fun w(message: String) {
         Log.w(TAG, message)
+        DevLog.warn(DevLog.SOURCE_P2P) { message }
         append("W", message)
     }
 
