@@ -3,10 +3,13 @@ package dev.ririprojector.feature.sender
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
@@ -24,6 +27,8 @@ import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import dev.ririprojector.net.ReceiverEndpoint
+import dev.ririprojector.net.WifiBand
+import dev.ririprojector.net.devlog.DevLog
 import dev.ririprojector.net.nsd.NsdBrowser
 import dev.ririprojector.net.p2p.P2pFailure
 import dev.ririprojector.net.p2p.P2pReceiver
@@ -58,6 +63,7 @@ class SenderActivity : ComponentActivity() {
             pending = null
             val data = result.data
             if (result.resultCode == Activity.RESULT_OK && data != null) {
+                DevLog.info(DEV_SOURCE) { "Screen capture allowed" }
                 ProjectionService.start(
                     this,
                     result.resultCode,
@@ -68,8 +74,9 @@ class SenderActivity : ComponentActivity() {
                     System.currentTimeMillis(),
                     p.directAddress,
                 )
-            } else if (p.directAddress != null) {
-                EarlyDirectLink.cancel() // consent declined: drop the group started at the pick
+            } else {
+                DevLog.warn(DEV_SOURCE) { "Screen capture declined: share cancelled" }
+                if (p.directAddress != null) EarlyDirectLink.cancel() // drop the group started at the pick
             }
         }
 
@@ -146,6 +153,8 @@ class SenderActivity : ComponentActivity() {
         val settings = SenderSettingsRepository(SharedPreferencesStore.create(this))
         val initialSettings = settings.load()
         var lastReceiver by mutableStateOf(initialSettings.lastReceiver)
+        var developerMode by mutableStateOf(initialSettings.developerMode)
+        DevLog.enabled = developerMode
         // Remember a receiver once a session reached Streaming with it; once per target (ADR-012).
         lifecycleScope.launch {
             SenderStatus.state.mapNotNull { (it as? SenderState.Streaming)?.target }
@@ -211,6 +220,17 @@ class SenderActivity : ComponentActivity() {
                         onUseAsReceiver = ::useAsReceiver,
                         settings = initialSettings.copy(lastReceiver = lastReceiver),
                         onSettingsChange = settings::savePrefs,
+                        developer =
+                            DeveloperUi(
+                                enabled = developerMode,
+                                onEnabledChange = {
+                                    developerMode = it
+                                    DevLog.enabled = it
+                                    settings.saveDeveloperMode(it)
+                                },
+                                onCopy = ::copyDevLog,
+                                onShare = ::shareDevLog,
+                            ),
                         appVersion = appVersion(),
                     )
                 }
@@ -232,6 +252,7 @@ class SenderActivity : ComponentActivity() {
     /** Usage access prompt (once), audio permission (when audio is on), then the consent dialog. */
     private fun requestProjection(target: ReceiverEndpoint, prefs: StreamPreferences, direct: P2pReceiver? = null) {
         pending = Pending(target, prefs, directAddress = direct?.deviceAddress)
+        if (DevLog.enabled) logShareStart(target, prefs, direct)
         // Let the TV find the offer while the consent dialog is up (ADR-011).
         if (direct != null && Build.VERSION.SDK_INT >= WifiDirectSupport.MIN_SENDER_SDK) {
             EarlyDirectLink.start(this, direct)
@@ -281,7 +302,43 @@ class SenderActivity : ComponentActivity() {
             } else {
                 mpm.createScreenCaptureIntent()
             }
+        DevLog.info(DEV_SOURCE) { "Waiting for screen-capture consent" }
         consent.launch(intent)
+    }
+
+    /** Developer mode (#33): a new log for this share, with what this device's Wi-Fi looks like. */
+    private fun logShareStart(target: ReceiverEndpoint, prefs: StreamPreferences, direct: P2pReceiver?) {
+        val how = if (direct != null) "Wi-Fi Direct" else "${target.host}:${target.port}"
+        DevLog.begin("Share to ${target.name} ($how)")
+        DevLog.info(DEV_SOURCE) { "Preferences: $prefs" }
+        if (direct != null) {
+            DevLog.info(DEV_SOURCE) {
+                "Receiver P2P address ${direct.deviceAddress}; router fast path: ${direct.lanHost ?: "not on the same network"}"
+            }
+        }
+        @Suppress("DEPRECATION") // frequency and RSSI only: no location-gated fields are read
+        val info = applicationContext.getSystemService(WifiManager::class.java)?.connectionInfo
+        val band = info?.frequency?.let { WifiBand.describe(it) }
+        if (band == null) {
+            DevLog.warn(DEV_SOURCE) { "This device is not on a Wi-Fi network" }
+        } else {
+            DevLog.info(DEV_SOURCE) { "This device's Wi-Fi: $band, RSSI ${info.rssi} dBm" }
+        }
+    }
+
+    private fun copyDevLog() {
+        val clipboard = getSystemService(ClipboardManager::class.java) ?: return
+        clipboard.setPrimaryClip(ClipData.newPlainText(getString(R.string.sender_dev_log_title), DevLog.format()))
+        // API 33+ shows its own confirmation.
+        if (Build.VERSION.SDK_INT < 33) Toast.makeText(this, R.string.sender_dev_log_copied, Toast.LENGTH_SHORT).show()
+    }
+
+    private fun shareDevLog() {
+        val send =
+            Intent(Intent.ACTION_SEND).setType("text/plain")
+                .putExtra(Intent.EXTRA_SUBJECT, getString(R.string.sender_dev_log_title))
+                .putExtra(Intent.EXTRA_TEXT, DevLog.format())
+        startActivity(Intent.createChooser(send, getString(R.string.sender_dev_log_share)))
     }
 
     companion object {
@@ -300,8 +357,17 @@ class SenderActivity : ComponentActivity() {
         private const val KEY_CONSENT_SHOWN_AT = "pending.consentShownAt"
         private const val KEY_DIRECT = "pending.direct"
         private const val KEY_USAGE_ACCESS_ASKED = "usageAccessAsked"
+        private const val DEV_SOURCE = "Sender"
     }
 }
+
+/** Developer mode (#33): the settings switch and the log panel's actions. */
+internal class DeveloperUi(
+    val enabled: Boolean,
+    val onEnabledChange: (Boolean) -> Unit,
+    val onCopy: () -> Unit,
+    val onShare: () -> Unit,
+)
 
 /** The Wi-Fi Direct section of the screen (ADR-011). */
 internal class DirectUi(

@@ -61,13 +61,16 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.ririprojector.core.ui.DogLoaderMode
 import dev.ririprojector.core.ui.DogLoaderView
 import dev.ririprojector.core.ui.R as UiR
 import dev.ririprojector.net.ReceiverEndpoint
+import dev.ririprojector.net.devlog.DevLog
 import dev.ririprojector.protocol.model.StreamPreferences
 import dev.ririprojector.protocol.model.SyncMode
 import dev.ririprojector.protocol.model.VideoCodec
+import kotlinx.coroutines.flow.flowOf
 
 /** Screens wider than this get two panes (receivers left, status and settings right). */
 private val TWO_PANE_MIN_WIDTH = 840.dp
@@ -89,8 +92,16 @@ internal fun SenderScreen(
     onUseAsReceiver: () -> Unit,
     settings: SenderSettings,
     onSettingsChange: (StreamPreferences) -> Unit,
+    developer: DeveloperUi,
     appVersion: String,
 ) {
+    // Collected only while developer mode is on: no work at all when it is off (#33).
+    val devEvents by remember(developer.enabled) {
+        if (developer.enabled) DevLog.events else flowOf(emptyList())
+    }.collectAsStateWithLifecycle(initialValue = emptyList())
+    val devLog: @Composable () -> Unit = {
+        if (developer.enabled && devEvents.isNotEmpty()) DevLogPanel(devEvents, developer.onCopy, developer.onShare)
+    }
     val last = settings.lastReceiver
     var manual by rememberSaveable { mutableStateOf(last?.let { "${it.host}:${it.port}" } ?: "") }
     var prefs by rememberSaveable(stateSaver = PrefsSaver) { mutableStateOf(settings.prefs) }
@@ -114,8 +125,9 @@ internal fun SenderScreen(
                 }
                 Pane(Modifier.weight(1f).fillMaxHeight(), maxContentWidth = 720.dp) {
                     StatusPanel(state, onStop, idleText = stringResource(R.string.sender_status_idle_wide), direct.link)
+                    devLog()
                     if (!active) {
-                        SettingsContent(prefs, { prefs = it }, onUseAsReceiver, appVersion, columns = 2)
+                        SettingsContent(prefs, { prefs = it }, developer, onUseAsReceiver, appVersion, columns = 2)
                     }
                 }
             }
@@ -134,12 +146,20 @@ internal fun SenderScreen(
                     }
                     Text(stringResource(R.string.sender_settings), style = MaterialTheme.typography.titleLarge)
                 }
-                SettingsContent(prefs, { prefs = it }, onUseAsReceiver.takeIf { !active }, appVersion, columns = 1)
+                SettingsContent(
+                    prefs,
+                    { prefs = it },
+                    developer,
+                    onUseAsReceiver.takeIf { !active },
+                    appVersion,
+                    columns = 1,
+                )
             }
         } else {
             Pane(Modifier.fillMaxSize()) {
                 Header(onSettings = { showSettings = true })
                 StatusPanel(state, onStop, idleText = stringResource(R.string.sender_status_idle), direct.link)
+                devLog()
                 if (!active) {
                     LastReceiverCard(quickStart, start)
                     ReceiverList(receivers, quickStart, start)
@@ -378,6 +398,7 @@ private fun VideoCodec.label(): String = if (this == VideoCodec.AVC) "H.264" els
 private fun SettingsContent(
     prefs: StreamPreferences,
     onChange: (StreamPreferences) -> Unit,
+    developer: DeveloperUi,
     onUseAsReceiver: (() -> Unit)?,
     appVersion: String,
     columns: Int,
@@ -443,6 +464,19 @@ private fun SettingsContent(
     SettingsGroup(video, columns)
     SectionLabel(stringResource(R.string.sender_section_audio))
     SettingsGroup(audio, columns)
+    SectionLabel(stringResource(R.string.sender_section_developer))
+    SettingsGroup(
+        listOf {
+            Choice(
+                stringResource(R.string.sender_developer_mode),
+                listOf(true to stringResource(R.string.sender_on), false to stringResource(R.string.sender_off)),
+                developer.enabled,
+                hint = stringResource(R.string.sender_developer_mode_hint),
+                onSelect = developer.onEnabledChange,
+            )
+        },
+        columns = 1,
+    )
     SectionLabel(stringResource(R.string.sender_section_device))
     BrandCard {
         if (onUseAsReceiver != null) {
