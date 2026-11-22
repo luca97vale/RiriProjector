@@ -1,8 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="receiver_waiting">Waiting for a phone or tablet to connect…</string>
-    <string name="receiver_waiting_at">%1$s\nWaiting for a phone or tablet to connect…\n\n%2$s:%3$d</string>
-    <string name="receiver_failed">Receiver error: %1$s</string>
     <string name="receiver_use_as_sender">Use this device as a sender</string>
     <string name="receiver_overlay">%1$s %2$dx%3$d  %4$.1f/%5$d fps  %6$.1f Mbps\ndecode %7$.1f ms (p95 %8$.1f)\ndropped: %9$d  resets: %10$d\naudio %11$d ms  underruns: %12$d  A/V %13$s  video delay %16$d ms\nlatency %17$s\n%18$s\n%14$s\n← %15$s</string>
     <string name="receiver_av_offset">%+d ms</string>
@@ -11,4 +9,11 @@
     <string name="receiver_waiting_with_direct" translatable="false">%1$s%2$s</string>
     <string name="receiver_link_direct">%1$s · Wi-Fi Direct</string>
     <string name="receiver_latency">%1$d ms (p95 %2$d, ±%3$d) capture→shown</string>
+    <string name="receiver_ready">Ready</string>
+    <string name="receiver_error_label">Error</string>
+    <string name="receiver_error_title">Receiver error</string>
+    <string name="receiver_address_label">On this Wi-Fi network</string>
+    <string name="receiver_hint_dpad">Press OK to show or hide stats</string>
+    <string name="receiver_hint_touch">Tap the screen to show or hide stats</string>
+    <string name="receiver_loader_description">The RiriProjector dog, ready to project</string>
 </resources>

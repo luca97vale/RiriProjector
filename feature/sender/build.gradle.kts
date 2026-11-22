@@ -13,6 +13,7 @@ android {
 dependencies {
     implementation(project(":core:net"))
     implementation(project(":core:media"))
+    implementation(project(":core:ui"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.ktx)

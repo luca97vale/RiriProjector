@@ -2,7 +2,10 @@ package dev.ririprojector.feature.receiver
 
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.net.ConnectivityManager
 import android.os.Build
 import android.os.Bundle
@@ -13,9 +16,10 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
 import android.view.WindowManager
-import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.TextView
+import androidx.core.content.ContextCompat
+import dev.ririprojector.core.ui.R as UiR
 import dev.ririprojector.net.p2p.WifiDirectSupport
 import dev.ririprojector.protocol.ByeReason
 import dev.ririprojector.protocol.model.DisplayInfo
@@ -35,9 +39,8 @@ class ReceiverActivity : Activity() {
     private var collector: Job? = null
     private lateinit var controller: ReceiverController
     private lateinit var container: AspectFrameLayout
-    private lateinit var status: TextView
+    private lateinit var panel: WaitingPanel
     private lateinit var statsOverlay: TextView
-    private lateinit var useAsSender: Button
     private var overlayVisible = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -47,43 +50,40 @@ class ReceiverActivity : Activity() {
 
         val surfaceView = SurfaceView(this)
         container = AspectFrameLayout(this).apply { addView(surfaceView) }
-        status =
-            TextView(this).apply {
-                setTextColor(Color.WHITE)
-                // Opaque: a SurfaceView keeps showing its last frame after the session ends.
-                setBackgroundColor(Color.BLACK)
-                // TV-sized text on large screens, smaller on phones.
-                textSize = if (resources.configuration.smallestScreenWidthDp >= 600) 26f else 18f
-                gravity = Gravity.CENTER
-            }
+        val large = resources.configuration.smallestScreenWidthDp >= 600
+        val metrics = resources.displayMetrics
+        val touch = packageManager.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN)
+        panel = WaitingPanel(this, landscape = metrics.widthPixels > metrics.heightPixels, large = large, touch = touch)
+        // Manual role choice on any device (ADR-001); shown only while no stream is on screen.
+        panel.useAsSender.setOnClickListener {
+            startActivity(Intent(ACTION_USE_AS_SENDER).setPackage(packageName))
+            finish()
+        }
+        val density = metrics.density
         statsOverlay =
             TextView(this).apply {
-                setTextColor(Color.WHITE)
-                setBackgroundColor(0x99000000.toInt())
-                textSize = 14f
-                typeface = android.graphics.Typeface.MONOSPACE
-                setPadding(24, 16, 24, 16)
-                visibility = View.GONE
-            }
-        // Manual role choice on any device (ADR-001); shown only while no stream is on screen.
-        useAsSender =
-            Button(this).apply {
-                setText(R.string.receiver_use_as_sender)
-                setOnClickListener {
-                    startActivity(Intent(ACTION_USE_AS_SENDER).setPackage(packageName))
-                    finish()
+                setTextColor(ContextCompat.getColor(context, UiR.color.riri_on_surface))
+                background = GradientDrawable().apply {
+                    setColor(ContextCompat.getColor(context, UiR.color.riri_overlay))
+                    cornerRadius = 20 * density
+                    setStroke((1 * density).toInt(), ContextCompat.getColor(context, UiR.color.riri_outline))
                 }
+                textSize = if (large) 16f else 13f
+                setLineSpacing(4 * density, 1f)
+                val pad = (20 * density).toInt()
+                setPadding(pad, pad, pad, pad)
+                visibility = View.GONE
             }
         val root =
             FrameLayout(this).apply {
                 setBackgroundColor(Color.BLACK)
                 addView(container, FrameLayout.LayoutParams(MATCH, MATCH, Gravity.CENTER))
-                addView(status, FrameLayout.LayoutParams(MATCH, MATCH))
-                addView(statsOverlay, FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.START))
+                addView(panel, FrameLayout.LayoutParams(MATCH, MATCH))
                 addView(
-                    useAsSender,
-                    FrameLayout.LayoutParams(WRAP, WRAP, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
-                        bottomMargin = (32 * resources.displayMetrics.density).toInt()
+                    statsOverlay,
+                    FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.START).apply {
+                        val m = (24 * density).toInt()
+                        setMargins(m, m, m, m)
                     },
                 )
                 // Touch receivers (phones, tablets) have no D-pad: a tap toggles the overlay. The
@@ -109,6 +109,11 @@ class ReceiverActivity : Activity() {
                 override fun surfaceDestroyed(holder: SurfaceHolder) = controller.setSurface(null)
             },
         )
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        panel.setLandscape(newConfig.orientation == Configuration.ORIENTATION_LANDSCAPE)
     }
 
     override fun onStart() {
@@ -165,22 +170,22 @@ class ReceiverActivity : Activity() {
     private fun render(state: ReceiverState) {
         when (state) {
             is ReceiverState.Waiting -> {
-                status.visibility = View.VISIBLE
-                useAsSender.visibility = View.VISIBLE
-                val waiting =
-                    if (state.address != null) {
-                        getString(R.string.receiver_waiting_at, state.name, state.address, state.port)
-                    } else {
-                        getString(R.string.receiver_waiting)
-                    }
+                panel.visibility = View.VISIBLE
                 val direct = if (state.directReady) getString(R.string.receiver_wifi_direct_ready) else ""
-                status.text = getString(R.string.receiver_waiting_with_direct, waiting, direct)
+                panel.showWaiting(
+                    name = state.name,
+                    waiting = getString(
+                        R.string.receiver_waiting_with_direct,
+                        getString(R.string.receiver_waiting),
+                        direct,
+                    ),
+                    endpoint = state.address?.let { "$it:${state.port}" },
+                )
                 statsOverlay.text = ""
             }
 
             is ReceiverState.Streaming -> {
-                status.visibility = View.GONE
-                useAsSender.visibility = View.GONE
+                panel.visibility = View.GONE
                 val v = state.params.video
                 val s = state.stats
                 statsOverlay.text =
@@ -216,9 +221,8 @@ class ReceiverActivity : Activity() {
             }
 
             is ReceiverState.Failed -> {
-                status.visibility = View.VISIBLE
-                useAsSender.visibility = View.VISIBLE
-                status.text = getString(R.string.receiver_failed, state.message)
+                panel.visibility = View.VISIBLE
+                panel.showError(state.message)
             }
         }
     }
