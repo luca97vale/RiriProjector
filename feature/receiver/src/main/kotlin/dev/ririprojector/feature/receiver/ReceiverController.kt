@@ -25,6 +25,13 @@ import dev.ririprojector.net.ReceiverEndpoint
 import dev.ririprojector.net.ReceiverServer
 import dev.ririprojector.net.WifiLatencyLock
 import dev.ririprojector.net.nsd.NsdPublisher
+import dev.ririprojector.net.p2p.P2pOfferRecord
+import dev.ririprojector.net.p2p.P2pPolicy
+import dev.ririprojector.net.p2p.P2pReceiverAgent
+import dev.ririprojector.net.p2p.P2pStation
+import dev.ririprojector.net.p2p.P2pStationJoiner
+import dev.ririprojector.net.p2p.P2pTxt
+import dev.ririprojector.net.p2p.WifiDirectSupport
 import dev.ririprojector.protocol.ByeReason
 import dev.ririprojector.protocol.ControlMessage
 import dev.ririprojector.protocol.MessageType
@@ -44,15 +51,31 @@ import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 
 /** What the receiver screen shows. */
 sealed interface ReceiverState {
-    data class Waiting(val name: String, val address: String?, val port: Int) : ReceiverState
+    /** [directReady]: also reachable over Wi-Fi Direct (ADR-011). */
+    data class Waiting(val name: String, val address: String?, val port: Int, val directReady: Boolean = false) :
+        ReceiverState
 
-    data class Streaming(val params: StreamParams, val peer: String, val stats: ReceiverStats) : ReceiverState
+    /** [direct]: this session runs over the sender's Wi-Fi Direct group, not the router. */
+    data class Streaming(
+        val params: StreamParams,
+        val peer: String,
+        val stats: ReceiverStats,
+        val direct: Boolean = false,
+    ) : ReceiverState
 
     data class Failed(val message: String) : ReceiverState
 }
@@ -105,6 +128,19 @@ class ReceiverController(
 
     @Volatile private var session: Session? = null
 
+    // Wi-Fi Direct (ADR-011), main thread only except directGateway.
+    private val p2pScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var agent: P2pReceiverAgent? = null
+    private var station: P2pStation? = null
+    private var joinJob: Job? = null
+
+    /** The sender's address in the joined group; a session from it is a Wi-Fi Direct session. */
+    @Volatile private var directGateway: String? = null
+
+    /** A joined group that no session uses is left, so the TV does not stay off its router. */
+    private val leaveUnusedStation = Runnable { if (session == null) onSessionsIdle() }
+    private val refreshWaiting = Runnable { if (server != null && _state.value is ReceiverState.Waiting) showWaiting() }
+
     private val surfaceLock = ReentrantLock()
     private val surfaceReady = surfaceLock.newCondition()
     private var surface: Surface? = null
@@ -121,6 +157,7 @@ class ReceiverController(
             bindAttempts = 0
             nsd = NsdPublisher(context).publish(deviceName, s.boundPort)
             wifiLock = WifiLatencyLock.acquire(context, "Riri/Receiver")
+            startWifiDirect()
             showWaiting()
         } catch (e: BindException) {
             // Another instance (or a previous session) may still be releasing the port.
@@ -153,7 +190,108 @@ class ReceiverController(
         server = null
         wifiLock?.close()
         wifiLock = null
+        agent?.close()
+        agent = null
+        leaveStation()
+        main.removeCallbacks(refreshWaiting) // after leaveStation(), which may post it
     }
+
+    /**
+     * Announces this receiver over Wi-Fi Direct (ADR-011). Safe to call again, e.g. once the user
+     * granted the permission API 29+ needs. Without Wi-Fi Direct the receiver stays router-only.
+     */
+    fun startWifiDirect() {
+        if (agent != null || server == null || !WifiDirectSupport.usable(context)) return
+        val a = P2pReceiverAgent(context, P2pTxt.fitName(deviceName), server?.boundPort ?: 0, ::onOffer)
+        val started =
+            runCatching { a.start() }.getOrElse {
+                // Never let Wi-Fi Direct take the router path down with it.
+                Log.w(TAG, "Wi-Fi Direct unavailable: ${it.message}")
+                false
+            }
+        if (!started) {
+            a.close()
+            return
+        }
+        agent = a
+        a.setIdle(session == null)
+        if (_state.value is ReceiverState.Waiting) showWaiting()
+    }
+
+    /** Main thread: a sender offered its group; join it unless a session already streams. */
+    private fun onOffer(offer: P2pOfferRecord) {
+        if (session != null || joinJob != null || station != null) return
+        agent?.setIdle(false) // no scanning while associating
+        // Main.immediate runs the body inline: a join that fails before suspending finishes before
+        // launch returns, so the job clears itself on completion rather than in its own finally.
+        val job =
+            p2pScope.launch {
+                try {
+                    val st = P2pStationJoiner.join(context, offer)
+                    station = st
+                    directGateway = st.groupOwnerAddress
+                    main.postDelayed(leaveUnusedStation, UNUSED_STATION_MS)
+                    // A sibling, not a child: the join job ends once joined (leaveStation cancels both).
+                    p2pScope.launch {
+                        st.lost.first()
+                        Log.i(TAG, "Wi-Fi Direct group lost")
+                        if (session == null) onSessionsIdle() // otherwise the session's end does it
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "cannot join ${offer.name}'s group: ${e.message}")
+                    agent?.forgetOffer()
+                    if (session == null) agent?.setIdle(true)
+                }
+            }
+        joinJob = job
+        // Clear only our own: leaveStation() may already have started another join.
+        job.invokeOnCompletion { main.post { if (joinJob === job) joinJob = null } }
+    }
+
+    /**
+     * Main thread: a sender offered its group over the router (ADR-011 fast path). Only our own group
+     * names are accepted, so a stray LAN client cannot pull the receiver off the router to any network.
+     */
+    private fun onLanOffer(offer: ControlMessage.P2pOffer) {
+        val a = agent
+        if (a == null || !P2pPolicy.isOwnSsid(offer.ssid) || offer.passphrase.length !in 8..63) {
+            // No Wi-Fi Direct here (the sender's group times out and it says so), or not one of ours.
+            Log.w(TAG, "ignored a Wi-Fi Direct offer over the router")
+            onSessionsIdle()
+            return
+        }
+        a.markOffered(offer.ssid) // the same offer may still arrive over P2P discovery
+        onOffer(P2pOfferRecord(offer.senderName, offer.ssid, offer.passphrase, to = ""))
+    }
+
+    /** Main thread: no session streams any more; leave a joined group and listen for offers. */
+    private fun onSessionsIdle() {
+        leaveStation()
+        agent?.setIdle(true)
+    }
+
+    private fun leaveStation() {
+        main.removeCallbacks(leaveUnusedStation)
+        p2pScope.coroutineContext.cancelChildren()
+        joinJob = null
+        station?.close()
+        if (station != null) refreshWaitingSoon()
+        station = null
+        directGateway = null
+    }
+
+    /**
+     * The waiting screen shows this device's address. After leaving a group the TV takes a few
+     * seconds to get its router address back, so refresh it a couple of times.
+     */
+    private fun refreshWaitingSoon() {
+        main.removeCallbacks(refreshWaiting)
+        for (delayMs in WAITING_REFRESH_MS) main.postDelayed(refreshWaiting, delayMs)
+    }
+
+    private fun isDirect(connection: Connection) = directGateway != null && connection.remoteAddress == directGateway
 
     /**
      * Called from the SurfaceHolder callbacks. Losing the surface ends the current session and
@@ -174,13 +312,18 @@ class ReceiverController(
     }
 
     private fun showWaiting() {
-        _state.value = ReceiverState.Waiting(deviceName, localAddress(), server?.boundPort ?: 0)
+        _state.value = ReceiverState.Waiting(deviceName, localAddress(), server?.boundPort ?: 0, agent != null)
     }
 
     private fun onConnection(connection: Connection) {
         // A reconnecting tablet may replace its own stale session (ReceiverServer preemption).
         val s = Session(connection, previous = session)
         session = s
+        main.post {
+            // Streaming in either mode: stop P2P scans, keep a joined group.
+            main.removeCallbacks(leaveUnusedStation)
+            agent?.setIdle(false)
+        }
         Thread({ s.run() }, "Riri/Session").apply {
             priority = Thread.MAX_PRIORITY
             start()
@@ -236,12 +379,24 @@ class ReceiverController(
 
         @Volatile private var bytesReceived = 0L
 
+        /** A Wi-Fi Direct offer received instead of START: no stream on this connection. */
+        private var lanOffer: ControlMessage.P2pOffer? = null
+
         fun run() {
             Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY)
             var writer: Thread? = null
             try {
                 // Handshake first: the reconnecting sender is waiting for HELLO (ADR-010).
-                val p = Handshake.asReceiver(connection, hello())
+                val p =
+                    when (val opening = Handshake.receive(connection, hello())) {
+                        is Handshake.Opening.Stream -> opening.params
+
+                        is Handshake.Opening.Offer -> {
+                            lanOffer = opening.offer
+                            Log.i(TAG, "Wi-Fi Direct offer over the router from ${connection.remoteAddress}")
+                            return // finally hands it to onLanOffer
+                        }
+                    }
                 params = p
                 Log.i(TAG, "session ${p.sessionId} from ${connection.remoteAddress}: ${p.video}")
                 writer = startWriter()
@@ -260,7 +415,12 @@ class ReceiverController(
                 startVideo(p)
                 Log.i(TAG, "sync mode ${p.syncMode}")
                 _state.value =
-                    ReceiverState.Streaming(p, connection.remoteAddress, ReceiverStats(decoderName = decoderName))
+                    ReceiverState.Streaming(
+                        p,
+                        connection.remoteAddress,
+                        ReceiverStats(decoderName = decoderName),
+                        isDirect(connection),
+                    )
                 readLoop()
             } catch (e: HandshakeException) {
                 Log.w(TAG, "handshake failed: ${e.message}")
@@ -290,6 +450,13 @@ class ReceiverController(
                 if (session === this) {
                     session = null
                     showWaiting()
+                    val offer = lanOffer
+                    main.post {
+                        if (session != null) return@post
+                        // Over Wi-Fi Direct the sender gives up for good (ADR-011): leave its group. An offer
+                        // connection streamed nothing: join the group it offered instead.
+                        if (offer != null) onLanOffer(offer) else onSessionsIdle()
+                    }
                 }
                 done.countDown()
             }
@@ -377,7 +544,12 @@ class ReceiverController(
             params = p
             startVideo(p)
             _state.value =
-                ReceiverState.Streaming(p, connection.remoteAddress, ReceiverStats(decoderName = decoderName))
+                ReceiverState.Streaming(
+                    p,
+                    connection.remoteAddress,
+                    ReceiverStats(decoderName = decoderName),
+                    isDirect(connection),
+                )
         }
 
         private fun readLoop() {
@@ -531,7 +703,10 @@ class ReceiverController(
                     lastFrames = d.decodedFrames
                     lastBytes = bytes
                     lastAt = now
-                    params?.let { _state.value = ReceiverState.Streaming(it, connection.remoteAddress, stats) }
+                    params?.let {
+                        _state.value =
+                            ReceiverState.Streaming(it, connection.remoteAddress, stats, isDirect(connection))
+                    }
                     connection.writer.writeControl(
                         ControlMessage.Stats(
                             decodedFpsX100 = (stats.fps * 100).toInt(),
@@ -607,6 +782,16 @@ class ReceiverController(
         const val READ_TIMEOUT_MS = 3_000
         const val PTS_HOLE_TOLERANCE_US = 2_000L
         const val PREEMPT_WAIT_MS = 1_500L
+
+        /**
+         * A joined Wi-Fi Direct group nobody connects through is left after this. The tablet offers
+         * its group as soon as the TV is picked, before the consent dialog, so this covers a user
+         * reading that dialog (the tablet drops an unclaimed group after 45 s).
+         */
+        const val UNUSED_STATION_MS = 60_000L
+
+        /** When the waiting screen re-reads this device's address after leaving a group. */
+        val WAITING_REFRESH_MS = longArrayOf(500L, 3_000L, 8_000L)
 
         /** Keeps [min] off the wire's sentinel values. */
         fun clampInt(value: Long, min: Long): Int = value.coerceIn(min, Int.MAX_VALUE.toLong()).toInt()

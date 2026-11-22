@@ -331,6 +331,52 @@ class SessionStateMachineTest {
     }
 
     @Test
+    fun `over Wi-Fi Direct an outage gives up after 1,5 s`() {
+        val sm = streaming(dev.ririprojector.net.p2p.P2pPolicy.OUTAGE_LIMIT_MS)
+        var now = 10_000L
+        var s = sm.on(SessionEvent.Failed(now)).state
+        while (s is SessionState.Reconnecting) {
+            now = s.retryAtMs
+            sm.on(SessionEvent.Tick(now))
+            s = sm.on(SessionEvent.Failed(now)).state
+        }
+        assertThat(s).isEqualTo(SessionState.Closed(CloseReason.GAVE_UP))
+        // With the receiver's 3 s silence timeout before the first failure: ≤ 5 s end to end.
+        assertThat(now - 10_000).isAtLeast(1_500)
+        assertThat(now - 10_000).isAtMost(2_000)
+    }
+
+    @Test
+    fun `Wi-Fi Direct limit retries just before the limit and gives up exactly at it`() {
+        val limit = dev.ririprojector.net.p2p.P2pPolicy.OUTAGE_LIMIT_MS
+        val early = streaming(limit)
+        early.on(SessionEvent.Failed(1_000))
+        early.on(SessionEvent.Tick(1_250))
+        assertThat(early.on(SessionEvent.Failed(1_000 + limit - 1)).state)
+            .isInstanceOf(SessionState.Reconnecting::class.java)
+
+        val late = streaming(limit)
+        late.on(SessionEvent.Failed(1_000))
+        late.on(SessionEvent.Tick(1_250))
+        assertThat(late.on(SessionEvent.Failed(1_000 + limit)).state)
+            .isEqualTo(SessionState.Closed(CloseReason.GAVE_UP))
+    }
+
+    @Test
+    fun `a 2 s outage is survived with the router limit but not with the Wi-Fi Direct one`() {
+        fun outcome(limit: Long): SessionState {
+            val sm = streaming(limit)
+            sm.on(SessionEvent.Failed(0))
+            sm.on(SessionEvent.Tick(250))
+            return sm.on(SessionEvent.Failed(2_000)).state
+        }
+        assertThat(outcome(dev.ririprojector.net.p2p.P2pPolicy.ROUTER_OUTAGE_LIMIT_MS))
+            .isInstanceOf(SessionState.Reconnecting::class.java)
+        assertThat(outcome(dev.ririprojector.net.p2p.P2pPolicy.OUTAGE_LIMIT_MS))
+            .isEqualTo(SessionState.Closed(CloseReason.GAVE_UP))
+    }
+
+    @Test
     fun `a successful handshake restarts the outage clock`() {
         val sm = streaming()
         val r = sm.on(SessionEvent.Failed(0)).state as SessionState.Reconnecting
@@ -380,7 +426,7 @@ class SessionStateMachineTest {
         assertThat(r.retryAtMs).isLessThan(3_000)
     }
 
-    private fun streaming() = SessionStateMachine().apply {
+    private fun streaming(giveUpAfterMs: Long = 30_000) = SessionStateMachine(giveUpAfterMs = giveUpAfterMs).apply {
         on(SessionEvent.Start(0))
         on(SessionEvent.Connected)
         on(SessionEvent.HandshakeCompleted)

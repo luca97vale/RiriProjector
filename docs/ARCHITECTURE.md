@@ -35,8 +35,8 @@ if measurements show head-of-line blocking spikes on Wi-Fi.
 Socket: small `sendBufferSize` (≈ 2–4 frames at the current bitrate) so congestion is not hidden in
 the kernel; `trafficClass` with DSCP AF41 / video; `keepAlive`.
 
-## ADR-003 — Wire format (v3)
-**Accepted** (v1 in M1, v2 in M5, v3 in M6; `:core:protocol`). v2 appended the sync mode to START
+## ADR-003 — Wire format (v4)
+**Accepted** (v1 in M1, v2 in M5, v3 in M6, v4 in #21; `:core:protocol`). v4 adds P2P_OFFER (ADR-011). v2 appended the sync mode to START
 and the video delay to STATS. v3 makes PING/PONG NTP-style on `CLOCK_MONOTONIC` (4 timestamps; PING
 carries the sender's offset and RTT estimate), adds capture→shown latency to STATS and adds
 VIDEO_RECONFIG. Versions are not interoperable, and a mismatch ends the handshake with
@@ -50,7 +50,7 @@ Fixed 16-byte header, big-endian:
 | Offset | Field | Type | Notes |
 |---|---|---|---|
 | 0 | magic | u16 | `0x5252` ("RR") |
-| 2 | version | u8 | `PROTOCOL_VERSION` = 3 |
+| 2 | version | u8 | `PROTOCOL_VERSION` = 4 |
 | 3 | type | u8 | see message table |
 | 4 | flags | u8 | bit0 = keyframe, bit1 = codec config |
 | 5 | reserved | u8 | 0 |
@@ -76,6 +76,7 @@ Messages:
 | 0x05 | AUDIO_CONFIG | S→R | audio codec (PCM s16le / Opus), sample rate, channels, packet duration; Opus CSD if any |
 | 0x06 | AUDIO_FRAME | S→R | audio packet (PCM or Opus) with pts in µs on the same timebase as video |
 | 0x07 | VIDEO_RECONFIG | S→R | v3: `u16` generation + video block (codec, width, height, fps, bitrate). Sent in order with video: every unit after it is the new size, starting with CONFIG and a keyframe |
+| 0x08 | P2P_OFFER | S→R | v4, in place of START: `string` SSID, `string` passphrase, `string` sender name. The sender's Wi-Fi Direct group, sent over the router (ADR-011 fast path); the connection then closes and no stream follows |
 | 0x10 | REQUEST_KEYFRAME | R→S | — |
 | 0x11 | PING | S→R | v3: `i64` t1, `i64` offset estimate (`NO_OFFSET` until known), `i32` best RTT µs |
 | 0x12 | PONG | R→S | v3: `i64` t1 echoed, `i64` t2 (PING read), `i64` t3 (PONG written) |
@@ -139,7 +140,8 @@ Messages:
 ## ADR-006 — Discovery: NSD (mDNS)
 **Accepted.** The receiver registers `_ririproj._tcp` with TXT records `v=1`, `name`, `codecs`.
 The sender uses `NsdManager.discoverServices`; fallback to manual IP:port entry
-(some networks/routers filter multicast).
+(some networks/routers filter multicast). For a direct link without the router see ADR-011
+(Wi-Fi Direct).
 
 ## ADR-007 — Audio (part of the MVP)
 **Accepted.** Sender audio must play on the receiver: mirroring without audio is not considered working.
@@ -321,6 +323,92 @@ changes without asking the user to share again.
   backoff already reconnects within ~1 s of the network coming back;
 - relying on adaptive playback for size changes: unreliable on the Fire TV Stick decoder, and it mixes sizes in the
   delay line.
+
+## ADR-011 — Wi-Fi Direct link (opt-in)
+**Accepted** (#21). Router mode (ADR-006) stays the default. A **"Connect via Wi-Fi Direct"**
+button on the tablet links it straight to the TV; once the devices have an IP path, the session is
+exactly the router one (same `ReceiverServer`, handshake and protocol). The only wire addition is
+P2P_OFFER (v4), the router fast path below.
+
+**Topology B′: the tablet is the group owner, the TV joins it.** Measured in the #21 spike
+(Tab S9 SM-X710 API 36 → Fire TV Stick AFTSSS API 28):
+- A TV-owned group (topology A) is persistent and 2.4 GHz only on Fire OS 7, and the tablet (no
+  DBS) time-slices it with its 5 GHz router link: the stalls this feature removes would remain.
+- The tablet creates the group with `WifiP2pConfig.Builder` on **its own station channel**
+  (`setGroupOperatingFrequency`, 5220 MHz in the measurements; `GROUP_OWNER_BAND_5GHZ` when the
+  station is not on 5 GHz, or when the driver refuses the station's channel, e.g. DFS), so it never
+  hops channels. Same room: audio played ~330 ms (router
+  ~460), writes ≤ 12 ms, 2 underruns in ~6 min.
+- On API 28 the TV joins as a **legacy station** (`addNetwork`/`enableNetwork`, no dialog) and so
+  **leaves its router while mirroring** (accepted in the issue); `removeNetwork` + `reconnect()`
+  restore it when the session ends, or 60 s after a join no session used (a slow consent dialog). API 29+ receivers join as
+  P2P clients with the same credentials and keep their router link.
+- The sender needs API 35 (`WifiP2pDevice.getIpAddress`) to learn the TV's address in its group.
+
+**Discovery and credential delivery (P2P DNS-SD, `_ririproj._tcp`, TXT `v=1`).** This record is
+separate from the ADR-006 NSD TXT.
+1. The tablet lists nearby devices with **plain peer discovery** (`discoverPeers` +
+   `requestPeers`). Its DNS-SD queries never got an answer from a Fire TV that is not a group
+   owner, while peer discovery finds it in seconds. Whether a device runs the receiver shows when
+   it takes the offer (timeout message: keep the RiriProjector screen open).
+2. **At the pick** (not after consent: the dialog takes several seconds), the tablet advertises an
+   **offer** `{role=offer, name, ssid, psk, to=<TV's P2P device address>}`, creates the group and
+   runs `discoverPeers` (listen state), restarting it only when it stops: every restart begins with
+   a channel scan, during which the TV cannot reach it. The service claims this early attempt once
+   consent is given; a declined consent or 45 s unclaimed closes it.
+3. The TV runs service discovery while its receiver screen is up and no session streams. It
+   requests **all** services: a request by type only asks for the PTR record, so the TXT carrying
+   the offer never arrives. It joins an offer addressed to itself, once per SSID.
+   The framework queries each peer once per round, so the TV replaces its request every 2 s, which
+   re-queries known peers without a new scan (without it, 0 of 3 offers arrived in 60 s); the old
+   request goes only after the new one is in, and NO_SERVICE_REQUESTS restores it.
+4. The tablet polls its group until the client has an IPv4 address, then stops discovery, clears
+   the offer and connects, retrying a failed first connect for 10 s (the TV appears in the group
+   before its network is up). Measured: TV listed in 2–18 s, offer arrival 4–24 s after the group
+   formed.
+- The TV also advertises `{role=rx, name, port}` for API 29+ senders that may answer it; the
+  current sender does not need it.
+**Router fast path (P2P_OFFER, v4).** When the picked device is also on the tablet's router list
+(same name over NSD), the tablet also sends the offer there right after the group forms: a normal
+connection to the receiver's server, HELLO, then P2P_OFFER instead of START (3 attempts, 1.5 s
+connect and 2 s handshake each, since the TV's 2.4 GHz link stalls). The TV accepts it only for an
+`DIRECT-xx-Riri` SSID with an 8–63 character passphrase, marks it seen so the P2P copy is ignored,
+and joins. Measured (5 runs): offer delivered 0.6–2 s after the pick, TV joined 4.5–6.9 s after it
+(it was 8–25 s), streaming 1–2 s after consent; once the router attempt timed out and P2P discovery
+delivered the offer instead. P2P discovery stays mandatory and unchanged: the fast path only races it.
+
+- The framework can drop the TV's P2P channel (standby, Wi-Fi restart): the agent reopens it after
+  2 s.
+
+**Credentials.** The SSID (`DIRECT-xx-Riri`) and a 16-character passphrase are random per session
+and live only while the session's group exists. The TXT is readable by any nearby P2P device during
+the ~10 s offer window; that exposure is accepted, since the group serves one session and the
+single-session server answers anyone else with BUSY. Residual risk: a device that reads the
+offer and joins before the TV would get the stream, since the tablet connects to the first client
+with an address (an API 28 legacy client cannot be matched to the picked P2P device address). The
+tablet's status card shows the name the receiver gives in its HELLO, so a wrong receiver is visible;
+binding the session to a nonce in the offer would need a protocol change and is left for later.
+Logs never print the passphrase, and the tablet removes only groups it created; the TV removes saved
+`DIRECT-xx-Riri` networks left behind by a power loss when its receiver screen starts.
+
+**Session end over P2P.** The outage limit is **1.5 s** instead of 30 s (ADR-010): when the TV
+leaves the group (powered off, out of range, Back) the group cannot come back by itself, so a lost
+link is final and the tablet says "Lost <name> over Wi-Fi Direct". With the 3 s read timeout the
+worst case is about 4.5 s.
+
+**Where the frequency is shown.** The tablet's status card shows "Wi-Fi Direct · <MHz>". The TV
+(API 28) cannot read its group's frequency, so its overlay shows only the link kind.
+
+**Diagnostics.** Fire OS hides app log lines, so debuggable builds also append the P2P control
+events to `files/p2p.log` (`run-as <package> cat files/p2p.log`).
+
+*Rejected:*
+- topology A (TV group owner): 2.4 GHz only, persistent credentials;
+- topology B with PBC: an accept dialog on the TV every time;
+- typing 192.168.49.1: discovery is mandatory;
+- delivering the credentials over the router only: it must work without the router (the fast path
+  above only races P2P discovery);
+- silently falling back to the router: the user picks the link.
 
 ## ADR-012 — Settings persistence and release signing
 **Accepted** (M7).

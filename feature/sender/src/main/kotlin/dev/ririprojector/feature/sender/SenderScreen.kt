@@ -85,6 +85,7 @@ internal fun SenderScreen(
     state: SenderState,
     onStart: (ReceiverEndpoint, StreamPreferences) -> Unit,
     onStop: () -> Unit,
+    direct: DirectUi,
     onUseAsReceiver: () -> Unit,
     settings: SenderSettings,
     onSettingsChange: (StreamPreferences) -> Unit,
@@ -108,10 +109,11 @@ internal fun SenderScreen(
                         LastReceiverCard(quickStart, start)
                         ReceiverList(receivers, quickStart, start)
                         ManualEntry(manual, { manual = it }, start)
+                        DirectSection(direct, prefs)
                     }
                 }
                 Pane(Modifier.weight(1f).fillMaxHeight(), maxContentWidth = 720.dp) {
-                    StatusPanel(state, onStop, idleText = stringResource(R.string.sender_status_idle_wide))
+                    StatusPanel(state, onStop, idleText = stringResource(R.string.sender_status_idle_wide), direct.link)
                     if (!active) {
                         SettingsContent(prefs, { prefs = it }, onUseAsReceiver, appVersion, columns = 2)
                     }
@@ -137,11 +139,12 @@ internal fun SenderScreen(
         } else {
             Pane(Modifier.fillMaxSize()) {
                 Header(onSettings = { showSettings = true })
-                StatusPanel(state, onStop, idleText = stringResource(R.string.sender_status_idle))
+                StatusPanel(state, onStop, idleText = stringResource(R.string.sender_status_idle), direct.link)
                 if (!active) {
                     LastReceiverCard(quickStart, start)
                     ReceiverList(receivers, quickStart, start)
                     ManualEntry(manual, { manual = it }, start)
+                    DirectSection(direct, prefs)
                     SettingsSummary(prefs) { showSettings = true }
                     TextButton(onClick = onUseAsReceiver, modifier = Modifier.align(Alignment.CenterHorizontally)) {
                         Icon(
@@ -543,7 +546,7 @@ private fun LastReceiverCard(quickStart: QuickStart?, onStart: (ReceiverEndpoint
 
 /** Status: idle line, dog loader while connecting, live tiles while streaming, the reason when stopped. */
 @Composable
-private fun StatusPanel(state: SenderState, onStop: () -> Unit, idleText: String) {
+private fun StatusPanel(state: SenderState, onStop: () -> Unit, idleText: String, link: DirectLink?) {
     val extra = LocalRiriColors.current
     when (state) {
         SenderState.Idle ->
@@ -574,7 +577,7 @@ private fun StatusPanel(state: SenderState, onStop: () -> Unit, idleText: String
             onStop,
         )
 
-        is SenderState.Streaming -> Streaming(state, onStop)
+        is SenderState.Streaming -> Streaming(state, onStop, link)
 
         is SenderState.Ended -> {
             val failed = state.message != null
@@ -662,7 +665,7 @@ private fun LoaderCard(mode: DogLoaderMode, title: String, hint: String, badge: 
 }
 
 @Composable
-private fun Streaming(state: SenderState.Streaming, onStop: () -> Unit) {
+private fun Streaming(state: SenderState.Streaming, onStop: () -> Unit, link: DirectLink?) {
     val v = state.params.video
     val s = state.stats
     val extra = LocalRiriColors.current
@@ -671,6 +674,7 @@ private fun Streaming(state: SenderState.Streaming, onStop: () -> Unit) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Dot(MaterialTheme.colorScheme.primary)
                 SectionLabel(stringResource(R.string.sender_live))
+                link?.let { Chip(stringResource(R.string.sender_direct_link, it.frequencyMhz)) }
             }
             Text(
                 stringResource(R.string.sender_status_streaming, state.target.name),
@@ -840,6 +844,71 @@ private fun Streaming(state: SenderState.Streaming, onStop: () -> Unit) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+        }
+    }
+}
+
+/** Wi-Fi Direct (ADR-011): opt-in search, then the receivers found over a direct link. */
+@Composable
+private fun DirectSection(direct: DirectUi, prefs: StreamPreferences) {
+    if (!direct.available) return
+    Row(verticalAlignment = Alignment.Bottom) {
+        Text(
+            stringResource(R.string.sender_direct_title),
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.weight(1f),
+        )
+    }
+    Text(
+        stringResource(R.string.sender_direct_hint),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    if (!direct.searching) {
+        FilledTonalButton(
+            onClick = direct.onSearch,
+            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+            shape = MaterialTheme.shapes.medium,
+        ) { Text(stringResource(R.string.sender_direct_search)) }
+        return
+    }
+    BrandCard {
+        direct.receivers.forEach { r ->
+            Row(
+                Modifier.fillMaxWidth().clickable(role = Role.Button) {
+                    direct.onStart(r, prefs)
+                }.padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                IconTile(R.drawable.ic_tv)
+                Column(Modifier.weight(1f)) {
+                    Text(r.name, style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        stringResource(R.string.sender_direct_title),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Icon(
+                    painterResource(R.drawable.ic_chevron),
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            HorizontalDivider(Modifier.padding(start = 74.dp), color = MaterialTheme.colorScheme.outlineVariant)
+        }
+        Row(
+            Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.5.dp)
+            Text(
+                stringResource(R.string.sender_direct_searching),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

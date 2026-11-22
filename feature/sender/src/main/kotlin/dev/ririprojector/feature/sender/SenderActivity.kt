@@ -9,6 +9,7 @@ import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -24,6 +25,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import dev.ririprojector.net.ReceiverEndpoint
 import dev.ririprojector.net.nsd.NsdBrowser
+import dev.ririprojector.net.p2p.P2pFailure
+import dev.ririprojector.net.p2p.P2pReceiver
+import dev.ririprojector.net.p2p.P2pReceiverBrowser
+import dev.ririprojector.net.p2p.WifiDirectSupport
 import dev.ririprojector.protocol.model.StreamPreferences
 import dev.ririprojector.protocol.model.SyncMode
 import dev.ririprojector.protocol.model.VideoCodec
@@ -41,6 +46,8 @@ class SenderActivity : ComponentActivity() {
         val prefs: StreamPreferences,
         /** Wall-clock time the consent dialog was shown: a shared app comes to the front after it. */
         val consentShownAtMs: Long = 0,
+        /** Wi-Fi Direct session: the receiver's P2P device address (ADR-011). */
+        val directAddress: String? = null,
     )
 
     private var pending: Pending? = null
@@ -59,12 +66,32 @@ class SenderActivity : ComponentActivity() {
                     p.prefs,
                     p.consentShownAtMs,
                     System.currentTimeMillis(),
+                    p.directAddress,
                 )
+            } else if (p.directAddress != null) {
+                EarlyDirectLink.cancel() // consent declined: drop the group started at the pick
             }
         }
 
     private val notificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
+    /** The Wi-Fi Direct receiver list is open (discovery runs while it is, ADR-011). */
+    private var directSearch by mutableStateOf(false)
+
+    private val nearbyPermission =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+            if (result.values.all { it }) {
+                directSearch = true
+            } else {
+                Toast.makeText(this, R.string.sender_direct_permission, Toast.LENGTH_LONG).show()
+            }
+        }
+
+    private fun searchDirect() {
+        val missing = WifiDirectSupport.missingPermissions(this)
+        if (missing.isEmpty()) directSearch = true else nearbyPermission.launch(missing.toTypedArray())
+    }
 
     // Granted or not, continue: without it the session mirrors video only and says so.
     private val audioPermission =
@@ -73,7 +100,8 @@ class SenderActivity : ComponentActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         // The consent dialog may outlive this instance (rotation): keep what the result is for.
-        pending?.let { (t, p, consentShownAtMs) ->
+        pending?.let { p0 ->
+            val (t, p, consentShownAtMs) = p0
             outState.putString(KEY_HOST, t.host)
             outState.putInt(KEY_PORT, t.port)
             outState.putString(KEY_NAME, t.name)
@@ -84,6 +112,7 @@ class SenderActivity : ComponentActivity() {
             outState.putBoolean(KEY_AUDIO, p.audioEnabled)
             outState.putString(KEY_SYNC, p.syncMode.name)
             outState.putLong(KEY_CONSENT_SHOWN_AT, consentShownAtMs)
+            outState.putString(KEY_DIRECT, p0.directAddress)
         }
     }
 
@@ -102,7 +131,9 @@ class SenderActivity : ComponentActivity() {
                 audioEnabled = state.getBoolean(KEY_AUDIO, true),
                 syncMode = SyncMode.entries.firstOrNull { it.name == state.getString(KEY_SYNC) } ?: SyncMode.LIP_SYNC,
             )
-        if (target != null) pending = Pending(target, prefs, state.getLong(KEY_CONSENT_SHOWN_AT))
+        if (target != null) {
+            pending = Pending(target, prefs, state.getLong(KEY_CONSENT_SHOWN_AT), state.getString(KEY_DIRECT))
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -133,11 +164,50 @@ class SenderActivity : ComponentActivity() {
                     // No mDNS browsing while mirroring (airtime) or while in the background.
                     val found by remember(active) { if (active) flowOf(emptyList()) else receivers }
                         .collectAsStateWithLifecycle(initialValue = emptyList())
+                    // Wi-Fi Direct discovery scans off channel: only while its list is shown.
+                    val searching = directSearch && !active
+                    val directFound by remember(searching) {
+                        if (searching) {
+                            P2pReceiverBrowser(this).receivers().catch { e ->
+                                // BUSY, Wi-Fi off, channel lost: say so instead of searching forever.
+                                directSearch = false
+                                val message =
+                                    if (e is P2pFailure.Busy) {
+                                        getString(R.string.sender_error_p2p_busy)
+                                    } else {
+                                        getString(R.string.sender_error_p2p_failed, e.message ?: e.javaClass.simpleName)
+                                    }
+                                Toast.makeText(this@SenderActivity, message, Toast.LENGTH_LONG).show()
+                                emit(emptyList())
+                            }
+                        } else {
+                            flowOf(emptyList())
+                        }
+                    }.collectAsStateWithLifecycle(initialValue = emptyList())
+                    val direct by SenderStatus.direct.collectAsStateWithLifecycle()
                     SenderScreen(
                         receivers = found,
                         state = state,
-                        onStart = ::requestProjection,
+                        onStart = { target, prefs -> requestProjection(target, prefs) },
                         onStop = { ProjectionService.stop(this) },
+                        direct =
+                            DirectUi(
+                                available = WifiDirectSupport.usableAsSender(this),
+                                searching = searching,
+                                receivers = directFound,
+                                link = direct,
+                                onSearch = ::searchDirect,
+                                onStart = { r, prefs ->
+                                    directSearch = false // stop scanning before the group forms
+                                    // Also on the router list: the offer can go there too (ADR-011 fast path).
+                                    val lan = found.singleOrNull { it.name == r.name }?.host
+                                    requestProjection(
+                                        ReceiverEndpoint(r.name, ProjectionService.DIRECT_HOST, r.port),
+                                        prefs,
+                                        r.copy(lanHost = lan),
+                                    )
+                                },
+                            ),
                         onUseAsReceiver = ::useAsReceiver,
                         settings = initialSettings.copy(lastReceiver = lastReceiver),
                         onSettingsChange = settings::savePrefs,
@@ -160,8 +230,12 @@ class SenderActivity : ComponentActivity() {
     private fun granted(permission: String) = checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
 
     /** Usage access prompt (once), audio permission (when audio is on), then the consent dialog. */
-    private fun requestProjection(target: ReceiverEndpoint, prefs: StreamPreferences) {
-        pending = Pending(target, prefs)
+    private fun requestProjection(target: ReceiverEndpoint, prefs: StreamPreferences, direct: P2pReceiver? = null) {
+        pending = Pending(target, prefs, directAddress = direct?.deviceAddress)
+        // Let the TV find the offer while the consent dialog is up (ADR-011).
+        if (direct != null && Build.VERSION.SDK_INT >= WifiDirectSupport.MIN_SENDER_SDK) {
+            EarlyDirectLink.start(this, direct)
+        }
         if (prefs.audioEnabled && shouldAskUsageAccess()) askUsageAccess() else continueRequest()
     }
 
@@ -224,6 +298,18 @@ class SenderActivity : ComponentActivity() {
         private const val KEY_AUDIO = "pending.audio"
         private const val KEY_SYNC = "pending.sync"
         private const val KEY_CONSENT_SHOWN_AT = "pending.consentShownAt"
+        private const val KEY_DIRECT = "pending.direct"
         private const val KEY_USAGE_ACCESS_ASKED = "usageAccessAsked"
     }
 }
+
+/** The Wi-Fi Direct section of the screen (ADR-011). */
+internal class DirectUi(
+    /** API 35+ with Wi-Fi Direct hardware; otherwise the section is hidden. */
+    val available: Boolean,
+    val searching: Boolean,
+    val receivers: List<P2pReceiver>,
+    val link: DirectLink?,
+    val onSearch: () -> Unit,
+    val onStart: (P2pReceiver, StreamPreferences) -> Unit,
+)

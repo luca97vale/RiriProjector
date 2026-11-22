@@ -23,21 +23,56 @@ class HandshakeException(message: String, val bye: ByeReason? = null, cause: Thr
 object Handshake {
     const val DEFAULT_TIMEOUT_MS = 3_000
 
-    /** Receiver side: send HELLO, wait for START. Restores a blocking read timeout afterwards. */
-    fun asReceiver(
-        connection: Connection,
-        hello: ControlMessage.Hello,
-        timeoutMs: Int = DEFAULT_TIMEOUT_MS,
-    ): StreamParams {
+    /** What a sender asked for after the receiver's HELLO. */
+    sealed interface Opening {
+        data class Stream(val params: StreamParams) : Opening
+
+        /** A Wi-Fi Direct offer over the router (v4, ADR-011): no stream follows on this connection. */
+        data class Offer(val offer: ControlMessage.P2pOffer) : Opening
+    }
+
+    /** Receiver side: send HELLO, wait for START or P2P_OFFER. Restores a blocking read timeout afterwards. */
+    fun receive(connection: Connection, hello: ControlMessage.Hello, timeoutMs: Int = DEFAULT_TIMEOUT_MS): Opening {
         connection.writer.writeControl(hello)
         connection.writer.flush()
         val reply = readControl(connection, timeoutMs, "START")
         connection.setReadTimeout(0)
         return when (reply) {
-            is ControlMessage.Start -> reply.params
+            is ControlMessage.Start -> Opening.Stream(reply.params)
+            is ControlMessage.P2pOffer -> Opening.Offer(reply)
             is ControlMessage.Bye -> throw HandshakeException("sender refused: ${reply.reason}", reply.reason)
             else -> throw HandshakeException("expected START, got ${reply.type}")
         }
+    }
+
+    /** Receiver side, stream only: send HELLO, wait for START. */
+    fun asReceiver(
+        connection: Connection,
+        hello: ControlMessage.Hello,
+        timeoutMs: Int = DEFAULT_TIMEOUT_MS,
+    ): StreamParams = when (val opening = receive(connection, hello, timeoutMs)) {
+        is Opening.Stream -> opening.params
+        is Opening.Offer -> throw HandshakeException("expected START, got P2P_OFFER")
+    }
+
+    /**
+     * Sender side, Wi-Fi Direct fast path (v4, ADR-011): wait for HELLO, then hand over the group's
+     * credentials instead of START. Returns the receiver's HELLO; the caller closes the connection.
+     */
+    fun offerP2p(
+        connection: Connection,
+        offer: ControlMessage.P2pOffer,
+        timeoutMs: Int = DEFAULT_TIMEOUT_MS,
+    ): ControlMessage.Hello {
+        val hello =
+            when (val first = readControl(connection, timeoutMs, "HELLO")) {
+                is ControlMessage.Hello -> first
+                is ControlMessage.Bye -> throw HandshakeException("receiver refused: ${first.reason}", first.reason)
+                else -> throw HandshakeException("expected HELLO, got ${first.type}")
+            }
+        connection.writer.writeControl(offer)
+        connection.writer.flush()
+        return hello
     }
 
     /** Sender side: wait for HELLO, negotiate, send START (or BYE(INCOMPATIBLE)). */

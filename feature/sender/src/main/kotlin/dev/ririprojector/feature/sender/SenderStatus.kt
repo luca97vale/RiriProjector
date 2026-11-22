@@ -43,13 +43,25 @@ sealed interface SenderState {
     data class Ended(val message: String?) : SenderState
 }
 
+/** The session runs over the tablet's own Wi-Fi Direct group on [frequencyMhz] (ADR-011). */
+data class DirectLink(val frequencyMhz: Int)
+
 /** Process-wide sender state shared by [ProjectionService] (writer) and the UI (reader). */
 object SenderStatus {
     private val _state = MutableStateFlow<SenderState>(SenderState.Idle)
     val state: StateFlow<SenderState> = _state.asStateFlow()
 
+    private val _direct = MutableStateFlow<DirectLink?>(null)
+
+    /** Non-null while the session's link is a Wi-Fi Direct group. */
+    val direct: StateFlow<DirectLink?> = _direct.asStateFlow()
+
     internal fun set(value: SenderState) {
         _state.value = value
+    }
+
+    internal fun setDirect(value: DirectLink?) {
+        _direct.value = value
     }
 }
 

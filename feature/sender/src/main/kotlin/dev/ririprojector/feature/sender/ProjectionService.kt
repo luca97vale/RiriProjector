@@ -17,16 +17,33 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Display
+import androidx.annotation.RequiresApi
 import androidx.core.content.IntentCompat
 import dev.ririprojector.net.ReceiverEndpoint
+import dev.ririprojector.net.p2p.P2pFailure
+import dev.ririprojector.net.p2p.P2pGroupOwner
+import dev.ririprojector.net.p2p.P2pLink
+import dev.ririprojector.net.p2p.P2pPolicy
+import dev.ririprojector.net.p2p.P2pReceiver
+import dev.ririprojector.net.p2p.WifiDirectSupport
 import dev.ririprojector.protocol.ByeReason
 import dev.ririprojector.protocol.model.DisplayInfo
 import dev.ririprojector.protocol.model.StreamPreferences
 import dev.ririprojector.protocol.model.SyncMode
 import dev.ririprojector.protocol.model.VideoCodec
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 
 /**
  * Foreground service of type `mediaProjection` that owns the [MediaProjection] and the
@@ -38,6 +55,11 @@ class ProjectionService : Service() {
     private var session: ProjectionHost? = null
     private val main = Handler(Looper.getMainLooper())
 
+    // Wi-Fi Direct (ADR-011): the group is created after consent and owned by this service.
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var joinJob: Job? = null
+    private var p2pLink: P2pLink? = null
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -45,7 +67,7 @@ class ProjectionService : Service() {
             stopSession(ByeReason.USER_STOPPED)
             return START_NOT_STICKY
         }
-        if (session != null || intent == null) return START_NOT_STICKY
+        if (session != null || joinJob != null || intent == null) return START_NOT_STICKY
         val consent = IntentCompat.getParcelableExtra(intent, EXTRA_CONSENT, Intent::class.java)
         val target = ReceiverEndpoint.parse(
             intent.getStringExtra(EXTRA_TARGET) ?: "",
@@ -100,23 +122,92 @@ class ProjectionService : Service() {
         val consentShownAtMs = intent.getLongExtra(EXTRA_CONSENT_SHOWN_AT, System.currentTimeMillis())
         val consentResultAtMs = intent.getLongExtra(EXTRA_CONSENT_RESULT_AT, System.currentTimeMillis())
         val appContext = applicationContext
-        val s =
-            ProjectionHost(
-                target = target,
-                preferences = preferencesFrom(intent),
-                projection = mp,
-                initialSource = source,
-                densityDpi = dpi,
-                audioPermitted =
-                    Build.VERSION.SDK_INT >= 29 &&
-                        checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED,
-                detectShare = { SharedAppDetector.detect(appContext, consentShownAtMs, consentResultAtMs) },
-                versionMismatchText = getString(R.string.sender_error_version),
-                onEnded = { main.post { shutdown() } },
-            )
-        session = s
-        s.start()
+        val preferences = preferencesFrom(intent)
+
+        fun startHost(endpoint: ReceiverEndpoint, outageLimitMs: Long, firstConnectWindowMs: Long = 0) {
+            val s =
+                ProjectionHost(
+                    target = endpoint,
+                    preferences = preferences,
+                    projection = mp,
+                    initialSource = source,
+                    densityDpi = dpi,
+                    audioPermitted =
+                        Build.VERSION.SDK_INT >= 29 &&
+                            checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED,
+                    detectShare = { SharedAppDetector.detect(appContext, consentShownAtMs, consentResultAtMs) },
+                    versionMismatchText = getString(R.string.sender_error_version),
+                    onEnded = { main.post { shutdown() } },
+                    outageLimitMs = outageLimitMs,
+                    firstConnectWindowMs = firstConnectWindowMs,
+                )
+            session = s
+            s.start()
+        }
+
+        val directAddress = intent.getStringExtra(EXTRA_DIRECT_ADDRESS)
+        if (directAddress != null && Build.VERSION.SDK_INT >= WifiDirectSupport.MIN_SENDER_SDK) {
+            startDirect(P2pReceiver(target.name, directAddress, target.port)) {
+                startHost(it, P2pPolicy.OUTAGE_LIMIT_MS, P2pPolicy.FIRST_CONNECT_WINDOW_MS)
+            }
+        } else {
+            startHost(target, P2pPolicy.ROUTER_OUTAGE_LIMIT_MS)
+        }
         return START_NOT_STICKY
+    }
+
+    /**
+     * Wi-Fi Direct (ADR-011): creates the group, waits for the receiver to join, then starts the
+     * host on the receiver's group address. A lost group ends the session for good.
+     */
+    @RequiresApi(35)
+    private fun startDirect(receiver: P2pReceiver, startHost: (ReceiverEndpoint) -> Unit) {
+        SenderStatus.set(SenderState.Connecting(ReceiverEndpoint(receiver.name, DIRECT_HOST, receiver.port)))
+        joinJob =
+            scope.launch {
+                try {
+                    // Usually already running since the pick (overlapping consent); fall back to a fresh
+                    // attempt if there is none or it failed (e.g. timed out while consent was open).
+                    val claimedAt = SystemClock.elapsedRealtime()
+                    val early = EarlyDirectLink.claim(receiver.deviceAddress)
+                    val link =
+                        try {
+                            early?.awaitOrRelease()
+                        } catch (e: P2pFailure) {
+                            Log.w(TAG, "early Wi-Fi Direct attempt failed (${e.message}), retrying")
+                            null
+                        }
+                            ?: P2pGroupOwner(
+                                this@ProjectionService,
+                            ).open(receiver, EarlyDirectLink.senderName(this@ProjectionService))
+                    p2pLink = link
+                    Log.i(
+                        TAG,
+                        "Wi-Fi Direct link ready ${SystemClock.elapsedRealtime() - claimedAt} ms after consent (early: ${early != null})",
+                    )
+                    SenderStatus.setDirect(DirectLink(link.frequencyMhz))
+                    startHost(link.endpoint)
+                    link.lost.first()
+                    // The receiver's own BYE usually arrives first: it decides the message then.
+                    delay(LINK_LOST_GRACE_MS)
+                    Log.i(TAG, "Wi-Fi Direct group lost")
+                    stopSession(ByeReason.NORMAL, getString(R.string.sender_error_p2p_lost, receiver.name))
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "Wi-Fi Direct failed: ${e.message}")
+                    SenderStatus.set(SenderState.Ended(p2pMessage(e, receiver.name)))
+                    shutdown()
+                }
+            }
+    }
+
+    private fun p2pMessage(e: Exception, name: String): String = when (e) {
+        is P2pFailure.Unsupported -> getString(R.string.sender_error_p2p_unsupported)
+        is P2pFailure.Busy -> getString(R.string.sender_error_p2p_busy)
+        is P2pFailure.Timeout -> getString(R.string.sender_error_p2p_timeout, name)
+        is SecurityException -> getString(R.string.sender_error_p2p_permission)
+        else -> getString(R.string.sender_error_p2p_failed, e.message ?: e.javaClass.simpleName)
     }
 
     private fun stopSession(reason: ByeReason, message: String? = null) {
@@ -142,15 +233,27 @@ class ProjectionService : Service() {
             runCatching { getSystemService(DisplayManager::class.java).unregisterDisplayListener(displayListener) }
         }
         session = null
+        // Stop while joining, a failed join, or the host ended: the group goes after the host.
+        joinJob?.cancel()
+        joinJob = null
+        closeLink()
         projection?.let { runCatching { it.stop() } }
         projection = null
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
+    private fun closeLink() {
+        p2pLink?.close()
+        p2pLink = null
+        SenderStatus.setDirect(null)
+    }
+
     override fun onDestroy() {
         session?.stop(ByeReason.USER_STOPPED)
         projection?.let { runCatching { it.stop() } }
+        scope.cancel()
+        closeLink()
         super.onDestroy()
     }
 
@@ -226,6 +329,11 @@ class ProjectionService : Service() {
         private const val EXTRA_SYNC = "sync"
         private const val EXTRA_CONSENT_RESULT_AT = "consentResultAt"
         private const val EXTRA_CONSENT_SHOWN_AT = "consentShownAt"
+        private const val EXTRA_DIRECT_ADDRESS = "directAddress"
+
+        /** Placeholder host shown while the Wi-Fi Direct group forms; the real one comes from the group. */
+        const val DIRECT_HOST = "wifi-direct"
+        private const val LINK_LOST_GRACE_MS = 300L
 
         fun start(
             context: Context,
@@ -235,6 +343,8 @@ class ProjectionService : Service() {
             prefs: StreamPreferences,
             consentShownAtMs: Long,
             consentResultAtMs: Long,
+            /** Set for a Wi-Fi Direct session: the receiver's P2P device address (ADR-011). */
+            directAddress: String? = null,
         ) {
             val intent =
                 Intent(context, ProjectionService::class.java)
@@ -250,6 +360,7 @@ class ProjectionService : Service() {
                     .putExtra(EXTRA_SYNC, prefs.syncMode.name)
                     .putExtra(EXTRA_CONSENT_RESULT_AT, consentResultAtMs)
                     .putExtra(EXTRA_CONSENT_SHOWN_AT, consentShownAtMs)
+                    .putExtra(EXTRA_DIRECT_ADDRESS, directAddress)
             context.startForegroundService(intent)
         }
 

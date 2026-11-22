@@ -65,6 +65,7 @@ class MessageRoundTripTest {
             65_535,
             VideoConfig(VideoCodec.HEVC, 1080, 1920, 60, 8_000_000),
         ),
+        ControlMessage.P2pOffer("DIRECT-aB-Riri", "abcdefghijkmnpqr", "Tab è 客"),
         ControlMessage.BitrateHint(8_000_000),
         ControlMessage.Bye(ByeReason.PROJECTION_REVOKED),
     )

@@ -20,6 +20,7 @@ import android.widget.FrameLayout
 import android.widget.TextView
 import androidx.core.content.ContextCompat
 import dev.ririprojector.core.ui.R as UiR
+import dev.ririprojector.net.p2p.WifiDirectSupport
 import dev.ririprojector.protocol.ByeReason
 import dev.ririprojector.protocol.model.DisplayInfo
 import java.net.Inet4Address
@@ -119,6 +120,20 @@ class ReceiverActivity : Activity() {
         super.onStart()
         controller.start()
         collector = scope.launch { controller.state.collect(::render) }
+        // API 29+ needs a runtime permission for Wi-Fi Direct (none on Fire OS 7). Asked once;
+        // without it the receiver simply stays router-only.
+        val missing = WifiDirectSupport.missingPermissions(this)
+        if (WifiDirectSupport.hasFeature(this) && missing.isNotEmpty() && !askedWifiDirect) {
+            askedWifiDirect = true
+            requestPermissions(missing.toTypedArray(), REQUEST_WIFI_DIRECT)
+        }
+    }
+
+    private var askedWifiDirect = false
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_WIFI_DIRECT) controller.startWifiDirect()
     }
 
     override fun onPause() {
@@ -156,9 +171,14 @@ class ReceiverActivity : Activity() {
         when (state) {
             is ReceiverState.Waiting -> {
                 panel.visibility = View.VISIBLE
+                val direct = if (state.directReady) getString(R.string.receiver_wifi_direct_ready) else ""
                 panel.showWaiting(
                     name = state.name,
-                    waiting = getString(R.string.receiver_waiting),
+                    waiting = getString(
+                        R.string.receiver_waiting_with_direct,
+                        getString(R.string.receiver_waiting),
+                        direct,
+                    ),
                     endpoint = state.address?.let { "$it:${state.port}" },
                 )
                 statsOverlay.text = ""
@@ -186,7 +206,7 @@ class ReceiverActivity : Activity() {
                         s.avOffsetMs?.let { getString(R.string.receiver_av_offset, it) }
                             ?: getString(R.string.receiver_av_unknown),
                         s.decoderName,
-                        state.peer,
+                        if (state.direct) getString(R.string.receiver_link_direct, state.peer) else state.peer,
                         s.videoDelayMs,
                         s.latency?.let {
                             getString(
@@ -239,5 +259,6 @@ class ReceiverActivity : Activity() {
 
         private const val MATCH = FrameLayout.LayoutParams.MATCH_PARENT
         private const val WRAP = FrameLayout.LayoutParams.WRAP_CONTENT
+        private const val REQUEST_WIFI_DIRECT = 21
     }
 }
