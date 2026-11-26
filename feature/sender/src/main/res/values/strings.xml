@@ -105,4 +105,38 @@
     <string name="sender_version">Version</string>
     <string name="sender_brand" translatable="false">RiriProjector</string>
     <string name="sender_loader_description">The RiriProjector dog projecting your screen while it connects</string>
+    <!-- Second screen setup (issue 35, ADR-014) -->
+    <string name="second_screen_title">Second screen (preview)</string>
+    <string name="second_screen_intro">Extends this device instead of mirroring it: apps open on the TV while you keep using this screen. Needs a one-time pairing with Wireless debugging; nothing leaves this device.</string>
+    <string name="second_screen_unsupported">Needs Android 11 or newer.</string>
+    <string name="second_screen_steps">1. Connect to Wi-Fi and turn on Developer options.\n2. Tap Pair: Wireless debugging opens.\n3. Turn it on, tap \"Pair device with pairing code\" and type the 6-digit code into the RiriProjector notification (or below).</string>
+    <string name="second_screen_pair">Pair</string>
+    <string name="second_screen_code">Pairing code</string>
+    <string name="second_screen_submit">Send code</string>
+    <string name="second_screen_searching">Waiting for \"Pair device with pairing code\"…</string>
+    <string name="second_screen_found">Pairing service found: enter the code. To type it here, keep the pairing dialog open in split screen; otherwise reply to the notification.</string>
+    <string name="second_screen_paired_off">Paired. Turn on Wireless debugging to start shell access (it turns off when Wi-Fi changes or the device restarts).</string>
+    <string name="second_screen_open_settings">Open Wireless debugging</string>
+    <string name="second_screen_starting">Starting shell access…</string>
+    <string name="second_screen_ready">Shell access ready.</string>
+    <string name="second_screen_self_test">Self-test</string>
+    <string name="second_screen_self_test_ok">Self-test passed: a second display can be created.</string>
+    <string name="second_screen_self_test_fail">Self-test failed: this device refused the second display.</string>
+    <string name="second_screen_forget">Forget</string>
+    <string name="second_screen_retry">Try again</string>
+    <string name="second_screen_wrong_code">Wrong code, or the code expired. Tap Pair to get a new one.</string>
+    <string name="second_screen_failed_pairing">Pairing failed. Keep the device on Wi-Fi and try again.</string>
+    <string name="second_screen_failed_connect">Could not reach Wireless debugging. Check it is on, or pair again if it was reset.</string>
+    <string name="second_screen_failed_start">Shell access did not start.</string>
+    <string name="pairing_channel">Wireless debugging pairing</string>
+    <string name="pairing_title">Pair RiriProjector</string>
+    <string name="pairing_text">In Wireless debugging tap \"Pair device with pairing code\", then reply here with the code.</string>
+    <string name="pairing_code_label">6-digit code</string>
+    <string name="pairing_enter_code">Enter code</string>
+    <string name="pairing_cancel">Cancel</string>
+    <string name="pairing_in_progress">Pairing…</string>
+    <string name="pairing_done">Paired with Wireless debugging.</string>
+    <string name="pairing_not_found">The pairing dialog was not found. Keep \"Pair device with pairing code\" open and reply again.</string>
+    <string name="pairing_failed_start">Paired, but shell access did not start. Open RiriProjector to retry.</string>
+    <string name="pairing_wrong_code">That code did not work. Check it and reply again.</string>
 </resources>

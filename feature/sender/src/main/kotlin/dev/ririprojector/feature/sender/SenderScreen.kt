@@ -480,6 +480,8 @@ private fun SettingsContent(
         },
         columns = 1,
     )
+    // Hidden until the second-screen session lands (issue 35): setup only, behind developer mode.
+    if (developer.enabled) SecondScreenSetup()
     SectionLabel(stringResource(R.string.sender_section_device))
     BrandCard {
         if (onUseAsReceiver != null) {

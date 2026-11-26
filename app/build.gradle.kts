@@ -24,6 +24,12 @@ check(signingValuesSet == 0 || signingValuesSet == releaseSigning.size) {
 android {
     namespace = "dev.ririprojector"
 
+    packaging {
+        // BouncyCastle (ADR-014) ships the same license files in each of its jars: keep one copy.
+        resources.pickFirsts +=
+            setOf("META-INF/LICENSE.md", "META-INF/NOTICE.md", "META-INF/versions/9/OSGI-INF/MANIFEST.MF")
+    }
+
     defaultConfig {
         applicationId = "dev.ririprojector"
         // The release workflow derives both from the tag: vX.Y.Z → X*10000 + Y*100 + Z.
