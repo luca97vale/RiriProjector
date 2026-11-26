@@ -29,10 +29,12 @@ in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); roadmap in [docs/PLAN.md](docs/
 | `:core:net` | Android lib | TCP transport (client/server), NSD publish/discover, backpressure, RTT measurement |
 | `:core:media` | Android lib | MediaCodec encoder/decoder wrappers (video and Opus), codec selection from `MediaCodecList`, low-latency params, audio capture (`AudioPlaybackCapture`) and playback (`AudioTrack`) |
 | `:core:ui` | Android lib | Brand palette (from the launcher artwork), the dog artwork and the animated `DogLoaderView` shared by sender and receiver; timing in pure `DogLoaderMotion` |
+| `:core:adb` | Android lib (NDK) | Wireless-debugging pairing and ADB client, renamed fork of Shizuku (Apache-2.0, ADR-014); `libriri_adb.so` over BoringSSL |
+| `:core:helper` | Android lib | Second-screen shell helper (`app_process` as uid 2000) and its binder: display, launch, input, audio (ADR-014) |
 | `:feature:sender` | Android lib | MediaProjection (video + audio), `mediaProjection` foreground service, phone/tablet UI (Compose) |
 | `:feature:receiver` | Android lib | Full-screen activity (D-pad and touch) with `SurfaceView`, audio player, A/V sync, stats overlay |
 
-Dependency rule: `feature → core:media/net → core:protocol`, and `feature → core:ui` (no other deps). Features never depend on each other.
+Dependency rule: `feature → core:media/net → core:protocol`, `feature → core:ui`, and `feature:sender → core:helper → core:adb` (no other deps; `core:adb` has no internal deps, receivers never load it). Features never depend on each other.
 All logic that can be tested without a device (framing, bitrate policy, codec choice from a capability
 list, session state machine, jitter buffer) lives in pure, injectable code covered by JVM tests.
 

@@ -528,3 +528,79 @@ Developer mode, switched on **before** a share, shows each device's own connecti
   events to the peer (a protocol change, and most failures happen before any socket exists);
   instance-scoped logs threaded through constructors (the early group starts before the service
   exists, and it would restructure the P2P classes).
+
+## ADR-014 — Second-screen shell helper (embedded Wireless-debugging client)
+**Accepted** (#35; owner decisions 2026-11-26).
+
+**Why shell.** Only the shell or system user may run other apps on a virtual display a normal app
+creates and inject input into them. On Android 11+ a device can grant itself shell access without
+a PC through Wireless debugging. Second-screen mode is opt-in and off by default; mirroring needs
+no setup and is unchanged.
+
+**Embedded fork, one app.**
+- `:core:adb` holds a renamed fork of Shizuku's Apache-2.0 pairing and ADB client (commit
+  `b844bc4`):
+  - `AdbKey`: RSA-2048, AES-GCM-wrapped with an AndroidKeyStore key, BouncyCastle self-signed
+    certificate, ADB public-key encoding;
+  - `AdbPairingClient`: TLS 1.3, then SPAKE2/HKDF/AES-128-GCM in `libriri_adb.so` over BoringSSL;
+  - `AdbClient`: CNXN, then STLS or AUTH, then `shell:`;
+  - `AdbMdns`.
+- Every derived file carries a header pointing to `core/adb/LICENSE-Shizuku`. Nothing uses the name
+  "Shizuku", its icons, the `moe.shizuku.privileged.api` application id or its permissions.
+- Shizuku's native starter is not copied.
+- New dependencies, approved by the owner: the NDK (30.0.16248370) and CMake (4.1.2), the
+  `io.github.vvb2060.ndk:boringssl` and `org.lsposed.libcxx:libcxx` prefabs (`ANDROID_STL=none`),
+  `org.bouncycastle:bcpkix-jdk18on`, and `org.lsposed.hiddenapibypass:hiddenapibypass`.
+- The TLS exporter uses the public `SSLSockets.exportKeyingMaterial` on API 31+. Only API 30 uses
+  hiddenapibypass and the platform Conscrypt by reflection.
+- Receivers (API 28) never load the native library or these classes.
+
+**Helper process.**
+- It runs as uid 2000, started over the ADB shell with
+  `CLASSPATH='<apk>' setsid app_process /system/bin --nice-name=riri_helper dev.ririprojector.helper.HelperMain <pkg> <userId>`,
+  with its standard streams redirected.
+- It works out the app's uid from the package name itself, never from its arguments, and uses a
+  context whose package is `com.android.shell`.
+- It hands its binder to the app with a `call()` on the app's `HelperProvider`. That provider is
+  `${applicationId}.helper`, exported, guarded by `INTERACT_ACROSS_USERS_FULL`, and accepts calls
+  only from uid 0 or 2000.
+- Every helper binder method checks that the caller is the app's uid. Nothing listens on a socket.
+- It exits on app binder death, on `exit()`, on a version or APK mismatch (app updated), or after
+  10 minutes idle.
+
+**Display.**
+- Flags:
+  - always: PUBLIC | PRESENTATION | OWN_CONTENT_ONLY | SUPPORTS_TOUCH | DESTROY_CONTENT_ON_REMOVAL;
+  - API 33+: also TRUSTED | OWN_DISPLAY_GROUP | ALWAYS_UNLOCKED | TOUCH_FEEDBACK_DISABLED;
+  - API 34+: also OWN_FOCUS | DEVICE_DISPLAY_GROUP;
+  - never ROTATES_WITH_CONTENT or SECURE, so FLAG_SECURE content is black by design.
+- On API 30–32 the display is untrusted (no IME, no decorations): best effort, enabled only after
+  the helper self-test passes.
+- Size is the receiver's own resolution in landscape, capped by codec limits (`VideoFit.fitWithin`,
+  #34).
+- Density is `max(160, shortSide × 160 / 600)` (600 dp, the owner's "maximum possible" layout).
+  Android 16+ ignores orientation locks at that width, so apps fill the TV.
+- Releasing the display destroys its content.
+- The display lives for the sender host's lifetime; links swap its Surface (ADR-010).
+
+**Audio (owner decision).** In second-screen mode the helper captures playback audio as shell
+(`AudioPlaybackCapture` on API 33+, `REMOTE_SUBMIX` below) and passes PCM to the app over a socketpair
+`ParcelFileDescriptor`. There is no MediaProjection in this mode, so locking the phone does not end
+the session, which Android 15 QPR1+ would do to a projection.
+
+**Threat model.** A LAN receiver could ask a shell process to act, so:
+- the sender launches only ids from the app list it sent on that link;
+- input and launch messages are ignored unless the session is in second-screen mode;
+- coordinates are clamped and the display id never comes from the wire;
+- the helper injects only into displays it created.
+
+**Play policy.** The mode is opt-in, disclosed in the app and on the store listing, and uses public
+APIs wherever they exist. The pairing code and key material are never logged; the key prefs file
+is excluded from backups.
+
+Rejected:
+- the Shizuku app plus its API (two apps to install);
+- an ADB client written from scratch (more security-sensitive code than a maintained fork);
+- Shizuku's native starter (not needed for one short-lived helper);
+- `VirtualDeviceManager` (privileged apps only);
+- MediaProjection audio in this mode (stops when the phone locks).
