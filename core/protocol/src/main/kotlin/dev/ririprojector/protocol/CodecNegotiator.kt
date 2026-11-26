@@ -16,6 +16,11 @@ sealed interface Negotiation {
     data class Failure(val reason: String) : Negotiation
 }
 
+/** Exact local check of the encoder (`areSizeAndRateSupported` on device). */
+fun interface EncoderPredicate {
+    fun accepts(codec: VideoCodec, width: Int, height: Int, fps: Int): Boolean
+}
+
 /**
  * Pure stream negotiation (ADR-004, ADR-007): picks codec, resolution, fps, bitrate and audio
  * format from the sender's encoders, the receiver's HELLO and user preferences.
@@ -23,8 +28,8 @@ sealed interface Negotiation {
 object CodecNegotiator {
     const val MIN_BITRATE_BPS = 2_000_000
     const val MAX_BITRATE_BPS = 40_000_000
-    private const val ALIGNMENT = 8
-    private const val MIN_DIMENSION = 160
+
+    val ACCEPT_ALL = EncoderPredicate { _, _, _, _ -> true }
 
     /** Bits per pixel used for automatic bitrate; HEVC needs ~30% less than AVC. */
     fun bitsPerPixel(codec: VideoCodec): Double = when (codec) {
@@ -37,6 +42,7 @@ object CodecNegotiator {
         receiver: ControlMessage.Hello,
         prefs: StreamPreferences = StreamPreferences(),
         sessionId: Long = 0,
+        encoderAccepts: EncoderPredicate = ACCEPT_ALL,
     ): Negotiation {
         if (receiver.protocolVersion != ProtocolInfo.PROTOCOL_VERSION) {
             return Negotiation.Failure("receiver speaks protocol v${receiver.protocolVersion}")
@@ -50,8 +56,6 @@ object CodecNegotiator {
                 ?: return Negotiation.Failure("no common hardware video codec")
         val (enc, dec) = pair
 
-        val size = fitResolution(sender, receiver, enc, dec, prefs.maxHeight)
-            ?: return Negotiation.Failure("no usable resolution")
         val fps =
             listOfNotNull(
                 sender.source.refreshRateHz,
@@ -62,10 +66,12 @@ object CodecNegotiator {
             )
                 .min()
                 .coerceAtLeast(1)
+        val size = fitResolution(sender, receiver, enc, dec, prefs.maxHeight, fps, encoderAccepts)
+            ?: return Negotiation.Failure("no usable resolution")
         val bitrate = prefs.bitrateBps?.coerceIn(MIN_BITRATE_BPS, MAX_BITRATE_BPS)
-            ?: autoBitrate(enc.codec, size.first, size.second, fps)
+            ?: autoBitrate(enc.codec, size.width, size.height, fps)
 
-        val video = VideoConfig(enc.codec, size.first, size.second, fps, bitrate)
+        val video = VideoConfig(enc.codec, size.width, size.height, fps, bitrate)
         val audio = negotiateAudio(sender.audioEncoders, receiver.audioDecoders, prefs.preferredAudioCodec)
         return Negotiation.Success(StreamParams(sessionId, video, audio, prefs.syncMode))
     }
@@ -81,13 +87,15 @@ object CodecNegotiator {
         sender: SenderCapabilities,
         receiver: ControlMessage.Hello,
         prefs: StreamPreferences = StreamPreferences(),
+        encoderAccepts: EncoderPredicate = ACCEPT_ALL,
     ): VideoConfig? {
         val order = listOf(current.codec)
         val (enc, dec) =
             pickPair(sender, receiver, order, requireHardwareDecoder = true)
                 ?: pickPair(sender, receiver, order, requireHardwareDecoder = false)
                 ?: return null
-        val (w, h) = fitResolution(sender, receiver, enc, dec, prefs.maxHeight) ?: return null
+        val (w, h) = fitResolution(sender, receiver, enc, dec, prefs.maxHeight, current.fps, encoderAccepts)
+            ?: return null
         val bitrate = prefs.bitrateBps?.coerceIn(MIN_BITRATE_BPS, MAX_BITRATE_BPS)
             ?: autoBitrate(current.codec, w, h, current.fps)
         return current.copy(width = w, height = h, bitrateBps = bitrate)
@@ -118,13 +126,14 @@ object CodecNegotiator {
     }
 
     /**
-     * Largest size with the source aspect ratio that fits every limit, each side rounded down to a
-     * multiple of 8 (keeps 1080 lines intact; hardware codecs pad internally).
+     * Largest size with the source aspect ratio that fits every limit at [fps], each side a multiple
+     * of 8 (keeps 1080 lines intact; hardware codecs pad internally), never upscaled (#34).
      *
      * The source keeps its real orientation and is fitted inside the receiver display as-is: the
      * receiver does not rotate the stream, so a portrait sender on a landscape TV becomes a
      * pillarboxed portrait stream rather than a full-height image the TV would have to downscale.
-     * Codec limits are checked per axis.
+     * Codec limits are per axis, padded area and pixel rate, for encoder and decoder; [encoderAccepts]
+     * is the local encoder's exact check. [prefMaxHeight] null = Auto (no cap).
      */
     internal fun fitResolution(
         sender: SenderCapabilities,
@@ -132,20 +141,20 @@ object CodecNegotiator {
         enc: VideoCodecCapability,
         dec: VideoCodecCapability,
         prefMaxHeight: Int?,
-    ): Pair<Int, Int>? {
-        val srcW = sender.source.width.toDouble()
-        val srcH = sender.source.height.toDouble()
-        val maxW = minOf(receiver.display.width, enc.maxWidth, dec.maxWidth)
-        val maxH = listOfNotNull(receiver.display.height, enc.maxHeight, dec.maxHeight, prefMaxHeight).min()
-
-        val scale = minOf(1.0, maxW / srcW, maxH / srcH)
-        val outW = align(srcW * scale)
-        val outH = align(srcH * scale)
-        if (outW < MIN_DIMENSION || outH < MIN_DIMENSION) return null
-        return outW to outH
+        fps: Int,
+        encoderAccepts: EncoderPredicate = ACCEPT_ALL,
+    ): Size? {
+        val limits = VideoLimits.of(enc)
+            .intersect(VideoLimits.of(dec))
+            .intersect(VideoLimits.ofSize(receiver.display.width, receiver.display.height))
+        val (srcW, srcH) = sender.source.width to sender.source.height
+        // If the local check rejects every size (an XML that under-declares), fall back to the limits
+        // alone: `configure` decides, with the ADR-010 retry path as before #34.
+        return VideoFit.fitWithin(srcW, srcH, limits, fps, prefMaxHeight) { w, h, f ->
+            encoderAccepts.accepts(enc.codec, w, h, f)
+        }
+            ?: VideoFit.fitWithin(srcW, srcH, limits, fps, prefMaxHeight)
     }
-
-    private fun align(value: Double): Int = (value.toInt() / ALIGNMENT) * ALIGNMENT
 
     internal fun negotiateAudio(
         encoders: List<AudioCodecCapability>,

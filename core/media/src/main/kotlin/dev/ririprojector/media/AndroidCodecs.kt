@@ -14,18 +14,22 @@ object AndroidCodecs {
 
     fun catalog(): CodecCatalog {
         val descriptors = mutableListOf<CodecDescriptor>()
+        val checks = mutableMapOf<String, SizeRateCheck>()
         for (info in MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos) {
             for (codec in VideoCodec.entries) {
                 if (info.supportedTypes.none { it.equals(codec.mime, ignoreCase = true) }) continue
                 runCatching { describe(info, codec.mime) }
-                    .onSuccess { descriptors += it }
+                    .onSuccess { (d, check) ->
+                        descriptors += d
+                        if (d.isEncoder) checks[d.name] = check
+                    }
                     .onFailure { Log.w(TAG, "skipping ${info.name}: ${it.message}") }
             }
         }
-        return CodecCatalog(descriptors)
+        return CodecCatalog(descriptors, checks)
     }
 
-    private fun describe(info: MediaCodecInfo, mime: String): CodecDescriptor {
+    private fun describe(info: MediaCodecInfo, mime: String): Pair<CodecDescriptor, SizeRateCheck> {
         val caps = info.getCapabilitiesForType(mime)
         val video = caps.videoCapabilities ?: error("no video capabilities for $mime")
         val maxW = video.supportedWidths.upper
@@ -45,6 +49,19 @@ object AndroidCodecs {
                 CodecCatalog.looksLowLatency(info.name)
         val secure = caps.isFeatureSupported(CodecCapabilities.FEATURE_SecurePlayback) || info.name.endsWith(".secure")
         val encoderCaps = if (info.isEncoder) caps.encoderCapabilities else null
+        val probed = CodecProbe.limits(
+            maxW,
+            maxH,
+            maxFps,
+            isSizeSupported = { w, h -> video.isSizeSupported(w, h) },
+            maxFpsAt = { w, h -> runCatching { video.getSupportedFrameRatesFor(w, h).upper }.getOrNull() },
+        )
+        Log.i(TAG, "${info.name} $mime axes ${maxW}x$maxH area ${probed.maxPixels} rate ${probed.maxPixelRate}")
+        // The platform check also requires the codec's alignment; hardware encoders pad internally
+        // (1728x1080 configures on a 16-aligned encoder), so round up like that padding does.
+        val check = SizeRateCheck.aligned(video.widthAlignment, video.heightAlignment) { w, h, fps ->
+            runCatching { video.areSizeAndRateSupported(w, h, fps.toDouble()) }.getOrDefault(false)
+        }
         return CodecDescriptor(
             name = info.name,
             mime = mime,
@@ -57,6 +74,8 @@ object AndroidCodecs {
             maxFps = maxFps,
             supportsIntraRefresh = info.isEncoder && caps.isFeatureSupported(CodecCapabilities.FEATURE_IntraRefresh),
             supportsCbr = encoderCaps?.isBitrateModeSupported(EncoderCapabilities.BITRATE_MODE_CBR) == true,
-        )
+            maxPixels = probed.maxPixels,
+            maxPixelRate = probed.maxPixelRate,
+        ) to check
     }
 }

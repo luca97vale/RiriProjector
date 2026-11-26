@@ -36,7 +36,10 @@ data class QuickStart(val endpoint: ReceiverEndpoint, val advertised: Boolean)
 object SenderSettingsCodec {
     const val VERSION = 1
 
-    /** Choice lists of the sender screen; the sender screen (`SenderScreen.kt`) offers exactly these. */
+    /**
+     * Choice lists of the sender screen; the sender screen (`SenderScreen.kt`) offers exactly these.
+     * Max resolution also offers Auto (null, stored as `AUTO`; #34), the default.
+     */
     val HEIGHTS = listOf(720, 1080, 1440)
     val FPS = listOf(30, 60)
 
@@ -65,7 +68,7 @@ object SenderSettingsCodec {
     const val KEY_LAST_PORT = "last.port"
     const val KEY_DEV_MODE = "dev.mode"
 
-    /** Codec stored when the user picked "Auto". */
+    /** Codec or max resolution stored when the user picked "Auto". */
     private const val AUTO = "AUTO"
 
     fun decode(read: (String) -> String?): SenderSettings {
@@ -76,7 +79,8 @@ object SenderSettingsCodec {
         val prefs =
             d.copy(
                 preferredVideoCodec = codec,
-                maxHeight = read(KEY_MAX_HEIGHT)?.toIntOrNull()?.takeIf { it in HEIGHTS } ?: d.maxHeight,
+                // AUTO, absent or unknown: Auto.
+                maxHeight = read(KEY_MAX_HEIGHT)?.toIntOrNull()?.takeIf { it in HEIGHTS },
                 maxFps = read(KEY_FPS)?.toIntOrNull()?.takeIf { it in FPS } ?: d.maxFps,
                 bitrateBps = read(KEY_BITRATE_MBPS)?.toIntOrNull()?.takeIf { it in BITRATES_MBPS }
                     ?.let { if (it == 0) null else it * MBPS }
@@ -102,7 +106,7 @@ object SenderSettingsCodec {
     fun encodePrefs(prefs: StreamPreferences): Map<String, String?> = mapOf(
         KEY_VERSION to VERSION.toString(),
         KEY_CODEC to (prefs.preferredVideoCodec?.name ?: AUTO),
-        KEY_MAX_HEIGHT to prefs.maxHeight?.toString(),
+        KEY_MAX_HEIGHT to (prefs.maxHeight?.toString() ?: AUTO),
         KEY_FPS to prefs.maxFps?.toString(),
         KEY_BITRATE_MBPS to (prefs.bitrateBps?.div(MBPS) ?: 0).toString(),
         KEY_AUDIO to prefs.audioEnabled.toString(),

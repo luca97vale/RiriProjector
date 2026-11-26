@@ -325,7 +325,7 @@ class ProjectionService : Service() {
         val bitrate = intent.getIntExtra(EXTRA_BITRATE, 0)
         return StreamPreferences(
             preferredVideoCodec = codec,
-            maxHeight = intent.getIntExtra(EXTRA_MAX_HEIGHT, 1080),
+            maxHeight = intent.getIntExtra(EXTRA_MAX_HEIGHT, 0).takeIf { it > 0 }, // 0 = Auto (#34)
             maxFps = intent.getIntExtra(EXTRA_MAX_FPS, 60),
             bitrateBps = bitrate.takeIf { it > 0 },
             audioEnabled = intent.getBooleanExtra(EXTRA_AUDIO, true),
@@ -376,7 +376,7 @@ class ProjectionService : Service() {
                     .putExtra(EXTRA_TARGET, "${target.host}:${target.port}")
                     .putExtra(EXTRA_NAME, target.name)
                     .putExtra(EXTRA_CODEC, prefs.preferredVideoCodec?.name)
-                    .putExtra(EXTRA_MAX_HEIGHT, prefs.maxHeight ?: 1080)
+                    .putExtra(EXTRA_MAX_HEIGHT, prefs.maxHeight ?: 0)
                     .putExtra(EXTRA_MAX_FPS, prefs.maxFps ?: 60)
                     .putExtra(EXTRA_BITRATE, prefs.bitrateBps ?: 0)
                     .putExtra(EXTRA_AUDIO, prefs.audioEnabled)

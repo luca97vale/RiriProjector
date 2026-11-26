@@ -154,7 +154,8 @@ class ReceiverActivity : Activity() {
         setPanelShown(true)
         root.requestFocus()
 
-        controller = ReceiverController(applicationContext, deviceName(), displayInfo(), ::localIpv4)
+        hostDisplay = displayInfo()
+        controller = ReceiverController(applicationContext, deviceName(), hostDisplay, ::localIpv4)
         controller.onStreamStarted = { params ->
             runOnUiThread { container.aspectRatio = params.video.width.toDouble() / params.video.height }
         }
@@ -304,6 +305,9 @@ class ReceiverActivity : Activity() {
         root.nextFocusRightId = target
     }
 
+    /** The display announced in HELLO; the overlay shows it next to the stream size (#34). */
+    private lateinit var hostDisplay: DisplayInfo
+
     private fun render(state: ReceiverState) {
         when (state) {
             is ReceiverState.Waiting -> {
@@ -362,6 +366,8 @@ class ReceiverActivity : Activity() {
                             )
                         } ?: getString(R.string.receiver_av_unknown),
                         s.pipeline,
+                        hostDisplay.width,
+                        hostDisplay.height,
                     )
             }
 

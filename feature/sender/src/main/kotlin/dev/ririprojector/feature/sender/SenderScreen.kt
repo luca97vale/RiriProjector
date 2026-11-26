@@ -363,7 +363,7 @@ private fun SettingsSummary(prefs: StreamPreferences, onClick: () -> Unit) {
                     stringResource(
                         R.string.sender_settings_summary,
                         prefs.preferredVideoCodec?.label() ?: auto,
-                        prefs.maxHeight ?: 1080,
+                        prefs.maxHeight?.let { "${it}p" } ?: auto,
                         prefs.maxFps ?: 60,
                         prefs.bitrateBps?.let { "${it / 1_000_000} Mbps" } ?: auto,
                         stringResource(
@@ -423,8 +423,10 @@ private fun SettingsContent(
             {
                 Choice(
                     stringResource(R.string.sender_resolution),
-                    SenderSettingsCodec.HEIGHTS.map { it to "${it}p" },
+                    listOf<Pair<Int?, String>>(null to auto) +
+                        SenderSettingsCodec.HEIGHTS.map { it to "${it}p" },
                     prefs.maxHeight,
+                    hint = stringResource(R.string.sender_resolution_hint),
                 ) { onChange(prefs.copy(maxHeight = it)) }
             },
             {
