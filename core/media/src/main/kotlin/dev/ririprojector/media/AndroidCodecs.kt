@@ -45,6 +45,14 @@ object AndroidCodecs {
                 CodecCatalog.looksLowLatency(info.name)
         val secure = caps.isFeatureSupported(CodecCapabilities.FEATURE_SecurePlayback) || info.name.endsWith(".secure")
         val encoderCaps = if (info.isEncoder) caps.encoderCapabilities else null
+        val probed = CodecProbe.limits(
+            maxW,
+            maxH,
+            maxFps,
+            isSizeSupported = { w, h -> video.isSizeSupported(w, h) },
+            maxFpsAt = { w, h -> runCatching { video.getSupportedFrameRatesFor(w, h).upper }.getOrNull() },
+        )
+        Log.i(TAG, "${info.name} $mime axes ${maxW}x$maxH area ${probed.maxPixels} rate ${probed.maxPixelRate}")
         return CodecDescriptor(
             name = info.name,
             mime = mime,
@@ -57,6 +65,11 @@ object AndroidCodecs {
             maxFps = maxFps,
             supportsIntraRefresh = info.isEncoder && caps.isFeatureSupported(CodecCapabilities.FEATURE_IntraRefresh),
             supportsCbr = encoderCaps?.isBitrateModeSupported(EncoderCapabilities.BITRATE_MODE_CBR) == true,
+            maxPixels = probed.maxPixels,
+            maxPixelRate = probed.maxPixelRate,
+            sizeAndRateSupported = { w, h, fps ->
+                runCatching { video.areSizeAndRateSupported(w, h, fps.toDouble()) }.getOrDefault(false)
+            },
         )
     }
 }

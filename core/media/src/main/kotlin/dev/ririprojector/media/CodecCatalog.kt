@@ -1,5 +1,6 @@
 package dev.ririprojector.media
 
+import dev.ririprojector.protocol.EncoderPredicate
 import dev.ririprojector.protocol.model.VideoCodec
 import dev.ririprojector.protocol.model.VideoCodecCapability
 
@@ -16,24 +17,47 @@ data class CodecDescriptor(
     val maxFps: Int,
     val supportsIntraRefresh: Boolean = false,
     val supportsCbr: Boolean = false,
+    /** Largest padded frame area, measured by [CodecProbe] (#34). */
+    val maxPixels: Int = maxWidth * maxHeight,
+    /** Largest `w × h × fps`, measured by [CodecProbe] (#34). */
+    val maxPixelRate: Long = maxPixels.toLong() * maxFps,
+    /** Exact `areSizeAndRateSupported(w, h, fps)` on device; null = trust the limits above. */
+    val sizeAndRateSupported: ((width: Int, height: Int, fps: Int) -> Boolean)? = null,
 )
 
 /** Pure selection logic over the device's codecs (ADR-004, ADR-005). */
 class CodecCatalog(private val codecs: List<CodecDescriptor>) {
-    /** Best codec for [codec]: non-secure, hardware first, then low-latency, then largest size. */
+    /** Best codec for [codec]: non-secure, hardware first, then low-latency, then largest measured area. */
     fun best(codec: VideoCodec, encoder: Boolean): CodecDescriptor? = codecs
         .filter { it.mime == codec.mime && it.isEncoder == encoder && !it.secure }
         .sortedWith(
             compareByDescending<CodecDescriptor> { it.hardware }
                 .thenByDescending { it.lowLatency }
-                .thenByDescending { it.maxWidth.toLong() * it.maxHeight },
+                .thenByDescending { it.maxPixels },
         ).firstOrNull()
 
     /** One capability per codec type, from the best implementation of each (for HELLO / negotiation). */
     fun capabilities(encoder: Boolean): List<VideoCodecCapability> = VideoCodec.entries.mapNotNull { codec ->
         best(codec, encoder)?.let {
-            VideoCodecCapability(codec, it.maxWidth, it.maxHeight, it.maxFps, it.hardware, it.lowLatency)
+            VideoCodecCapability(
+                codec,
+                it.maxWidth,
+                it.maxHeight,
+                it.maxFps,
+                it.hardware,
+                it.lowLatency,
+                it.maxPixels,
+                it.maxPixelRate,
+            )
         }
+    }
+
+    /**
+     * The exact check of the encoder [best] picks for each codec, for the negotiator (#34): sizes
+     * it rejects are never announced in START. Codecs without a device check accept everything.
+     */
+    fun encoderPredicate(): EncoderPredicate = EncoderPredicate { codec, w, h, fps ->
+        best(codec, encoder = true)?.sizeAndRateSupported?.invoke(w, h, fps) ?: true
     }
 
     companion object {
