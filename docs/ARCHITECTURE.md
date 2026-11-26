@@ -35,8 +35,8 @@ if measurements show head-of-line blocking spikes on Wi-Fi.
 Socket: small `sendBufferSize` (≈ 2–4 frames at the current bitrate) so congestion is not hidden in
 the kernel; `trafficClass` with DSCP AF41 / video; `keepAlive`.
 
-## ADR-003 — Wire format (v4)
-**Accepted** (v1 in M1, v2 in M5, v3 in M6, v4 in #21; `:core:protocol`). v4 adds P2P_OFFER (ADR-011). v2 appended the sync mode to START
+## ADR-003 — Wire format (v5)
+**Accepted** (v1 in M1, v2 in M5, v3 in M6, v4 in #21, v5 in #34; `:core:protocol`). v5 appends `i32 maxPixels` and `i64 maxPixelRate` to every video codec capability (HELLO decoders; ADR-004 Auto resolution). v4 adds P2P_OFFER (ADR-011). v2 appended the sync mode to START
 and the video delay to STATS. v3 makes PING/PONG NTP-style on `CLOCK_MONOTONIC` (4 timestamps; PING
 carries the sender's offset and RTT estimate), adds capture→shown latency to STATS and adds
 VIDEO_RECONFIG. Versions are not interoperable, and a mismatch ends the handshake with
@@ -50,7 +50,7 @@ Fixed 16-byte header, big-endian:
 | Offset | Field | Type | Notes |
 |---|---|---|---|
 | 0 | magic | u16 | `0x5252` ("RR") |
-| 2 | version | u8 | `PROTOCOL_VERSION` = 4 |
+| 2 | version | u8 | `PROTOCOL_VERSION` = 5 |
 | 3 | type | u8 | see message table |
 | 4 | flags | u8 | bit0 = keyframe, bit1 = codec config |
 | 5 | reserved | u8 | 0 |
@@ -69,7 +69,7 @@ Messages:
 
 | type | Name | Direction | Payload |
 |---|---|---|---|
-| 0x01 | HELLO | R→S | version, device name, display resolution, refresh rate, decodable codecs with profiles/levels and low-latency flag, audio capabilities |
+| 0x01 | HELLO | R→S | version, device name, display resolution, refresh rate, decodable codecs (per codec: `u8` codec, `u16` max width, max height, max fps, `bool` hardware, low latency, v5: `i32` max padded area, `i64` max pixel rate), audio capabilities |
 | 0x02 | START | S→R | chosen codec, width, height, fps, initial bitrate, audio format, sync mode (v2: `u8`, 0 = lip-sync, 1 = low latency) |
 | 0x03 | CONFIG | S→R | CSD (VPS/SPS/PPS) as emitted with `BUFFER_FLAG_CODEC_CONFIG` |
 | 0x04 | FRAME | S→R | Annex-B access unit |
@@ -87,8 +87,19 @@ Messages:
 ## ADR-004 — Encoder pipeline (sender)
 **Accepted** (revised in M6).
 - Source: `MediaProjection.createVirtualDisplay` directly onto the encoder input `Surface`
-  (zero copies). Resolution = the source fitted inside the receiver display and codec limits,
-  aligned to 8 (`CodecNegotiator`; `refit` recomputes it when the source size changes).
+  (zero copies). Resolution: see *Auto resolution* below (`CodecNegotiator`; `refit` recomputes it
+  when the source size changes).
+- **Auto resolution (#34).** fps is decided first (min of both refresh rates, codec max fps, the
+  user cap). The size is then the largest one with the source aspect ratio and orientation, each
+  side a multiple of 8, never upscaled, that fits: the receiver display, every codec axis limit,
+  the *padded* area (`ceil16(w)·ceil16(h)`, codecs work in 16×16 blocks) and `area × fps` of both
+  the encoder (local) and the decoder (from HELLO), the user's optional height cap (Auto = none,
+  the default), and the local encoder's exact `areSizeAndRateSupported`. Area and rate limits are
+  measured at startup by `CodecProbe` (binary search of the largest 16-aligned size per aspect ratio
+  with `isSizeSupported`; rate = that area × `getSupportedFrameRatesFor`), because per-axis maxima
+  overstate them (Pixel 10 HEVC encoder: 3840×2176 axes, ~1920×1088 area). If no probe passes, the
+  per-axis area is used. A `configure` failure that still happens keeps the ADR-010 retry path.
+  `VideoLimits` and `VideoFit.fitWithin` are public for the second-screen mode (#35).
 - Codec: HEVC if both sides support it in hardware; otherwise AVC. Hardware codecs only
   (`isHardwareAccelerated`).
 - Parameters: `KEY_PRIORITY=0` (realtime), `KEY_BITRATE_MODE=CBR` (fallback VBR),
@@ -301,7 +312,8 @@ changes without asking the user to share again.
   host's `HostCtl` thread.
 - *Sender swap* (under the host's video lock, so it never interleaves with a link starting or
   ending):
-  1. `CodecNegotiator.refit` computes the new size (same codec and fps) and the policy refits its
+  1. `CodecNegotiator.refit` computes the new size (same codec and fps) with the Auto rule of ADR-004 (and the
+     local encoder check) and the policy refits its
      ceiling.
   2. `setSurface(null)` → `encoder.close()` → `queue.resetVideo(requestKeyframe = false)`.
   3. `VIDEO_RECONFIG` is queued in the **video lane**, so it is ordered after old frames and never
@@ -433,6 +445,10 @@ events to `files/p2p.log` (`run-as <package> cat files/p2p.log`).
   `settings.version` key for future migrations. `SenderSettingsCodec` (pure, JVM-tested) validates
   every field against the choices the screen offers and falls back to the default per field, so a
   value from another version never crashes the app. `preferredAudioCodec` is not persisted.
+- Max resolution (#34): `AUTO` (the default, also for an absent or unknown value) or 720/1080/1440.
+  A value saved by an older version is kept, including the old default 1080 (indistinguishable from
+  an explicit choice): those users switch to Auto by hand. Intent extras and saved state use 0 for
+  Auto.
 - The screen keeps its `rememberSaveable` state (rotation) and initialises it from the stored values;
   they are written with `apply()` whenever the selection changes (plus an idempotent write on first
   composition), never on a codec or socket thread.

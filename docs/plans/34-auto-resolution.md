@@ -102,7 +102,7 @@ down reuses the existing encoder rebuild path under `videoLock`. No new resource
 - [x] `feat(sender): Auto max resolution, default for new installs` — settings, UI, extras, tests.
 - [x] ~~`feat(sender): step down the size when the encoder rejects it`~~ — replaced by the local encoder predicate (review changes), folded into the commit above.
 - [x] `feat(receiver): show the display resolution in the stats overlay`.
-- [ ] `docs: ADR-004 Auto resolution and protocol v5`.
+- [x] `docs: ADR-004 Auto resolution and protocol v5`.
 
 ## Review changes (android-architect, integrated; they override the sections above where they differ)
 - **Encoder limits are checked exactly and locally, before START.** `CodecNegotiator.negotiate`/`refit`
