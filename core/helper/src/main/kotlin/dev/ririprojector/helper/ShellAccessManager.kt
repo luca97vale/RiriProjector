@@ -89,8 +89,9 @@ class ShellAccessManager private constructor(private val context: Context) {
     @Synchronized
     fun startPairing() {
         if (_state.value == ShellAccessState.Unsupported) return
-        on(ShellAccessEvent.PairingRequested(portKnown = pairingMdns != null && pairingPort > 0))
-        if (pairingMdns != null) return
+        // Always a fresh discovery: a port resolved for an earlier opening of the dialog is stale.
+        stopPairingDiscovery()
+        on(ShellAccessEvent.PairingRequested())
         pairingMdns = AdbMdns(context, AdbProtocol.SERVICE_TLS_PAIRING) { port ->
             pairingPort = port
             on(ShellAccessEvent.PairingPort(port))
@@ -102,6 +103,24 @@ class ShellAccessManager private constructor(private val context: Context) {
         pairingMdns?.stop()
         pairingMdns = null
         pairingPort = -1
+    }
+
+    /** Restarts pairing discovery and waits (worker thread) for a port other than [stale]. */
+    private fun rediscoverPairingPort(stale: Int): Int? {
+        synchronized(this) {
+            stopPairingDiscovery()
+            pairingMdns = AdbMdns(context, AdbProtocol.SERVICE_TLS_PAIRING) { p ->
+                pairingPort = p
+                on(ShellAccessEvent.PairingPort(p))
+            }.also { it.start() }
+        }
+        val deadline = System.nanoTime() + REDISCOVER_TIMEOUT_MS * 1_000_000
+        while (System.nanoTime() < deadline) {
+            val p = pairingPort
+            if (p > 0 && p != stale) return p
+            Thread.sleep(REDISCOVER_POLL_MS)
+        }
+        return null
     }
 
     /** The pairing was cancelled or timed out: stop looking and keep any earlier pairing. */
@@ -125,14 +144,22 @@ class ShellAccessManager private constructor(private val context: Context) {
             }
             if (port <= 0) return@execute done(_state.value)
             try {
-                AdbPairingClient(LOOPBACK, port, digits, key).use { it.pair() }
+                try {
+                    AdbPairingClient(LOOPBACK, port, digits, key).use { it.pair() }
+                } catch (e: java.net.ConnectException) {
+                    // Every opening of the pairing dialog gets a new port, and NSD does not always report
+                    // the old one lost: rediscover once and retry with the fresh port.
+                    Log.i(TAG, "pairing port $port refused, rediscovering")
+                    val fresh = rediscoverPairingPort(port) ?: throw e
+                    AdbPairingClient(LOOPBACK, fresh, digits, key).use { it.pair() }
+                }
                 on(ShellAccessEvent.PairingSucceeded)
                 stopPairingDiscovery()
                 startSafely()
             } catch (e: AdbInvalidPairingCodeException) {
                 on(ShellAccessEvent.PairingFailed(wrongCode = true))
             } catch (e: Exception) {
-                Log.w(TAG, "pairing failed: ${e.javaClass.simpleName}")
+                Log.w(TAG, "pairing failed: ${e.javaClass.simpleName} ${e.message}")
                 stopPairingDiscovery()
                 on(ShellAccessEvent.PairingFailed(wrongCode = false))
             }
@@ -231,6 +258,8 @@ class ShellAccessManager private constructor(private val context: Context) {
         private const val LOOPBACK = "127.0.0.1"
         private const val HELPER_START_TIMEOUT_MS = 10_000L
         private const val CODE_LENGTH = 6
+        private const val REDISCOVER_TIMEOUT_MS = 5_000L
+        private const val REDISCOVER_POLL_MS = 100L
 
         @Volatile private var instance: ShellAccessManager? = null
 

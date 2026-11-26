@@ -70,12 +70,7 @@ class AdbPairingClient(
 
     /** Throws [AdbInvalidPairingCodeException] for a wrong code, [AdbException] for protocol errors. */
     fun pair() {
-        // Owned before connect(), so close() also releases a socket whose connect failed.
-        val plain = Socket().also { socket = it }.apply {
-            tcpNoDelay = true
-            connect(InetSocketAddress(host, port), timeoutMs)
-            soTimeout = timeoutMs
-        }
+        val plain = openSocket(host, port, timeoutMs).also { socket = it }
         val tls = key.sslContext.socketFactory.createSocket(plain, host, port, true) as SSLSocket
         socket = tls
         tls.startHandshake()

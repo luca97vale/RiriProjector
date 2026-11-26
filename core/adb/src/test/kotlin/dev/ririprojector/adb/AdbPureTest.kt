@@ -219,3 +219,15 @@ class TlsAlertsTest {
         assertThat(TlsAlerts.isCertificateRejection(java.net.SocketTimeoutException("Read timed out"))).isFalse()
     }
 }
+
+class AdbSocketsTest {
+    @Test
+    fun `connects to the requested port, not the unconnected socket's`() {
+        java.net.ServerSocket(0, 1, java.net.InetAddress.getLoopbackAddress()).use { server ->
+            openSocket("127.0.0.1", server.localPort, 2_000).use { s ->
+                assertThat(s.port).isEqualTo(server.localPort)
+                assertThat(s.tcpNoDelay).isTrue()
+            }
+        }
+    }
+}

@@ -557,7 +557,7 @@ no setup and is unchanged.
 
 **Helper process.**
 - It runs as uid 2000, started over the ADB shell with
-  `CLASSPATH='<apk>' setsid app_process /system/bin --nice-name=riri_helper dev.ririprojector.helper.HelperMain <pkg> <userId>`,
+  `setsid sh -c '(CLASSPATH=<apk> exec app_process /system/bin --nice-name=riri_helper dev.ririprojector.helper.HelperMain <pkg> <userId>) &'` (new session first: adbd kills the shell's process group when the stream closes),
   with its standard streams redirected.
 - It works out the app's uid from the package name itself, never from its arguments, and uses a
   context whose package is `com.android.shell`.

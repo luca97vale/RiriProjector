@@ -43,11 +43,12 @@ class SecondDisplayTest {
             0,
         )
 
-        assertThat(
-            cmd,
-        ).startsWith("CLASSPATH='/data/app/~~a==/dev.ririprojector.debug-x==/base.apk' setsid app_process")
-        assertThat(cmd).contains("dev.ririprojector.helper.HelperMain dev.ririprojector.debug 0")
-        assertThat(cmd).endsWith("</dev/null >/dev/null 2>&1 &")
+        // The new session first, then the helper in the background inside it.
+        assertThat(cmd).isEqualTo(
+            "setsid sh -c '(CLASSPATH='\\''/data/app/~~a==/dev.ririprojector.debug-x==/base.apk'\\'' " +
+                "exec app_process /system/bin --nice-name=riri_helper dev.ririprojector.helper.HelperMain " +
+                "dev.ririprojector.debug 0) </dev/null >/dev/null 2>&1 &' </dev/null >/dev/null 2>&1",
+        )
     }
 
     @Test

@@ -114,7 +114,7 @@
     <string name="second_screen_code">Pairing code</string>
     <string name="second_screen_submit">Send code</string>
     <string name="second_screen_searching">Waiting for \"Pair device with pairing code\"…</string>
-    <string name="second_screen_found">Pairing service found: enter the code.</string>
+    <string name="second_screen_found">Pairing service found: enter the code. To type it here, keep the pairing dialog open in split screen; otherwise reply to the notification.</string>
     <string name="second_screen_paired_off">Paired. Turn on Wireless debugging to start shell access (it turns off when Wi-Fi changes or the device restarts).</string>
     <string name="second_screen_open_settings">Open Wireless debugging</string>
     <string name="second_screen_starting">Starting shell access…</string>

@@ -73,14 +73,17 @@ object HelperCommand {
     private val PACKAGE = Regex("^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+$")
 
     /**
-     * `CLASSPATH='<apk>' setsid app_process /system/bin --nice-name=riri_helper <main> <pkg> <userId>`,
-     * detached with its standard streams closed, so it outlives the `shell:` stream.
+     * `setsid sh -c 'CLASSPATH=<apk> app_process /system/bin --nice-name=riri_helper <main> <pkg> <userId> &'`.
+     * The new session comes first and the outer shell returns only once the helper runs inside it: a
+     * plain `setsid app_process … &` races adbd, which kills the shell's process group as soon as the
+     * `shell:` stream closes, before `setsid` has run (seen on One UI 8).
      */
     fun start(apkPath: String, packageName: String, userId: Int): String {
         require(PACKAGE.matches(packageName)) { "bad package name" }
         require(userId >= 0) { "bad user id" }
-        return "CLASSPATH=${quote(apkPath)} setsid app_process /system/bin --nice-name=$PROCESS_NAME " +
-            "$MAIN_CLASS $packageName $userId </dev/null >/dev/null 2>&1 &"
+        val inner = "CLASSPATH=${quote(apkPath)} exec app_process /system/bin --nice-name=$PROCESS_NAME " +
+            "$MAIN_CLASS $packageName $userId"
+        return "setsid sh -c ${quote("($inner) </dev/null >/dev/null 2>&1 &")} </dev/null >/dev/null 2>&1"
     }
 
     /** Stops a helper left from an older build before starting a new one. */

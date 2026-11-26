@@ -36,6 +36,14 @@ object HelperMain {
 
         Looper.prepareMainLooper()
         val apk = System.getenv("CLASSPATH").orEmpty()
+        // ActivityThread and DisplayManager need a Looper: build them here, not on a binder thread.
+        runCatching {
+            ShellPlatform.context
+            ShellPlatform.displayManager
+        }.onFailure {
+            Log.e(TAG, "platform init failed", it)
+            exitProcess(6)
+        }
         val appUid = runCatching { ShellPlatform.packageUid(packageName, userId) }
             .getOrElse {
                 Log.e(TAG, "package $packageName not found")

@@ -88,6 +88,7 @@ class AdbMdns(context: Context, private val serviceType: String, private val onP
         val address = info.host?.hostAddress ?: return
         if (running && isOwnAddress(address)) {
             serviceName = info.serviceName
+            Log.i(TAG, "$serviceType: own service on port ${info.port}")
             onPort(info.port)
         }
     }

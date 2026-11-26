@@ -26,12 +26,7 @@ class AdbClient(
     private lateinit var output: DataOutputStream
 
     fun connect() {
-        // Owned before connect(), so close() also releases a socket whose connect failed.
-        val plain = Socket().also { socket = it }.apply {
-            tcpNoDelay = true
-            connect(InetSocketAddress(host, port), timeoutMs)
-            soTimeout = timeoutMs
-        }
+        val plain = openSocket(host, port, timeoutMs).also { socket = it }
         input = DataInputStream(plain.getInputStream())
         output = DataOutputStream(plain.getOutputStream())
 
