@@ -10,6 +10,7 @@
     <string name="sender_settings">Stream settings</string>
     <string name="sender_codec">Codec</string>
     <string name="sender_resolution">Max resolution</string>
+    <string name="sender_resolution_hint">Auto matches the receiver screen, up to what this device and both codecs can handle.</string>
     <string name="sender_fps">Frame rate</string>
     <string name="sender_bitrate">Bitrate</string>
     <string name="sender_auto">Auto</string>
@@ -87,7 +88,7 @@
     <string name="sender_tech_details">Technical details</string>
     <string name="sender_audio_state_on">Audio on</string>
     <string name="sender_audio_state_off">Audio off</string>
-    <string name="sender_settings_summary">%1$s codec · %2$dp · %3$d fps · %4$s bitrate · %5$s · %6$s</string>
+    <string name="sender_settings_summary">%1$s codec · %2$s · %3$d fps · %4$s bitrate · %5$s · %6$s</string>
     <string name="sender_saved_hint">Saved on this device and restored next time</string>
     <string name="sender_section_video">Video</string>
     <string name="sender_section_audio">Audio</string>

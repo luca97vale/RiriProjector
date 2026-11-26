@@ -113,7 +113,7 @@ class SenderActivity : ComponentActivity() {
             outState.putInt(KEY_PORT, t.port)
             outState.putString(KEY_NAME, t.name)
             outState.putString(KEY_CODEC, p.preferredVideoCodec?.name)
-            outState.putInt(KEY_MAX_HEIGHT, p.maxHeight ?: 1080)
+            outState.putInt(KEY_MAX_HEIGHT, p.maxHeight ?: 0)
             outState.putInt(KEY_FPS, p.maxFps ?: 60)
             outState.putInt(KEY_BITRATE, p.bitrateBps ?: 0)
             outState.putBoolean(KEY_AUDIO, p.audioEnabled)
@@ -132,7 +132,7 @@ class SenderActivity : ComponentActivity() {
         val prefs =
             StreamPreferences(
                 preferredVideoCodec = VideoCodec.entries.firstOrNull { it.name == codecName },
-                maxHeight = state.getInt(KEY_MAX_HEIGHT, 1080),
+                maxHeight = state.getInt(KEY_MAX_HEIGHT, 0).takeIf { it > 0 }, // 0 = Auto
                 maxFps = state.getInt(KEY_FPS, 60),
                 bitrateBps = state.getInt(KEY_BITRATE, 0).takeIf { it > 0 },
                 audioEnabled = state.getBoolean(KEY_AUDIO, true),

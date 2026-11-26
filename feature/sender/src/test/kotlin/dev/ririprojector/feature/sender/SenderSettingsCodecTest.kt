@@ -338,4 +338,22 @@ class SenderSettingsCodecTest {
         assertThat(SenderSettingsCodec.FPS).containsExactly(30, 60).inOrder()
         assertThat(SenderSettingsCodec.BITRATES_MBPS).containsExactly(0, 8, 16, 30).inOrder()
     }
+
+    @Test
+    fun `new installs default to Auto resolution`() {
+        assertThat(SenderSettingsCodec.decode { null }.prefs.maxHeight).isNull()
+    }
+
+    @Test
+    fun `Auto resolution is stored as AUTO and round trips`() {
+        val encoded = SenderSettingsCodec.encodePrefs(defaults.copy(maxHeight = null))
+
+        assertThat(encoded[SenderSettingsCodec.KEY_MAX_HEIGHT]).isEqualTo("AUTO")
+        assertThat(roundTrip(defaults.copy(maxHeight = null)).maxHeight).isNull()
+    }
+
+    @Test
+    fun `a saved explicit 1080 from an older version is kept`() {
+        assertThat(load(SenderSettingsCodec.KEY_MAX_HEIGHT to "1080").prefs.maxHeight).isEqualTo(1080)
+    }
 }

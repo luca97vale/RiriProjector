@@ -99,8 +99,8 @@ down reuses the existing encoder rebuild path under `videoLock`. No new resource
 - [x] `feat(protocol): area and rate limits in video capabilities (v5)` — model, wire, version, tests.
 - [x] `feat(protocol): Auto resolution fit with area/rate limits and step-down` — negotiator + tests.
 - [x] `feat(media): probe codec area and pixel-rate limits` — AndroidCodecs, CodecProbe, tests.
-- [ ] `feat(sender): Auto max resolution, default for new installs` — settings, UI, extras, tests.
-- [ ] `feat(sender): step down the size when the encoder rejects it` — ProjectionHost.
+- [x] `feat(sender): Auto max resolution, default for new installs` — settings, UI, extras, tests.
+- [x] ~~`feat(sender): step down the size when the encoder rejects it`~~ — replaced by the local encoder predicate (review changes), folded into the commit above.
 - [ ] `feat(receiver): show the display resolution in the stats overlay`.
 - [ ] `docs: ADR-004 Auto resolution and protocol v5`.
 

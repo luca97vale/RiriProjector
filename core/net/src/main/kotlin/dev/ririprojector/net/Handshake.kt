@@ -3,6 +3,7 @@ package dev.ririprojector.net
 import dev.ririprojector.protocol.ByeReason
 import dev.ririprojector.protocol.CodecNegotiator
 import dev.ririprojector.protocol.ControlMessage
+import dev.ririprojector.protocol.EncoderPredicate
 import dev.ririprojector.protocol.MessageType
 import dev.ririprojector.protocol.Negotiation
 import dev.ririprojector.protocol.ProtocolException
@@ -82,6 +83,8 @@ object Handshake {
         preferences: StreamPreferences,
         sessionId: Long,
         timeoutMs: Int = DEFAULT_TIMEOUT_MS,
+        /** Exact local encoder check (#34): START never carries a size the encoder rejects. */
+        encoderAccepts: EncoderPredicate = CodecNegotiator.ACCEPT_ALL,
     ): Pair<ControlMessage.Hello, StreamParams> {
         val hello =
             when (val first = readControl(connection, timeoutMs, "HELLO")) {
@@ -90,7 +93,15 @@ object Handshake {
                 else -> throw HandshakeException("expected HELLO, got ${first.type}")
             }
         connection.setReadTimeout(0)
-        return when (val result = CodecNegotiator.negotiate(capabilities, hello, preferences, sessionId)) {
+        return when (
+            val result = CodecNegotiator.negotiate(
+                capabilities,
+                hello,
+                preferences,
+                sessionId,
+                encoderAccepts,
+            )
+        ) {
             is Negotiation.Success -> {
                 connection.writer.writeControl(ControlMessage.Start(result.params))
                 connection.writer.flush()

@@ -453,7 +453,14 @@ internal class ProjectionHost(
                 if (ended) return LinkEnd(null)
                 val negotiatedSource = currentSource
                 val (hello, params) =
-                    Handshake.asSender(conn, capabilities(negotiatedSource), preferences, sessionId, handshakeTimeoutMs)
+                    Handshake.asSender(
+                        conn,
+                        capabilities(negotiatedSource),
+                        preferences,
+                        sessionId,
+                        handshakeTimeoutMs,
+                        catalog.encoderPredicate(),
+                    )
                 Log.i(TAG, "connected and handshaken in ${SystemClock.elapsedRealtime() - linkStartAt} ms")
                 DevLog.info(DEV_SOURCE) {
                     "Handshake OK with ${hello.deviceName} in ${SystemClock.elapsedRealtime() - linkStartAt} ms"
@@ -581,7 +588,7 @@ internal class ProjectionHost(
             val p = params ?: return // handshake still running: run() re-checks the size after it
             val h = hello ?: return
             val c = codec ?: return
-            val video = CodecNegotiator.refit(p.video, capabilities(source), h, preferences)
+            val video = CodecNegotiator.refit(p.video, capabilities(source), h, preferences, catalog.encoderPredicate())
             if (video == null) {
                 Log.w(TAG, "no usable size for ${source.width}x${source.height}: keeping ${p.video}")
                 return
