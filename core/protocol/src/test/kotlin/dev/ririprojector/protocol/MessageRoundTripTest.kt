@@ -22,7 +22,16 @@ class MessageRoundTripTest {
         deviceName = "Living room TV é中",
         display = DisplayInfo(1920, 1080, 60),
         videoDecoders = listOf(
-            VideoCodecCapability(VideoCodec.HEVC, 3840, 2160, 60, hardwareAccelerated = true, lowLatency = true),
+            VideoCodecCapability(
+                VideoCodec.HEVC,
+                3840,
+                2176,
+                60,
+                hardwareAccelerated = true,
+                lowLatency = true,
+                maxPixels = 1920 * 1088,
+                maxPixelRate = 1920L * 1088 * 60,
+            ),
             VideoCodecCapability(VideoCodec.AVC, 1920, 1080, 30, hardwareAccelerated = false, lowLatency = false),
         ),
         audioDecoders = listOf(

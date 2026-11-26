@@ -349,4 +349,162 @@ class CodecNegotiatorTest {
 
         assertThat(CodecNegotiator.refit(start, sender(source = DisplayInfo(100, 100, 60)), hello())).isNull()
     }
+
+    // --- #34 Auto resolution: area, rate and encoder limits ---
+
+    private val auto = StreamPreferences(maxHeight = null)
+    private val tabLandscape = DisplayInfo(2560, 1600, 60)
+    private val tabPortrait = DisplayInfo(1600, 2560, 60)
+    private val tv4k = DisplayInfo(3840, 2160, 60)
+    private val area1080 = 1920 * 1088
+
+    private fun areaCap(codec: VideoCodec, maxPixels: Int, maxPixelRate: Long = maxPixels.toLong() * 120) =
+        VideoCodecCapability(codec, 3840, 2176, 120, true, true, maxPixels, maxPixelRate)
+
+    private fun size(
+        source: DisplayInfo,
+        display: DisplayInfo,
+        enc: List<VideoCodecCapability> = listOf(cap(VideoCodec.HEVC)),
+        dec: List<VideoCodecCapability> = listOf(cap(VideoCodec.HEVC)),
+        prefs: StreamPreferences = auto,
+        encoderAccepts: EncoderPredicate = CodecNegotiator.ACCEPT_ALL,
+    ): Pair<Int, Int> {
+        val v = ok(
+            CodecNegotiator.negotiate(sender(source, enc), hello(dec, display), prefs, encoderAccepts = encoderAccepts),
+        ).video
+        return v.width to v.height
+    }
+
+    @Test
+    fun `Auto is the default preference`() {
+        assertThat(StreamPreferences().maxHeight).isNull()
+    }
+
+    @Test
+    fun `issue row 1 - Tab landscape on a 4K TV streams at native size`() {
+        assertThat(size(tabLandscape, tv4k)).isEqualTo(2560 to 1600)
+    }
+
+    @Test
+    fun `issue row 2 - Tab portrait on a Pixel portrait display fills its width`() {
+        assertThat(size(tabPortrait, DisplayInfo(1080, 2424, 60))).isEqualTo(1080 to 1728)
+    }
+
+    @Test
+    fun `issue row 3 - Tab landscape on Fire TV with a 1920x1088 decoder stays 1728x1080`() {
+        val fireTvDecoder = VideoCodecCapability(VideoCodec.HEVC, 1920, 1088, 60, true, true)
+
+        assertThat(size(tabLandscape, DisplayInfo(1920, 1080, 60), dec = listOf(fireTvDecoder)))
+            .isEqualTo(1728 to 1080)
+    }
+
+    @Test
+    fun `4K receiver with a 1080p-area encoder is limited by padded area`() {
+        val (w, h) = size(tabLandscape, tv4k, enc = listOf(areaCap(VideoCodec.HEVC, area1080)))
+
+        assertThat(w to h).isEqualTo(1824 to 1136)
+        assertThat(VideoFit.padded(w) * VideoFit.padded(h)).isAtMost(area1080.toLong())
+    }
+
+    @Test
+    fun `area is counted in 16x16 blocks`() {
+        // 1080x1928 is under 1920x1088 in pixels but over it once padded to 1088x1936.
+        val source = DisplayInfo(1080, 1928, 60)
+        val (w, h) = size(source, tabPortrait, enc = listOf(areaCap(VideoCodec.HEVC, area1080)))
+
+        assertThat(w).isLessThan(1080)
+        assertThat(VideoFit.padded(w) * VideoFit.padded(h)).isAtMost(area1080.toLong())
+    }
+
+    @Test
+    fun `Pixel portrait to Tab fits the Pixel encoder area`() {
+        val (w, h) = size(DisplayInfo(1080, 2424, 120), tabPortrait, enc = listOf(areaCap(VideoCodec.HEVC, area1080)))
+
+        assertThat(w to h).isEqualTo(960 to 2160)
+    }
+
+    @Test
+    fun `pixel rate limit shrinks the size at 60 fps but not at 30 fps`() {
+        val enc = listOf(areaCap(VideoCodec.HEVC, 3840 * 2176, maxPixelRate = area1080.toLong() * 60))
+
+        assertThat(size(tabLandscape, tv4k, enc = enc)).isEqualTo(1824 to 1136)
+        assertThat(size(tabLandscape, tv4k, enc = enc, prefs = auto.copy(maxFps = 30))).isEqualTo(2560 to 1600)
+    }
+
+    @Test
+    fun `decoder area limit applies like the encoder one`() {
+        assertThat(size(tabLandscape, tv4k, dec = listOf(areaCap(VideoCodec.HEVC, area1080))))
+            .isEqualTo(1824 to 1136)
+    }
+
+    @Test
+    fun `local encoder predicate shrinks the size until it accepts`() {
+        val accepts = EncoderPredicate { _, w, _, _ -> w <= 1600 }
+
+        val (w, h) = size(tabLandscape, tv4k, encoderAccepts = accepts)
+
+        assertThat(w).isAtMost(1600)
+        assertThat(w).isAtLeast(1592)
+        assertThat(h).isEqualTo(w * 10 / 16 / 8 * 8)
+    }
+
+    @Test
+    fun `encoder predicate that accepts nothing yields Failure`() {
+        val n = CodecNegotiator.negotiate(
+            sender(),
+            hello(),
+            auto,
+            encoderAccepts = EncoderPredicate { _, _, _, _ -> false },
+        )
+
+        assertThat(n).isInstanceOf(Negotiation.Failure::class.java)
+    }
+
+    @Test
+    fun `Auto never upscales a small source`() {
+        assertThat(size(DisplayInfo(1280, 800, 60), tv4k)).isEqualTo(1280 to 800)
+    }
+
+    @Test
+    fun `explicit 1080 cap still applies under a 4K receiver`() {
+        assertThat(size(tabLandscape, tv4k, prefs = StreamPreferences(maxHeight = 1080))).isEqualTo(1728 to 1080)
+    }
+
+    @Test
+    fun `refit under Auto applies the same rule after rotation`() {
+        val start = ok(CodecNegotiator.negotiate(sender(tabLandscape), hello(display = tv4k), auto)).video
+
+        val rotated = CodecNegotiator.refit(start, sender(tabPortrait), hello(display = tv4k), auto)!!
+
+        assertThat(rotated.width to rotated.height).isEqualTo(1344 to 2160)
+    }
+
+    @Test
+    fun `refit honours the encoder predicate`() {
+        val start = ok(CodecNegotiator.negotiate(sender(tabLandscape), hello(display = tv4k), auto)).video
+
+        val refit = CodecNegotiator.refit(
+            start,
+            sender(tabPortrait),
+            hello(display = tv4k),
+            auto,
+            EncoderPredicate { _, _, h, _ -> h <= 1600 },
+        )!!
+
+        assertThat(refit.height).isAtMost(1600)
+    }
+
+    @Test
+    fun `VideoLimits intersect keeps the tighter value of each field`() {
+        val a = VideoLimits(3840, 2160, 8_000_000, 500_000_000)
+        val b = VideoLimits(4096, 1080, 9_000_000, 100_000_000)
+
+        assertThat(a.intersect(b)).isEqualTo(VideoLimits(3840, 1080, 8_000_000, 100_000_000))
+    }
+
+    @Test
+    fun `fitWithin keeps the receiver aspect for a second-screen display`() {
+        assertThat(VideoFit.fitWithin(3840, 2160, VideoLimits.of(areaCap(VideoCodec.HEVC, area1080)), 60))
+            .isEqualTo(Size(1920, 1080))
+    }
 }

@@ -263,11 +263,20 @@ object ControlCodec {
     private fun writeVideoCap(out: PayloadWriter, cap: VideoCodecCapability) {
         out.u8(cap.codec.code).u16(cap.maxWidth).u16(cap.maxHeight).u16(cap.maxFps)
         out.bool(cap.hardwareAccelerated).bool(cap.lowLatency)
+        out.i32(cap.maxPixels).i64(cap.maxPixelRate) // v5 (#34)
     }
 
     private fun readVideoCap(r: PayloadReader): VideoCodecCapability {
         val codec = VideoCodec.fromCode(r.u8()) ?: throw malformed("unknown video codec")
-        return VideoCodecCapability(codec, r.u16(), r.u16(), r.u16(), r.bool(), r.bool())
+        val maxW = r.u16()
+        val maxH = r.u16()
+        val maxFps = r.u16()
+        val hw = r.bool()
+        val lowLatency = r.bool()
+        val maxPixels = r.i32()
+        val maxPixelRate = r.i64()
+        if (maxPixels <= 0 || maxPixelRate <= 0) throw malformed("invalid codec area or pixel rate")
+        return VideoCodecCapability(codec, maxW, maxH, maxFps, hw, lowLatency, maxPixels, maxPixelRate)
     }
 
     private fun writeVideoConfig(out: PayloadWriter, v: VideoConfig) {

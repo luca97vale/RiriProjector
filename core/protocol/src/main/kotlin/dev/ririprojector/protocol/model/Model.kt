@@ -51,6 +51,14 @@ data class VideoCodecCapability(
     val maxFps: Int,
     val hardwareAccelerated: Boolean,
     val lowLatency: Boolean,
+    /**
+     * Largest frame area (pixels) the codec accepts, measured on device (#34): codecs are often
+     * limited by area or level well below `maxWidth × maxHeight` (Pixel 10 HEVC: 3840×2176 axes,
+     * ~1920×1088 area).
+     */
+    val maxPixels: Int = maxWidth * maxHeight,
+    /** Largest `width × height × fps` the codec sustains, measured on device (#34). */
+    val maxPixelRate: Long = maxPixels.toLong() * maxFps,
 )
 
 data class AudioCodecCapability(val codec: AudioCodec, val maxChannels: Int, val sampleRates: List<Int>)
@@ -89,7 +97,8 @@ data class SenderCapabilities(
 /** User-facing stream settings; nulls mean "automatic". */
 data class StreamPreferences(
     val preferredVideoCodec: VideoCodec? = null,
-    val maxHeight: Int? = 1080,
+    /** Null = Auto: the largest size every limit allows (#34). */
+    val maxHeight: Int? = null,
     val maxFps: Int? = 60,
     val bitrateBps: Int? = null,
     val preferredAudioCodec: AudioCodec = AudioCodec.PCM_S16LE,
