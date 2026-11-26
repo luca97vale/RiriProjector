@@ -449,15 +449,17 @@ class CodecNegotiatorTest {
     }
 
     @Test
-    fun `encoder predicate that accepts nothing yields Failure`() {
-        val n = CodecNegotiator.negotiate(
-            sender(),
-            hello(),
-            auto,
-            encoderAccepts = EncoderPredicate { _, _, _, _ -> false },
+    fun `encoder predicate that accepts nothing falls back to the limits alone`() {
+        val p = ok(
+            CodecNegotiator.negotiate(
+                sender(tabLandscape),
+                hello(display = tv4k),
+                auto,
+                encoderAccepts = EncoderPredicate { _, _, _, _ -> false },
+            ),
         )
 
-        assertThat(n).isInstanceOf(Negotiation.Failure::class.java)
+        assertThat(p.video.width to p.video.height).isEqualTo(2560 to 1600)
     }
 
     @Test

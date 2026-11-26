@@ -70,12 +70,30 @@ class CodecProbeTest {
     fun `encoder predicate uses the device check of the best encoder`() {
         val d = CodecDescriptor(
             "hw", VideoCodec.AVC.mime, isEncoder = true, hardware = true, lowLatency = false, secure = false,
-            maxWidth = 1920, maxHeight = 1080, maxFps = 60, sizeAndRateSupported = { w, _, _ -> w <= 1280 },
+            maxWidth = 1920, maxHeight = 1080, maxFps = 60,
         )
-        val p = CodecCatalog(listOf(d)).encoderPredicate()
+        val p = CodecCatalog(listOf(d), mapOf("hw" to SizeRateCheck { w, _, _ -> w <= 1280 })).encoderPredicate()
 
         assertThat(p.accepts(VideoCodec.AVC, 1280, 720, 60)).isTrue()
         assertThat(p.accepts(VideoCodec.AVC, 1920, 1080, 60)).isFalse()
         assertThat(p.accepts(VideoCodec.HEVC, 1920, 1080, 60)).isTrue()
+    }
+
+    @Test
+    fun `aligned check rounds up to the codec alignment before asking`() {
+        val strict16 = SizeRateCheck { w, h, _ -> w % 16 == 0 && h % 16 == 0 }
+        val check = SizeRateCheck.aligned(16, 16, strict16)
+
+        assertThat(strict16.supported(1728, 1080, 60)).isFalse()
+        assertThat(check.supported(1728, 1080, 60)).isTrue()
+    }
+
+    @Test
+    fun `binary search survives a lower size bound`() {
+        val l = CodecProbe.limits(1920, 1088, 60, { w, h ->
+            w >= 128 && h >= 128 && w * h <= area1080
+        }, { _, _ -> 60.0 })
+
+        assertThat(l.maxPixels).isAtLeast(1920 * 1072)
     }
 }

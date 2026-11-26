@@ -147,9 +147,13 @@ object CodecNegotiator {
         val limits = VideoLimits.of(enc)
             .intersect(VideoLimits.of(dec))
             .intersect(VideoLimits.ofSize(receiver.display.width, receiver.display.height))
-        return VideoFit.fitWithin(sender.source.width, sender.source.height, limits, fps, prefMaxHeight) { w, h, f ->
+        val (srcW, srcH) = sender.source.width to sender.source.height
+        // If the local check rejects every size (an XML that under-declares), fall back to the limits
+        // alone: `configure` decides, with the ADR-010 retry path as before #34.
+        return VideoFit.fitWithin(srcW, srcH, limits, fps, prefMaxHeight) { w, h, f ->
             encoderAccepts.accepts(enc.codec, w, h, f)
         }
+            ?: VideoFit.fitWithin(srcW, srcH, limits, fps, prefMaxHeight)
     }
 
     internal fun negotiateAudio(

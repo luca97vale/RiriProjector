@@ -3,8 +3,10 @@ package dev.ririprojector.protocol
 import com.google.common.truth.Truth.assertThat
 import dev.ririprojector.protocol.ProtocolException.Reason
 import dev.ririprojector.protocol.model.AudioConfig
+import dev.ririprojector.protocol.model.DisplayInfo
 import dev.ririprojector.protocol.model.StreamParams
 import dev.ririprojector.protocol.model.VideoCodec
+import dev.ririprojector.protocol.model.VideoCodecCapability
 import dev.ririprojector.protocol.model.VideoConfig
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
@@ -162,6 +164,28 @@ class MessageReaderTest {
 
         assertThat(assertThrows(ProtocolException::class.java) { p.decodeControl() }.reason)
             .isEqualTo(Reason.MALFORMED_PAYLOAD)
+    }
+
+    @Test
+    fun `non-positive codec area or pixel rate in HELLO is MALFORMED_PAYLOAD`() {
+        listOf(0 to 1L, 1 to 0L).forEach { (pixels, rate) ->
+            val cap = VideoCodecCapability(VideoCodec.HEVC, 1920, 1080, 60, true, true, pixels, rate)
+            val bytes = written {
+                it.writeControl(
+                    ControlMessage.Hello(
+                        ProtocolInfo.PROTOCOL_VERSION,
+                        "tv",
+                        DisplayInfo(1920, 1080, 60),
+                        listOf(cap),
+                        emptyList(),
+                    ),
+                )
+            }
+            val p = MessageReader(ByteArrayInputStream(bytes)).read()!!
+
+            assertThat(assertThrows(ProtocolException::class.java) { p.decodeControl() }.reason)
+                .isEqualTo(Reason.MALFORMED_PAYLOAD)
+        }
     }
 
     @Test

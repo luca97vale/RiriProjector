@@ -56,7 +56,7 @@ data class VideoCodecCapability(
      * limited by area or level well below `maxWidth × maxHeight` (Pixel 10 HEVC: 3840×2176 axes,
      * ~1920×1088 area).
      */
-    val maxPixels: Int = maxWidth * maxHeight,
+    val maxPixels: Int = (maxWidth.toLong() * maxHeight).coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
     /** Largest `width × height × fps` the codec sustains, measured on device (#34). */
     val maxPixelRate: Long = maxPixels.toLong() * maxFps,
 )

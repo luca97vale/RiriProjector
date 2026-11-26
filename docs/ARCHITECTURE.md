@@ -98,7 +98,11 @@ Messages:
   measured at startup by `CodecProbe` (binary search of the largest 16-aligned size per aspect ratio
   with `isSizeSupported`; rate = that area × `getSupportedFrameRatesFor`), because per-axis maxima
   overstate them (Pixel 10 HEVC encoder: 3840×2176 axes, ~1920×1088 area). If no probe passes, the
-  per-axis area is used. A `configure` failure that still happens keeps the ADR-010 retry path.
+  per-axis area is used. The encoder check rounds the size up to the codec's alignment first (its
+  internal padding), and if it rejects every size the fit falls back to the limits alone. Area is
+  modelled in 16×16 blocks; decoders that count 32×32 or 64×64 blocks may still refuse a size near
+  their limit (known gap, BYE ERROR as before). A `configure` failure that still happens keeps the
+  ADR-010 retry path.
   `VideoLimits` and `VideoFit.fitWithin` are public for the second-screen mode (#35).
 - Codec: HEVC if both sides support it in hardware; otherwise AVC. Hardware codecs only
   (`isHardwareAccelerated`).
