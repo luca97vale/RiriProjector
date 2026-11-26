@@ -15,4 +15,5 @@ android {
 
 dependencies {
     api(project(":core:adb"))
+    implementation(libs.kotlinx.coroutines.android)
 }
