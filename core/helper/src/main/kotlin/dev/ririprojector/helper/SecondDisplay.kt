@@ -40,6 +40,30 @@ object SecondDisplay {
 
     /** The display is always landscape: (long, short) of the receiver's screen. */
     fun landscape(width: Int, height: Int): Pair<Int, Int> = maxOf(width, height) to minOf(width, height)
+
+    // KeyEvent.KEYCODE_* values (stable platform constants), as ranges so this stays pure.
+    private val ALLOWED_KEYS: List<IntRange> = listOf(
+        4..4, // BACK
+        7..23, // 0-9, STAR, POUND, D-pad and center
+        29..63, // A-Z, punctuation, ALT/SHIFT, TAB, SPACE, SYM
+        66..77, // ENTER, DEL, punctuation (not 64 EXPLORER / 65 ENVELOPE: they launch apps)
+        81..82, // PLUS, MENU
+        85..90, // media play/pause, stop, next, previous, rewind, fast forward
+        92..93, // PAGE_UP, PAGE_DOWN
+        96..110, // gamepad buttons
+        111..115, // ESCAPE, FORWARD_DEL, CTRL, CAPS_LOCK
+        122..124, // MOVE_HOME, MOVE_END, INSERT
+        126..127, // MEDIA_PLAY, MEDIA_PAUSE
+        131..163, // F1-F12, NUM_LOCK, numpad
+        268..271, // D-pad diagonals
+    )
+
+    /**
+     * Keys a peer may inject into the second screen: an allowlist of what typing, D-pad navigation,
+     * gamepads and media need. Everything that acts on the whole device (home, power, sleep, assist,
+     * screenshot, volume, brightness, app switch, META shortcuts, newer keycodes) is dropped.
+     */
+    fun isAllowedKey(keyCode: Int): Boolean = ALLOWED_KEYS.any { keyCode in it }
 }
 
 /** Builds the shell command that starts the helper (ADR-014). Pure. */

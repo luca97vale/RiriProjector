@@ -102,7 +102,7 @@ internal class HelperService(
         source: Int,
         receivedAtNanos: Long,
     ) {
-        if (!displays.containsKey(displayId) || keyCode in BLOCKED_KEYS) return countDrop()
+        if (!displays.containsKey(displayId) || !SecondDisplay.isAllowedKey(keyCode)) return countDrop()
         val now = SystemClock.uptimeMillis()
         val event = KeyEvent(now, now, action, keyCode, repeat, metaState, -1, 0, 0, source)
         record(ShellPlatform.inject(event, displayId), receivedAtNanos)
@@ -210,25 +210,6 @@ internal class HelperService(
         private const val MAX_POINTERS = 10
         private const val LAUNCH_TIMEOUT_S = 5L
 
-        // Keys that act on the whole device, not the second screen: never injected for a peer.
-        private val BLOCKED_KEYS = setOf(
-            KeyEvent.KEYCODE_HOME,
-            KeyEvent.KEYCODE_POWER,
-            KeyEvent.KEYCODE_SLEEP,
-            KeyEvent.KEYCODE_WAKEUP,
-            KeyEvent.KEYCODE_SOFT_SLEEP,
-            KeyEvent.KEYCODE_APP_SWITCH,
-            KeyEvent.KEYCODE_ASSIST,
-            KeyEvent.KEYCODE_VOICE_ASSIST,
-            KeyEvent.KEYCODE_ALL_APPS,
-            KeyEvent.KEYCODE_NOTIFICATION,
-            KeyEvent.KEYCODE_SYSTEM_NAVIGATION_DOWN,
-            KeyEvent.KEYCODE_SYSTEM_NAVIGATION_UP,
-            KeyEvent.KEYCODE_CALL,
-            KeyEvent.KEYCODE_ENDCALL,
-            KeyEvent.KEYCODE_CAMERA,
-            KeyEvent.KEYCODE_SETTINGS,
-        )
         private val COMPONENT = Regex("^[A-Za-z][A-Za-z0-9_.]*/[A-Za-z0-9_.$]+$")
 
         /** IBinder.INTERFACE_TRANSACTION ('_NTF'): allowed so the descriptor can be queried. */

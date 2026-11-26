@@ -70,4 +70,14 @@ class SecondDisplayTest {
         assertThat(max).isEqualTo(40_000)
         assertThat(h.drain().toList()).containsExactly(0L, 0L, 0L).inOrder()
     }
+
+    @Test
+    fun `only second-screen keys can be injected`() {
+        // BACK, DPAD_CENTER, A, ENTER, DEL, ESCAPE, MEDIA_PLAY_PAUSE, BUTTON_A, NUMPAD_5
+        listOf(4, 23, 29, 66, 67, 111, 85, 96, 149).forEach { assertThat(SecondDisplay.isAllowedKey(it)).isTrue() }
+        // HOME, CALL, VOLUME_UP, POWER, CAMERA, EXPLORER, ENVELOPE, SEARCH, APP_SWITCH, META_LEFT, SYSRQ, BRIGHTNESS_UP, ASSIST, unknown
+        listOf(3, 5, 24, 26, 27, 64, 65, 84, 187, 117, 120, 221, 219, 999).forEach {
+            assertThat(SecondDisplay.isAllowedKey(it)).isFalse()
+        }
+    }
 }

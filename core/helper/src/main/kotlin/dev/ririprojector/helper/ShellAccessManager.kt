@@ -54,7 +54,8 @@ class ShellAccessManager private constructor(private val context: Context) {
         override fun onDisplayEmpty(displayId: Int) = Unit
     }
 
-    // Events come from the NSD threads and the worker: reduce atomically.
+    // Events come from the NSD threads and the worker: reduce and persist under one lock, in order.
+    @Synchronized
     private fun on(event: ShellAccessEvent) {
         val next = _state.updateAndGet { ShellAccess.reduce(it, event) }
         prefs.edit().putBoolean(KEY_PAIRED, ShellAccess.isPaired(next)).apply()
@@ -192,7 +193,8 @@ class ShellAccessManager private constructor(private val context: Context) {
                 on(ShellAccessEvent.HelperDied(connectPortKnown = connectPort > 0))
             }, 0)
         }.isSuccess
-        if (!linked) return on(ShellAccessEvent.HelperTimedOut)
+        // A death between linking and here would be ignored while Starting: check once more.
+        if (!linked || !binder.isBinderAlive) return on(ShellAccessEvent.HelperTimedOut)
         helper = h
         on(ShellAccessEvent.HelperStarted)
         Log.i(TAG, "helper ready")

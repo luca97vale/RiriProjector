@@ -5,6 +5,8 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import dev.ririprojector.net.ReceiverEndpoint
 import dev.ririprojector.protocol.ProtocolInfo
@@ -16,6 +18,7 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.conflate
 
 private const val TAG = "Riri/Nsd"
+private const val RESOLVE_RETRY_MS = 150L
 
 /** Discovery could not start; [errorCode] is an `NsdManager.FAILURE_*` value. */
 class NsdDiscoveryException(val errorCode: Int) : java.io.IOException("NSD discovery failed: $errorCode")
@@ -79,12 +82,20 @@ class NsdBrowser(context: Context) {
         }
 
         lateinit var resolveNext: () -> Unit
+        val retry = Handler(Looper.getMainLooper())
 
         val resolveListener =
             object : NsdManager.ResolveListener {
                 override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) {
-                    Log.w(TAG, "resolve failed for ${info.serviceName}: $errorCode")
                     synchronized(pending) { resolving = false }
+                    if (errorCode == NsdManager.FAILURE_ALREADY_ACTIVE) {
+                        // Another resolve of this process (e.g. the second-screen setup's ADB discovery)
+                        // is in flight: try again shortly instead of losing the receiver.
+                        synchronized(pending) { pending.addLast(info) }
+                        retry.postDelayed({ resolveNext() }, RESOLVE_RETRY_MS)
+                        return
+                    }
+                    Log.w(TAG, "resolve failed for ${info.serviceName}: $errorCode")
                     resolveNext()
                 }
 
@@ -146,6 +157,7 @@ class NsdBrowser(context: Context) {
         publishList()
         nsd.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
         awaitClose {
+            retry.removeCallbacksAndMessages(null)
             runCatching { nsd.stopServiceDiscovery(discoveryListener) }
             runCatching { lock?.release() }
         }

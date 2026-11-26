@@ -27,6 +27,7 @@ class PairingService : Service() {
     private val main = Handler(Looper.getMainLooper())
     private var pairing = false
     private var started = false
+    private var destroyed = false
     private val timeout = Runnable { stop() }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -71,6 +72,8 @@ class PairingService : Service() {
         ShellAccessManager.get(this).pair(code) { state ->
             main.post {
                 pairing = false
+                // Timed out or cancelled meanwhile: onDestroy already cleaned up, touch nothing.
+                if (destroyed) return@post
                 when (state) {
                     // Nothing tried yet: the pairing dialog is not advertised (closed, or not resolved yet).
                     is ShellAccessState.Pairing -> notify(askNotification(getString(R.string.pairing_not_found)))
@@ -103,6 +106,7 @@ class PairingService : Service() {
     }
 
     override fun onDestroy() {
+        destroyed = true
         main.removeCallbacks(timeout)
         if (started) {
             val manager = ShellAccessManager.get(this)

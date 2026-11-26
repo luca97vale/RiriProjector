@@ -42,18 +42,15 @@ class AdbClient(
                 write(AdbMessage(AdbProtocol.A_STLS, AdbProtocol.A_STLS_VERSION, 0))
                 val tls = key.sslContext.socketFactory.createSocket(plain, host, port, true) as SSLSocket
                 socket = tls
-                // adbd rejects an unpaired certificate with a TLS alert. Timeouts and resets stay I/O errors:
-                // they must not make the app forget a pairing that is still valid.
-                try {
+                // adbd rejects an unpaired certificate with a TLS certificate alert. With TLS 1.3 it arrives
+                // after the client side of the handshake, on the first read. Resets and timeouts stay I/O
+                // errors: they must not make the app forget a pairing that is still valid.
+                message = refusedKeyAsAuth {
                     tls.startHandshake()
-                } catch (e: javax.net.ssl.SSLHandshakeException) {
-                    // Conscrypt wraps a reset during the handshake in SSLHandshakeException too.
-                    if (e.cause is java.net.SocketException) throw e
-                    throw AdbAuthException("TLS refused: ${e.message}")
+                    input = DataInputStream(tls.inputStream)
+                    output = DataOutputStream(tls.outputStream)
+                    read()
                 }
-                input = DataInputStream(tls.inputStream)
-                output = DataOutputStream(tls.outputStream)
-                message = read()
             }
 
             AdbProtocol.A_AUTH -> {
@@ -116,4 +113,25 @@ class AdbClient(
         runCatching { socket?.close() }
         socket = null
     }
+}
+
+/** Runs [block], turning a TLS certificate alert from adbd into [AdbAuthException]. */
+internal inline fun <T> refusedKeyAsAuth(block: () -> T): T = try {
+    block()
+} catch (e: javax.net.ssl.SSLException) {
+    if (TlsAlerts.isCertificateRejection(e)) throw AdbAuthException("TLS refused: ${e.message}")
+    throw e
+}
+
+/** Pure: does an SSL error (or its causes) carry a certificate-rejection alert? */
+object TlsAlerts {
+    // BoringSSL/Conscrypt name the alert in the message, e.g. "TLSV1_ALERT_CERTIFICATE_REQUIRED".
+    private val CERTIFICATE_ALERT =
+        Regex("ALERT_(BAD_CERTIFICATE|CERTIFICATE_[A-Z_]+|UNKNOWN_CA|ACCESS_DENIED|UNSUPPORTED_CERTIFICATE)")
+
+    fun isCertificateRejection(error: Throwable): Boolean = generateSequence(error) {
+        it.cause
+    }.take(MAX_DEPTH).any { CERTIFICATE_ALERT.containsMatchIn(it.message.orEmpty()) }
+
+    private const val MAX_DEPTH = 8
 }

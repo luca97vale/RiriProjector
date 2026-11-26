@@ -193,3 +193,29 @@ class ShellAccessTest {
             .isEqualTo(ShellAccessState.NotPaired)
     }
 }
+
+class TlsAlertsTest {
+    @Test
+    fun `certificate alerts mean the key was refused`() {
+        val required = javax.net.ssl.SSLException(
+            "Read error: ssl=0x7b: Failure in SSL library\nerror:10000474:SSL routines:" +
+                "OPENSSL_internal:TLSV1_ALERT_CERTIFICATE_REQUIRED",
+        )
+        val wrapped = java.io.IOException("wrapper", javax.net.ssl.SSLException("SSLV3_ALERT_BAD_CERTIFICATE"))
+
+        assertThat(TlsAlerts.isCertificateRejection(required)).isTrue()
+        assertThat(TlsAlerts.isCertificateRejection(wrapped)).isTrue()
+    }
+
+    @Test
+    fun `resets and timeouts keep the pairing`() {
+        val reset = javax.net.ssl.SSLHandshakeException(
+            "SSL handshake aborted: ssl=0x7b: I/O error during system call, Connection reset by peer",
+        )
+        val closed = javax.net.ssl.SSLException("Connection closed by peer")
+
+        assertThat(TlsAlerts.isCertificateRejection(reset)).isFalse()
+        assertThat(TlsAlerts.isCertificateRejection(closed)).isFalse()
+        assertThat(TlsAlerts.isCertificateRejection(java.net.SocketTimeoutException("Read timed out"))).isFalse()
+    }
+}

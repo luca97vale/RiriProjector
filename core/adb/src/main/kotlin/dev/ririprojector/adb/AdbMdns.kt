@@ -6,6 +6,8 @@ package dev.ririprojector.adb
 import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import java.net.NetworkInterface
 
@@ -60,23 +62,26 @@ class AdbMdns(context: Context, private val serviceType: String, private val onP
 
     private val resolver = object : NsdManager.ResolveListener {
         override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) {
-            // Another resolve of this process (the other AdbMdns, receiver discovery) is in flight.
-            if (errorCode == NsdManager.FAILURE_ALREADY_ACTIVE && retries++ < MAX_RETRIES) {
-                synchronized(this@AdbMdns) { pending.addFirst(info) }
-                Thread.sleep(RETRY_MS)
-            } else {
-                retries = 0
+            // Another resolve of this process (the other AdbMdns, receiver discovery) is in flight. Retry
+            // later from a Handler: never sleep on NSD's callback thread, which receiver discovery shares.
+            if (errorCode == NsdManager.FAILURE_ALREADY_ACTIVE) {
+                synchronized(this@AdbMdns) {
+                    if (!running) return
+                    pending.addLast(info)
+                    resolving = false
+                }
+                retry.postDelayed({ synchronized(this@AdbMdns) { if (!resolving) resolveNext() } }, RETRY_MS)
+                return
             }
             resolveNext()
         }
 
         override fun onServiceResolved(info: NsdServiceInfo) {
-            retries = 0
             handle(info)
             resolveNext()
         }
     }
-    private var retries = 0
+    private val retry = Handler(Looper.getMainLooper())
 
     private fun handle(info: NsdServiceInfo) {
         @Suppress("DEPRECATION")
@@ -99,6 +104,7 @@ class AdbMdns(context: Context, private val serviceType: String, private val onP
         if (!running) return
         running = false
         pending.clear()
+        retry.removeCallbacksAndMessages(null)
         runCatching { nsd.stopServiceDiscovery(discovery) }
     }
 
@@ -110,7 +116,6 @@ class AdbMdns(context: Context, private val serviceType: String, private val onP
 
     private companion object {
         const val TAG = "Riri/AdbMdns"
-        const val RETRY_MS = 100L
-        const val MAX_RETRIES = 20
+        const val RETRY_MS = 150L
     }
 }
