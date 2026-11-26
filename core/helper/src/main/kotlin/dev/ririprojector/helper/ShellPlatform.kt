@@ -54,8 +54,21 @@ internal object ShellPlatform {
             .newInstance(context)
     }
 
-    /** uid of [packageName] for [userId]; never taken from the command line. */
+    /**
+     * uid of [packageName] for [userId]; never taken from the command line. Asks IPackageManager for
+     * that user (the app may live only in a work profile), falling back to user 0.
+     */
     fun packageUid(packageName: String, userId: Int): Int {
+        val perUser = runCatching {
+            val pm = Class.forName("android.app.ActivityThread").getMethod("getPackageManager").invoke(null)!!
+            val method = pm.javaClass.methods.first {
+                it.name == "getPackageUid" && it.parameterTypes.size == 3
+            }
+            // (String, long flags, int userId) on API 33+, (String, int flags, int userId) before.
+            val flags: Any = if (method.parameterTypes[1] == Long::class.javaPrimitiveType) 0L else 0
+            method.invoke(pm, packageName, flags, userId) as Int
+        }.getOrNull()
+        if (perUser != null && perUser >= 0) return perUser
         val appId = context.packageManager.getPackageUid(packageName, 0) % PER_USER_RANGE
         return userId * PER_USER_RANGE + appId
     }

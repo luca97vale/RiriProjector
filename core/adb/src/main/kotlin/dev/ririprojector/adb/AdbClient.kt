@@ -26,12 +26,12 @@ class AdbClient(
     private lateinit var output: DataOutputStream
 
     fun connect() {
-        val plain = Socket().apply {
+        // Owned before connect(), so close() also releases a socket whose connect failed.
+        val plain = Socket().also { socket = it }.apply {
             tcpNoDelay = true
             connect(InetSocketAddress(host, port), timeoutMs)
             soTimeout = timeoutMs
         }
-        socket = plain
         input = DataInputStream(plain.getInputStream())
         output = DataOutputStream(plain.getOutputStream())
 
@@ -42,8 +42,15 @@ class AdbClient(
                 write(AdbMessage(AdbProtocol.A_STLS, AdbProtocol.A_STLS_VERSION, 0))
                 val tls = key.sslContext.socketFactory.createSocket(plain, host, port, true) as SSLSocket
                 socket = tls
-                // adbd rejects an unpaired certificate during the handshake.
-                runCatching { tls.startHandshake() }.onFailure { throw AdbAuthException("TLS refused: ${it.message}") }
+                // adbd rejects an unpaired certificate with a TLS alert. Timeouts and resets stay I/O errors:
+                // they must not make the app forget a pairing that is still valid.
+                try {
+                    tls.startHandshake()
+                } catch (e: javax.net.ssl.SSLHandshakeException) {
+                    // Conscrypt wraps a reset during the handshake in SSLHandshakeException too.
+                    if (e.cause is java.net.SocketException) throw e
+                    throw AdbAuthException("TLS refused: ${e.message}")
+                }
                 input = DataInputStream(tls.inputStream)
                 output = DataOutputStream(tls.outputStream)
                 message = read()

@@ -26,6 +26,8 @@ import dev.ririprojector.helper.ShellAccessManager
 class PairingService : Service() {
     private val main = Handler(Looper.getMainLooper())
     private var pairing = false
+    private var started = false
+    private val timeout = Runnable { stop() }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -49,7 +51,16 @@ class PairingService : Service() {
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
-        ShellAccessManager.get(this).startPairing()
+        val manager = ShellAccessManager.get(this)
+        if (!started) {
+            started = true
+            // Pairing ends by starting the helper, which needs the connect port too.
+            manager.watch()
+        }
+        manager.startPairing()
+        // shortService times out by itself on API 34+; older levels get the same budget here.
+        main.removeCallbacks(timeout)
+        main.postDelayed(timeout, TIMEOUT_MS)
     }
 
     private fun onCode(intent: Intent) {
@@ -61,6 +72,9 @@ class PairingService : Service() {
             main.post {
                 pairing = false
                 when (state) {
+                    // Nothing tried yet: the pairing dialog is not advertised (closed, or not resolved yet).
+                    is ShellAccessState.Pairing -> notify(askNotification(getString(R.string.pairing_not_found)))
+
                     ShellAccessState.Ready, ShellAccessState.Starting, is ShellAccessState.Paired -> {
                         notifyResult(getString(R.string.pairing_done))
                         stop()
@@ -74,11 +88,11 @@ class PairingService : Service() {
                             notify(askNotification(getString(R.string.pairing_wrong_code)))
                             ShellAccessManager.get(this).startPairing()
                         } else {
-                            notifyResult(getString(R.string.second_screen_failed_start))
+                            notifyResult(getString(R.string.pairing_failed_start))
                             stop()
                         }
 
-                    else -> notify(askNotification(getString(R.string.pairing_wrong_code)))
+                    else -> stop()
                 }
             }
         }
@@ -86,6 +100,16 @@ class PairingService : Service() {
 
     override fun onTimeout(startId: Int, fgsType: Int) {
         stop()
+    }
+
+    override fun onDestroy() {
+        main.removeCallbacks(timeout)
+        if (started) {
+            val manager = ShellAccessManager.get(this)
+            manager.stopPairing()
+            manager.unwatch()
+        }
+        super.onDestroy()
     }
 
     private fun stop() {
@@ -156,6 +180,7 @@ class PairingService : Service() {
         private const val REQUEST_CODE = 10
         private const val REQUEST_CANCEL = 11
         private const val RESULT_TIMEOUT_MS = 15_000L
+        private const val TIMEOUT_MS = 3 * 60 * 1000L
         private const val KEY_CODE = "code"
         private const val ACTION_CODE = "dev.ririprojector.sender.PAIRING_CODE"
         private const val ACTION_CANCEL = "dev.ririprojector.sender.PAIRING_CANCEL"

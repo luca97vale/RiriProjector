@@ -30,38 +30,75 @@ class AdbMdns(context: Context, private val serviceType: String, private val onP
 
         override fun onStopDiscoveryFailed(type: String, errorCode: Int) = Unit
 
-        override fun onServiceFound(info: NsdServiceInfo) {
-            @Suppress("DEPRECATION") // resolveService is the API-28..33 path; fine for one-shot resolves.
-            nsd.resolveService(info, resolver())
-        }
+        override fun onServiceFound(info: NsdServiceInfo) = enqueue(info)
 
         override fun onServiceLost(info: NsdServiceInfo) {
             if (info.serviceName == serviceName) onPort(-1)
         }
     }
 
-    private fun resolver() = object : NsdManager.ResolveListener {
-        override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) = Unit
+    // resolveService allows one resolve at a time before API 34 (FAILURE_ALREADY_ACTIVE): other devices
+    // on the LAN with Wireless debugging on would otherwise crowd out our own. Serialize them.
+    private val pending = ArrayDeque<NsdServiceInfo>()
+    private var resolving = false
+
+    @Synchronized
+    private fun enqueue(info: NsdServiceInfo) {
+        if (!running || pending.any { it.serviceName == info.serviceName }) return
+        pending.addLast(info)
+        if (!resolving) resolveNext()
+    }
+
+    @Synchronized
+    private fun resolveNext() {
+        val next = pending.removeFirstOrNull()
+        resolving = next != null && running
+        if (!resolving) return pending.clear()
+        @Suppress("DEPRECATION") // resolveService is the one-shot path on every supported API level.
+        runCatching { nsd.resolveService(next, resolver) }.onFailure { resolveNext() }
+    }
+
+    private val resolver = object : NsdManager.ResolveListener {
+        override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) {
+            // Another resolve of this process (the other AdbMdns, receiver discovery) is in flight.
+            if (errorCode == NsdManager.FAILURE_ALREADY_ACTIVE && retries++ < MAX_RETRIES) {
+                synchronized(this@AdbMdns) { pending.addFirst(info) }
+                Thread.sleep(RETRY_MS)
+            } else {
+                retries = 0
+            }
+            resolveNext()
+        }
 
         override fun onServiceResolved(info: NsdServiceInfo) {
-            @Suppress("DEPRECATION")
-            val address = info.host?.hostAddress ?: return
-            if (running && isOwnAddress(address)) {
-                serviceName = info.serviceName
-                onPort(info.port)
-            }
+            retries = 0
+            handle(info)
+            resolveNext()
+        }
+    }
+    private var retries = 0
+
+    private fun handle(info: NsdServiceInfo) {
+        @Suppress("DEPRECATION")
+        val address = info.host?.hostAddress ?: return
+        if (running && isOwnAddress(address)) {
+            serviceName = info.serviceName
+            onPort(info.port)
         }
     }
 
+    @Synchronized
     fun start() {
         if (running) return
         running = true
         nsd.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, discovery)
     }
 
+    @Synchronized
     fun stop() {
         if (!running) return
         running = false
+        pending.clear()
         runCatching { nsd.stopServiceDiscovery(discovery) }
     }
 
@@ -73,5 +110,7 @@ class AdbMdns(context: Context, private val serviceType: String, private val onP
 
     private companion object {
         const val TAG = "Riri/AdbMdns"
+        const val RETRY_MS = 100L
+        const val MAX_RETRIES = 20
     }
 }

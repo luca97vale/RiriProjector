@@ -19,6 +19,7 @@ import java.util.concurrent.Executors
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.updateAndGet
 
 /**
  * App-side owner of the second-screen setup (ADR-014): pairing with Wireless debugging, finding
@@ -44,6 +45,7 @@ class ShellAccessManager private constructor(private val context: Context) {
     @Volatile private var connectPort = -1
     private var pairingMdns: AdbMdns? = null
     private var connectMdns: AdbMdns? = null
+    private var watchers = 0
 
     @Volatile
     var helper: IRiriHelper? = null
@@ -52,15 +54,19 @@ class ShellAccessManager private constructor(private val context: Context) {
         override fun onDisplayEmpty(displayId: Int) = Unit
     }
 
+    // Events come from the NSD threads and the worker: reduce atomically.
     private fun on(event: ShellAccessEvent) {
-        val next = ShellAccess.reduce(_state.value, event)
-        _state.value = next
+        val next = _state.updateAndGet { ShellAccess.reduce(it, event) }
         prefs.edit().putBoolean(KEY_PAIRED, ShellAccess.isPaired(next)).apply()
     }
 
-    /** Starts watching for this device's Wireless-debugging connect port (screen visible). */
+    /**
+     * Starts watching for this device's Wireless-debugging connect port. Reference-counted: the setup
+     * screen and the pairing service each hold a watch while they need the port.
+     */
     @Synchronized
     fun watch() {
+        watchers++
         if (_state.value == ShellAccessState.Unsupported || connectMdns != null) return
         connectMdns = AdbMdns(context, AdbProtocol.SERVICE_TLS_CONNECT) { port ->
             connectPort = port
@@ -68,18 +74,21 @@ class ShellAccessManager private constructor(private val context: Context) {
         }.also { it.start() }
     }
 
+    /** Stops the connect-port watch. Pairing discovery belongs to the pairing service ([stopPairing]). */
     @Synchronized
     fun unwatch() {
+        if (watchers > 0) watchers--
+        if (watchers > 0) return
         connectMdns?.stop()
         connectMdns = null
-        stopPairingDiscovery()
+        connectPort = -1
     }
 
     /** The user opened "Pair device with pairing code": look for the pairing service. */
     @Synchronized
     fun startPairing() {
         if (_state.value == ShellAccessState.Unsupported) return
-        on(ShellAccessEvent.PairingRequested)
+        on(ShellAccessEvent.PairingRequested(portKnown = pairingMdns != null && pairingPort > 0))
         if (pairingMdns != null) return
         pairingMdns = AdbMdns(context, AdbProtocol.SERVICE_TLS_PAIRING) { port ->
             pairingPort = port
@@ -91,26 +100,39 @@ class ShellAccessManager private constructor(private val context: Context) {
     private fun stopPairingDiscovery() {
         pairingMdns?.stop()
         pairingMdns = null
+        pairingPort = -1
     }
 
-    /** Pairs with [code] (6 digits from Settings), then starts the helper. [done] gets the outcome. */
+    /** The pairing was cancelled or timed out: stop looking and keep any earlier pairing. */
+    fun stopPairing() {
+        stopPairingDiscovery()
+        on(ShellAccessEvent.PairingCancelled(connectPortKnown = connectPort > 0))
+    }
+
+    /**
+     * Pairs with [code] (6 digits from Settings), then starts the helper. [done] gets the outcome; a
+     * [ShellAccessState.Pairing] outcome means the pairing service was not found yet (nothing tried).
+     */
     fun pair(code: String, done: (ShellAccessState) -> Unit = {}) {
         val digits = code.filter(Char::isDigit)
         worker.execute {
             val port = pairingPort
-            if (Build.VERSION.SDK_INT < ShellAccess.MIN_SDK || port <= 0 || digits.length != 6) {
-                on(ShellAccessEvent.PairingFailed(wrongCode = digits.length != 6))
+            if (Build.VERSION.SDK_INT < ShellAccess.MIN_SDK) return@execute done(_state.value)
+            if (digits.length != CODE_LENGTH) {
+                on(ShellAccessEvent.PairingFailed(wrongCode = true))
                 return@execute done(_state.value)
             }
+            if (port <= 0) return@execute done(_state.value)
             try {
                 AdbPairingClient(LOOPBACK, port, digits, key).use { it.pair() }
                 on(ShellAccessEvent.PairingSucceeded)
                 stopPairingDiscovery()
-                startBlocking()
+                startSafely()
             } catch (e: AdbInvalidPairingCodeException) {
                 on(ShellAccessEvent.PairingFailed(wrongCode = true))
             } catch (e: Exception) {
                 Log.w(TAG, "pairing failed: ${e.javaClass.simpleName}")
+                stopPairingDiscovery()
                 on(ShellAccessEvent.PairingFailed(wrongCode = false))
             }
             done(_state.value)
@@ -120,8 +142,16 @@ class ShellAccessManager private constructor(private val context: Context) {
     /** Starts the helper if it is not running (needs Wireless debugging on). */
     fun start(done: (ShellAccessState) -> Unit = {}) {
         worker.execute {
-            startBlocking()
+            startSafely()
             done(_state.value)
+        }
+    }
+
+    // An unexpected exception must not kill the worker thread (and the app with it).
+    private fun startSafely() {
+        runCatching { startBlocking() }.onFailure {
+            Log.w(TAG, "start failed: ${it.javaClass.simpleName} ${it.message}")
+            on(ShellAccessEvent.ConnectFailed)
         }
     }
 
@@ -154,11 +184,15 @@ class ShellAccessManager private constructor(private val context: Context) {
             runCatching { h.exit() }
             return on(ShellAccessEvent.HelperTimedOut)
         }
-        h.setListener(listener)
-        binder.linkToDeath({
-            helper = null
-            on(ShellAccessEvent.HelperDied)
-        }, 0)
+        // The helper may die right after the version check: that is a failed start, not a crash.
+        val linked = runCatching {
+            h.setListener(listener)
+            binder.linkToDeath({
+                helper = null
+                on(ShellAccessEvent.HelperDied(connectPortKnown = connectPort > 0))
+            }, 0)
+        }.isSuccess
+        if (!linked) return on(ShellAccessEvent.HelperTimedOut)
         helper = h
         on(ShellAccessEvent.HelperStarted)
         Log.i(TAG, "helper ready")
@@ -194,6 +228,7 @@ class ShellAccessManager private constructor(private val context: Context) {
         private const val KEY_PAIRED = "paired"
         private const val LOOPBACK = "127.0.0.1"
         private const val HELPER_START_TIMEOUT_MS = 10_000L
+        private const val CODE_LENGTH = 6
 
         @Volatile private var instance: ShellAccessManager? = null
 

@@ -11,8 +11,11 @@ sealed interface ShellAccessState {
     /** No key paired yet: guide through Developer options → Wireless debugging → pairing code. */
     data object NotPaired : ShellAccessState
 
-    /** Looking for the pairing service, or waiting for the code. */
-    data class Pairing(val portFound: Boolean) : ShellAccessState
+    /**
+     * Looking for the pairing service, or waiting for the code. [paired] = an earlier pairing is still
+     * valid (re-pairing from a failure), so cancelling does not lose it.
+     */
+    data class Pairing(val portFound: Boolean, val paired: Boolean = false) : ShellAccessState
 
     /** Paired, helper not running; [wirelessDebuggingOn] false = the user must turn it on again. */
     data class Paired(val wirelessDebuggingOn: Boolean) : ShellAccessState
@@ -29,7 +32,11 @@ sealed interface ShellAccessState {
 }
 
 sealed interface ShellAccessEvent {
-    data object PairingRequested : ShellAccessEvent
+    /** [portKnown]: the pairing service was already resolved (discovery kept running). */
+    data class PairingRequested(val portKnown: Boolean = false) : ShellAccessEvent
+
+    /** Pairing abandoned (cancelled or timed out); [connectPortKnown] = Wireless debugging is on. */
+    data class PairingCancelled(val connectPortKnown: Boolean) : ShellAccessEvent
 
     data class PairingPort(val port: Int) : ShellAccessEvent
 
@@ -51,7 +58,8 @@ sealed interface ShellAccessEvent {
 
     data object HelperTimedOut : ShellAccessEvent
 
-    data object HelperDied : ShellAccessEvent
+    /** The helper went away; [connectPortKnown] = adbd is still advertised, so it can start again. */
+    data class HelperDied(val connectPortKnown: Boolean) : ShellAccessEvent
 
     data object Forget : ShellAccessEvent
 }
@@ -70,7 +78,13 @@ object ShellAccess {
         if (state == ShellAccessState.Unsupported) return state
         val paired = isPaired(state)
         return when (event) {
-            ShellAccessEvent.PairingRequested -> ShellAccessState.Pairing(portFound = false)
+            is ShellAccessEvent.PairingRequested -> ShellAccessState.Pairing(event.portKnown, paired)
+
+            is ShellAccessEvent.PairingCancelled -> when {
+                state !is ShellAccessState.Pairing -> state
+                state.paired -> ShellAccessState.Paired(wirelessDebuggingOn = event.connectPortKnown)
+                else -> ShellAccessState.NotPaired
+            }
 
             is ShellAccessEvent.PairingPort ->
                 if (state is ShellAccessState.Pairing) state.copy(portFound = event.port > 0) else state
@@ -79,7 +93,7 @@ object ShellAccess {
 
             is ShellAccessEvent.PairingFailed -> ShellAccessState.Failed(
                 if (event.wrongCode) ShellAccessState.Reason.WRONG_CODE else ShellAccessState.Reason.PAIRING_FAILED,
-                paired = false,
+                paired = paired,
             )
 
             is ShellAccessEvent.ConnectPort -> when (state) {
@@ -104,9 +118,13 @@ object ShellAccess {
             ShellAccessEvent.HelperTimedOut ->
                 ShellAccessState.Failed(ShellAccessState.Reason.HELPER_DID_NOT_START, paired = paired)
 
-            // Reboot or app update: still paired, Wireless debugging state unknown until NSD says.
-            ShellAccessEvent.HelperDied ->
-                if (state == ShellAccessState.Ready) ShellAccessState.Paired(wirelessDebuggingOn = false) else state
+            // Idle exit, app update or reboot: still paired; it can restart at once if adbd is up.
+            is ShellAccessEvent.HelperDied ->
+                if (state == ShellAccessState.Ready) {
+                    ShellAccessState.Paired(wirelessDebuggingOn = event.connectPortKnown)
+                } else {
+                    state
+                }
 
             ShellAccessEvent.Forget -> ShellAccessState.NotPaired
         }
@@ -115,6 +133,7 @@ object ShellAccess {
     fun isPaired(state: ShellAccessState): Boolean = when (state) {
         is ShellAccessState.Paired, ShellAccessState.Starting, ShellAccessState.Ready -> true
         is ShellAccessState.Failed -> state.paired
+        is ShellAccessState.Pairing -> state.paired
         else -> false
     }
 }

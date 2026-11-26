@@ -69,6 +69,10 @@ static jlong PairingContext_Constructor(JNIEnv *env, jclass clazz, jboolean isCl
 
     auto pswd_size = env->GetArrayLength(jPassword);
     auto pswd = env->GetByteArrayElements(jPassword, nullptr);
+    if (pswd == nullptr) {
+        SPAKE2_CTX_free(spake2_ctx);
+        return 0;
+    }
 
     size_t key_size = 0;
     uint8_t key[SPAKE2_MAX_MSG_SIZE];
@@ -83,6 +87,10 @@ static jlong PairingContext_Constructor(JNIEnv *env, jclass clazz, jboolean isCl
     env->ReleaseByteArrayElements(jPassword, pswd, 0);
 
     auto ctx = (PairingContextNative *) malloc(sizeof(PairingContextNative));
+    if (ctx == nullptr) {
+        SPAKE2_CTX_free(spake2_ctx);
+        return 0;
+    }
     memset(ctx, 0, sizeof(PairingContextNative));
     ctx->spake2_ctx = spake2_ctx;
     memcpy(ctx->key, key, SPAKE2_MAX_MSG_SIZE);
@@ -93,6 +101,7 @@ static jlong PairingContext_Constructor(JNIEnv *env, jclass clazz, jboolean isCl
 static jbyteArray PairingContext_Msg(JNIEnv *env, jobject obj, jlong ptr) {
     auto ctx = (PairingContextNative *) ptr;
     jbyteArray our_msg = env->NewByteArray(ctx->key_size);
+    if (our_msg == nullptr) return nullptr;
     env->SetByteArrayRegion(our_msg, 0, ctx->key_size, (jbyte *) ctx->key);
     return our_msg;
 }
@@ -110,6 +119,7 @@ static jboolean PairingContext_InitCipher(JNIEnv *env, jobject obj, jlong ptr, j
     }
 
     auto their_msg = env->GetByteArrayElements(jTheirMsg, nullptr);
+    if (their_msg == nullptr) return JNI_FALSE;
 
     size_t key_material_len = 0;
     uint8_t key_material[SPAKE2_MAX_KEY_SIZE];
@@ -150,6 +160,7 @@ static jbyteArray PairingContext_Encrypt(JNIEnv *env, jobject obj, jlong ptr, jb
     if (aes_ctx == nullptr || env->GetArrayLength(jIn) > kMaxCipherInput) return nullptr;
 
     auto in = env->GetByteArrayElements(jIn, nullptr);
+    if (in == nullptr) return nullptr;
     auto in_size = env->GetArrayLength(jIn);
 
     auto out_size = (size_t) in_size + EVP_AEAD_max_overhead(EVP_AEAD_CTX_aead(ctx->aes_ctx));
@@ -172,6 +183,7 @@ static jbyteArray PairingContext_Encrypt(JNIEnv *env, jobject obj, jlong ptr, jb
     ++ctx->enc_sequence;
 
     jbyteArray jOut = env->NewByteArray(written_sz);
+    if (jOut == nullptr) return nullptr;
     env->SetByteArrayRegion(jOut, 0, written_sz, (jbyte *) out);
     return jOut;
 }
@@ -182,6 +194,7 @@ static jbyteArray PairingContext_Decrypt(JNIEnv *env, jobject obj, jlong ptr, jb
     if (aes_ctx == nullptr || env->GetArrayLength(jIn) > kMaxCipherInput) return nullptr;
 
     auto in = env->GetByteArrayElements(jIn, nullptr);
+    if (in == nullptr) return nullptr;
     auto in_size = env->GetArrayLength(jIn);
 
     auto out_size = (size_t) in_size;
@@ -204,6 +217,7 @@ static jbyteArray PairingContext_Decrypt(JNIEnv *env, jobject obj, jlong ptr, jb
     ++ctx->dec_sequence;
 
     jbyteArray jOut = env->NewByteArray(written_sz);
+    if (jOut == nullptr) return nullptr;
     env->SetByteArrayRegion(jOut, 0, written_sz, (jbyte *) out);
     return jOut;
 }

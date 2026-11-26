@@ -135,6 +135,8 @@
     <string name="pairing_enter_code">Enter code</string>
     <string name="pairing_cancel">Cancel</string>
     <string name="pairing_in_progress">Pairing…</string>
-    <string name="pairing_done">Paired: shell access is starting.</string>
+    <string name="pairing_done">Paired with Wireless debugging.</string>
+    <string name="pairing_not_found">The pairing dialog was not found. Keep \"Pair device with pairing code\" open and reply again.</string>
+    <string name="pairing_failed_start">Paired, but shell access did not start. Open RiriProjector to retry.</string>
     <string name="pairing_wrong_code">That code did not work. Check it and reply again.</string>
 </resources>

@@ -111,14 +111,14 @@ class ShellAccessTest {
         val s = ShellAccess.initial(29, paired = true)
 
         assertThat(s).isEqualTo(ShellAccessState.Unsupported)
-        assertThat(run(s, ShellAccessEvent.PairingRequested)).isEqualTo(ShellAccessState.Unsupported)
+        assertThat(run(s, ShellAccessEvent.PairingRequested())).isEqualTo(ShellAccessState.Unsupported)
     }
 
     @Test
     fun `first setup pairs then starts the helper`() {
         val s = run(
             ShellAccess.initial(36, paired = false),
-            ShellAccessEvent.PairingRequested,
+            ShellAccessEvent.PairingRequested(),
             ShellAccessEvent.PairingPort(37_000),
             ShellAccessEvent.PairingSucceeded,
             ShellAccessEvent.StartRequested,
@@ -147,7 +147,7 @@ class ShellAccessTest {
 
     @Test
     fun `helper death returns to paired and a refused key needs pairing again`() {
-        assertThat(run(ShellAccessState.Ready, ShellAccessEvent.HelperDied))
+        assertThat(run(ShellAccessState.Ready, ShellAccessEvent.HelperDied(connectPortKnown = false)))
             .isEqualTo(ShellAccessState.Paired(wirelessDebuggingOn = false))
         assertThat(run(ShellAccessState.Starting, ShellAccessEvent.KeyRefused)).isEqualTo(ShellAccessState.NotPaired)
     }
@@ -164,5 +164,32 @@ class ShellAccessTest {
     @Test
     fun `a running helper ignores adbd going away`() {
         assertThat(run(ShellAccessState.Ready, ShellAccessEvent.ConnectPort(-1))).isEqualTo(ShellAccessState.Ready)
+    }
+
+    @Test
+    fun `helper idle exit with Wireless debugging still on can restart at once`() {
+        assertThat(run(ShellAccessState.Ready, ShellAccessEvent.HelperDied(connectPortKnown = true)))
+            .isEqualTo(ShellAccessState.Paired(wirelessDebuggingOn = true))
+    }
+
+    @Test
+    fun `re-pairing from a failure keeps the earlier pairing when cancelled or wrong`() {
+        val failed = ShellAccessState.Failed(ShellAccessState.Reason.HELPER_DID_NOT_START, paired = true)
+        val pairing = run(failed, ShellAccessEvent.PairingRequested())
+
+        assertThat(pairing).isEqualTo(ShellAccessState.Pairing(portFound = false, paired = true))
+        assertThat(ShellAccess.isPaired(pairing)).isTrue()
+        assertThat(run(pairing, ShellAccessEvent.PairingCancelled(connectPortKnown = true)))
+            .isEqualTo(ShellAccessState.Paired(wirelessDebuggingOn = true))
+        assertThat(ShellAccess.isPaired(run(pairing, ShellAccessEvent.PairingFailed(wrongCode = true)))).isTrue()
+    }
+
+    @Test
+    fun `cancelling a first pairing goes back to not paired`() {
+        val s = run(ShellAccessState.NotPaired, ShellAccessEvent.PairingRequested(portKnown = true))
+
+        assertThat(s).isEqualTo(ShellAccessState.Pairing(portFound = true))
+        assertThat(run(s, ShellAccessEvent.PairingCancelled(connectPortKnown = true)))
+            .isEqualTo(ShellAccessState.NotPaired)
     }
 }

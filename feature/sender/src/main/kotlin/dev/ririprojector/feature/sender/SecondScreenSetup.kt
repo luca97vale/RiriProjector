@@ -63,8 +63,10 @@ internal fun SecondScreenSetup() {
 
                 ShellAccessState.NotPaired, is ShellAccessState.Pairing, is ShellAccessState.Failed -> {
                     if (s is ShellAccessState.Failed) Hint(failure(s.reason), error = true)
-                    if (s is ShellAccessState.Failed && s.paired && s.reason == Reason.CONNECT_FAILED) {
-                        OpenSettings()
+                    if (s is ShellAccessState.Failed && s.paired) {
+                        // Still paired: retrying the start is enough, no new code needed.
+                        TextButton(onClick = { manager.start() }) { Text(stringResource(R.string.second_screen_retry)) }
+                        if (s.reason == Reason.CONNECT_FAILED) OpenSettings()
                     }
                     Hint(stringResource(R.string.second_screen_steps))
                     if (s is ShellAccessState.Pairing) {
@@ -91,7 +93,9 @@ internal fun SecondScreenSetup() {
                             )
                             TextButton(
                                 onClick = {
-                                    manager.pair(code) { PairingService.stop(context) }
+                                    manager.pair(code) { result ->
+                                        if (result !is ShellAccessState.Pairing) PairingService.stop(context)
+                                    }
                                     code = ""
                                 },
                                 enabled = code.length == CODE_LENGTH && s.portFound,
